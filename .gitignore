@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# SQLite database
+*.db
+*.sqlite3
+
+# Runtime data
+data/
+
+# OS
+.DS_Store
+
