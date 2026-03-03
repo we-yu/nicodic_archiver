@@ -275,7 +275,8 @@ def save_to_db(conn, article_id, article_type, title, article_url, responses):
     for r in responses:
         cur.execute("""
             INSERT OR IGNORE INTO responses
-            (article_id, article_type, res_no, id_hash, poster_name, posted_at, content_text, content_html)
+            (article_id, article_type, res_no, id_hash, poster_name, posted_at,
+                    content_text, content_html)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             article_id,
