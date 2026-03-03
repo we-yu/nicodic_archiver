@@ -1,0 +1,7 @@
+services:
+  archiver:
+    build: .
+    volumes:
+      - ./data:/app/data
+    # Override the default entrypoint to run a one-shot scrape, e.g.:
+    #   docker compose run archiver scrape vocaloid
