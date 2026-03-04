@@ -12,3 +12,6 @@ data/
 # OS
 .DS_Store
 
+# Utlity files/folders
+export_project.sh
+project_summary.txt
