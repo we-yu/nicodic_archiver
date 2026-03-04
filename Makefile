@@ -10,11 +10,10 @@ inspect:
 	docker compose run --rm scraper inspect
 
 test:
-	pytest
+	docker compose run --rm --entrypoint "" scraper pytest -q
 
 lint:
-	flake8 .
+	docker compose run --rm --entrypoint "" scraper flake8 .
 
 clean:
 	rm -f data/nicodic.db
-
