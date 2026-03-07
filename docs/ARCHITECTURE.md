@@ -5,71 +5,77 @@ The project is a Nicodic article archiver.
 It downloads BBS comment pages from Nicovideo dictionary
 and stores them locally.
 
-The program currently exists as a single file:
+--------------------------------------------------
+
+Current architecture
 
 main.py
+    CLI entry point
 
-The goal of refactoring is to separate responsibilities.
-
---------------------------------------------------
-
-Target architecture
-
-scraper/
-    http_client.py
-    parser.py
-
-storage/
-    database.py
-
-core/
-    archiver.py
-
-cli/
-    main.py
-
---------------------------------------------------
-
-Module responsibilities
+orchestrator.py
+    Coordinates scraping flow and persistence order
 
 http_client.py
     Handles HTTP requests
 
 parser.py
-    Extracts information from HTML
+    Extracts response data from HTML
 
-database.py
-    SQLite storage layer
+storage.py
+    Handles SQLite and JSON persistence
 
-archiver.py
-    Coordinates scraping and persistence
+cli.py
+    Provides inspect command output
+
+--------------------------------------------------
+
+Current responsibility split
 
 main.py
-    CLI entry point
+    CLI argument parsing
+    inspect branch
+    dispatch to orchestration
+
+orchestrator.py
+    article metadata fetching
+    BBS base URL generation
+    paginated response collection
+    JSON save + SQLite save flow
+
+http_client.py
+    HTTP fetch layer
+
+parser.py
+    HTML parsing layer
+
+storage.py
+    persistence layer
+
+cli.py
+    DB inspection output
 
 --------------------------------------------------
 
 Rules for refactoring
 
 • Do not change program behaviour
-• Only move logic into modules
 • Keep CLI compatible
-• Ensure tests continue to pass
+• Prefer small, explainable refactors
+• Keep Docker / pytest / flake8 working
 
 --------------------------------------------------
 
-Current features
+Status after TASK002
 
-• Fetch Nicodic BBS pages
-• Parse comments
-• Store JSON
-• Store SQLite
-• CLI inspect mode
+• main.py is thinner than before
+• orchestration has been extracted to orchestrator.py
+• behaviour is intended to remain unchanged
 
 --------------------------------------------------
 
-Goal
+Future direction
 
-Maintainable architecture
-without changing functionality.
+Further refactoring should treat this structure
+as the post-TASK002 baseline unless a new task
+explicitly changes it.
 
