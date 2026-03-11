@@ -1,12 +1,14 @@
-"""Unit tests for orchestrator: URL building, metadata fetch, pagination."""
+"""Unit tests for orchestrator: URL building, metadata, pagination, orchestration."""
 from unittest.mock import patch, MagicMock
 
+import pytest
 from bs4 import BeautifulSoup
 
 from orchestrator import (
     build_bbs_base_url,
     fetch_article_metadata,
     collect_all_responses,
+    run_scrape,
 )
 
 
@@ -102,3 +104,70 @@ def test_collect_all_responses_single_page(
     assert result == []
     mock_fetch.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/1-")
     mock_sleep.assert_not_called()
+
+
+# ----- run_scrape orchestration flow -----
+
+
+def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=("12345", "a", "Title"),
+    ) as mock_meta:
+        with patch(
+            "orchestrator.build_bbs_base_url",
+            return_value="https://dic.nicovideo.jp/b/a/12345/",
+        ) as mock_build:
+            with patch(
+                "orchestrator.collect_all_responses",
+                return_value=[{"res_no": 1}],
+            ) as mock_collect:
+                with patch("orchestrator.save_json") as mock_save_json:
+                    conn = MagicMock()
+                    with patch("orchestrator.init_db", return_value=conn) as mock_init:
+                        with patch("orchestrator.save_to_db") as mock_save_db:
+                            with patch("orchestrator.print") as mock_print:
+                                run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_build.assert_called_once_with(article_url)
+    mock_collect.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/")
+
+    mock_save_json.assert_called_once_with(
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        [{"res_no": 1}],
+    )
+
+    mock_init.assert_called_once_with()
+    mock_save_db.assert_called_once_with(
+        conn,
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        [{"res_no": 1}],
+    )
+    conn.close.assert_called_once_with()
+
+    # Final status message
+    mock_print.assert_any_call("Saved to SQLite")
+
+
+def test_run_scrape_propagates_error_from_metadata_and_does_not_init_db():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        side_effect=RuntimeError("network error"),
+    ) as mock_meta:
+        with patch("orchestrator.init_db") as mock_init:
+            with pytest.raises(RuntimeError):
+                run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_init.assert_not_called()
