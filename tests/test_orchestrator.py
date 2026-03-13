@@ -171,3 +171,70 @@ def test_run_scrape_propagates_error_from_metadata_and_does_not_init_db():
 
     mock_meta.assert_called_once_with(article_url)
     mock_init.assert_not_called()
+
+
+def test_run_scrape_handles_article_not_found_without_saving():
+    article_url = "https://dic.nicovideo.jp/a/does-not-exist"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        side_effect=RuntimeError("Failed to fetch (status=404)"),
+    ) as mock_meta:
+        with patch("orchestrator.save_json") as mock_save_json:
+            with patch("orchestrator.init_db") as mock_init:
+                with patch("orchestrator.save_to_db") as mock_save_db:
+                    with patch("orchestrator.print") as mock_print:
+                        run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_save_json.assert_not_called()
+    mock_init.assert_not_called()
+    mock_save_db.assert_not_called()
+    mock_print.assert_any_call("Article not found:", article_url)
+
+
+def test_run_scrape_logs_when_no_responses_but_still_saves():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=("12345", "a", "Title"),
+    ) as mock_meta:
+        with patch(
+            "orchestrator.build_bbs_base_url",
+            return_value="https://dic.nicovideo.jp/b/a/12345/",
+        ) as mock_build:
+            with patch(
+                "orchestrator.collect_all_responses",
+                return_value=[],
+            ) as mock_collect:
+                with patch("orchestrator.save_json") as mock_save_json:
+                    conn = MagicMock()
+                    with patch("orchestrator.init_db", return_value=conn) as mock_init:
+                        with patch("orchestrator.save_to_db") as mock_save_db:
+                            with patch("orchestrator.print") as mock_print:
+                                run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_build.assert_called_once_with(article_url)
+    mock_collect.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/")
+
+    # Even when responses is empty, we still go through the save flow.
+    mock_save_json.assert_called_once_with(
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        [],
+    )
+    mock_init.assert_called_once_with()
+    mock_save_db.assert_called_once_with(
+        conn,
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        [],
+    )
+    conn.close.assert_called_once_with()
+    mock_print.assert_any_call("No responses found for BBS:", article_url)

@@ -81,10 +81,26 @@ def fetch_article_metadata(article_url: str):
 
 
 def run_scrape(article_url: str):
-    article_id, article_type, title = fetch_article_metadata(article_url)
+    try:
+        article_id, article_type, title = fetch_article_metadata(article_url)
+    except RuntimeError as e:
+        # 記事ページが404の場合は「記事が存在しない」ケースとして扱い、
+        # 通常の保存フローには進まない。
+        msg = str(e)
+        if "status=404" in msg:
+            print("Article not found:", article_url)
+            return
+        # それ以外のエラーは従来どおり上位へ伝播させる。
+        raise
+
     bbs_base_url = build_bbs_base_url(article_url)
 
     responses = collect_all_responses(bbs_base_url)
+
+    if not responses:
+        # 掲示板が存在しない、またはレスが0件のケース。
+        # 明示的にログだけ出して、処理自体は通常フローとして扱う。
+        print("No responses found for BBS:", article_url)
 
     save_json(article_id, article_type, title, article_url, responses)
 
