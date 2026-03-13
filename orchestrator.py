@@ -6,6 +6,10 @@ from parser import parse_responses
 from storage import init_db, save_json, save_to_db
 
 
+class ArticleNotFoundError(RuntimeError):
+    """記事ページが見つからない場合の orchestration 用例外。"""
+
+
 def build_bbs_base_url(article_url: str) -> str:
     """
     記事URLから掲示板ベースURLを生成する。
@@ -37,12 +41,21 @@ def collect_all_responses(bbs_base_url: str) -> list:
         try:
             soup = fetch_page(page_url)
         except RuntimeError as e:
+            if start == 1 and "status=404" in str(e):
+                print("No BBS found:", bbs_base_url)
+                return []
+
+            if start == 1:
+                raise
+
             print(e)
             break
 
         page_responses = parse_responses(soup)
 
         if not page_responses:
+            if start == 1:
+                print("No responses found:", bbs_base_url)
             break
 
         all_responses.extend(page_responses)
@@ -66,13 +79,21 @@ def fetch_article_metadata(article_url: str):
       - title
     """
 
-    soup = fetch_page(article_url)
+    try:
+        soup = fetch_page(article_url)
+    except RuntimeError as exc:
+        if "status=404" in str(exc):
+            raise ArticleNotFoundError(f"Article not found: {article_url}") from exc
+        raise
 
     title_tag = soup.find("meta", property="og:title")
     title = title_tag["content"].split("とは")[0] if title_tag else "unknown"
 
     og_url = soup.find("meta", property="og:url")
-    article_id = og_url["content"].rstrip("/").split("/")[-1] if og_url else "unknown"
+    if og_url is None:
+        raise ArticleNotFoundError(f"Article not found: {article_url}")
+
+    article_id = og_url["content"].rstrip("/").split("/")[-1]
 
     parsed = urlparse(article_url)
     article_type = parsed.path.strip("/").split("/")[0]
@@ -81,10 +102,19 @@ def fetch_article_metadata(article_url: str):
 
 
 def run_scrape(article_url: str):
-    article_id, article_type, title = fetch_article_metadata(article_url)
+    try:
+        article_id, article_type, title = fetch_article_metadata(article_url)
+
+    except ArticleNotFoundError:
+        print(f"Article not found: {article_url}")
+        return
+
     bbs_base_url = build_bbs_base_url(article_url)
 
     responses = collect_all_responses(bbs_base_url)
+
+    if not responses:
+        print("No BBS responses found; saving empty result")
 
     save_json(article_id, article_type, title, article_url, responses)
 
