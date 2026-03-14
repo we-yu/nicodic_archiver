@@ -5,6 +5,12 @@ from http_client import fetch_page
 from parser import parse_responses
 from storage import init_db, save_json, save_to_db
 
+# 取得レス数の上限。未知の high-volume 記事に対する bounded protection。
+RESPONSE_CAP = 1_000_000
+
+# 仮置き。known high-volume article を skip するための seed。
+DENYLIST_ARTICLE_IDS = frozenset({"480340", "237789"})
+
 
 class ArticleNotFoundError(RuntimeError):
     """記事ページが見つからない場合の orchestration 用例外。"""
@@ -24,19 +30,21 @@ def build_bbs_base_url(article_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}/b/{article_type}/{article_id}/"
 
 
-def collect_all_responses(bbs_base_url: str) -> tuple[list, bool]:
+def collect_all_responses(bbs_base_url: str) -> tuple[list, bool, bool]:
     """
     ページネーションを辿り全レス収集。
-    404または空ページで終了。
+    404または空ページで終了。RESPONSE_CAP に達した場合も終了。
 
     Returns:
-        (all_responses, interrupted)
+        (all_responses, interrupted, cap_reached)
         interrupted=True は「途中ページでの取得エラーにより中断した」ことを表す。
+        cap_reached=True は「取得上限に到達した」ことを表す。
     """
 
     all_responses = []
     start = 1
     interrupted = False
+    cap_reached = False
 
     while True:
 
@@ -50,7 +58,7 @@ def collect_all_responses(bbs_base_url: str) -> tuple[list, bool]:
             # empty-result として返す（中断フラグは立てない）。
             if start == 1 and "status=404" in str(e):
                 print("No BBS found:", bbs_base_url)
-                return [], False
+                return [], False, False
 
             # 1ページ目のその他エラーは従来どおり上位へ伝播させる。
             if start == 1:
@@ -71,6 +79,12 @@ def collect_all_responses(bbs_base_url: str) -> tuple[list, bool]:
 
         all_responses.extend(page_responses)
 
+        if len(all_responses) >= RESPONSE_CAP:
+            all_responses = all_responses[:RESPONSE_CAP]
+            cap_reached = True
+            print("Total collected:", len(all_responses))
+            break
+
         print("Page collected:", len(page_responses))
         print("Total collected:", len(all_responses))
 
@@ -79,7 +93,7 @@ def collect_all_responses(bbs_base_url: str) -> tuple[list, bool]:
         # 過度アクセス回避
         time.sleep(1)
 
-    return all_responses, interrupted
+    return all_responses, interrupted, cap_reached
 
 
 def fetch_article_metadata(article_url: str):
@@ -120,18 +134,28 @@ def run_scrape(article_url: str):
         print(f"Article not found: {article_url}")
         return
 
+    if article_id in DENYLIST_ARTICLE_IDS:
+        print("Skipping article (high-volume).")
+        return
+
     bbs_base_url = build_bbs_base_url(article_url)
 
-    responses, interrupted = collect_all_responses(bbs_base_url)
+    responses, interrupted, cap_reached = collect_all_responses(bbs_base_url)
 
-    # empty-result（レス0件）と later-page interruption を区別して扱う。
-    if not responses and not interrupted:
+    # empty-result / later-page interruption / cap reached を区別して扱う。
+    if not responses and not interrupted and not cap_reached:
         # 掲示板は存在するがレスが0件、あるいは掲示板自体が存在しないケース。
         print("No BBS responses found; saving empty result")
     elif interrupted and responses:
         # 途中ページでのエラーにより中断したが、一部レスは取得済み。
         print(
             f"BBS fetch interrupted; saving partial responses "
+            f"({len(responses)} items) for: {article_url}"
+        )
+    elif cap_reached and responses:
+        # 取得上限に到達。その時点までの responses を保存する。
+        print(
+            f"Response cap reached; saving partial responses "
             f"({len(responses)} items) for: {article_url}"
         )
 
