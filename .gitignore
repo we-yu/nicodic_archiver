@@ -15,3 +15,5 @@ data/
 # Utlity files/folders
 export_project.sh
 project_summary.txt
+
+.cursor/
