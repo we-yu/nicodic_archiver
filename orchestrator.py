@@ -24,14 +24,15 @@ def build_bbs_base_url(article_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}/b/{article_type}/{article_id}/"
 
 
-def collect_all_responses(bbs_base_url: str) -> list:
+def collect_all_responses(bbs_base_url: str) -> tuple[list, bool]:
     """
     ページネーションを辿り全レス収集。
-    404または空ページで終了。
+    戻り値の第2要素は later-page fetch interruption の有無。
     """
 
     all_responses = []
     start = 1
+    interrupted = False
 
     while True:
 
@@ -43,12 +44,14 @@ def collect_all_responses(bbs_base_url: str) -> list:
         except RuntimeError as e:
             if start == 1 and "status=404" in str(e):
                 print("No BBS found:", bbs_base_url)
-                return []
+                return [], False
 
             if start == 1:
                 raise
 
+            print("Later-page fetch interrupted:", page_url)
             print(e)
+            interrupted = True
             break
 
         page_responses = parse_responses(soup)
@@ -68,7 +71,7 @@ def collect_all_responses(bbs_base_url: str) -> list:
         # 過度アクセス回避
         time.sleep(1)
 
-    return all_responses
+    return all_responses, interrupted
 
 
 def fetch_article_metadata(article_url: str):
@@ -111,10 +114,12 @@ def run_scrape(article_url: str):
 
     bbs_base_url = build_bbs_base_url(article_url)
 
-    responses = collect_all_responses(bbs_base_url)
+    responses, interrupted = collect_all_responses(bbs_base_url)
 
     if not responses:
         print("No BBS responses found; saving empty result")
+    elif interrupted:
+        print("Later-page fetch interrupted; saving partial result")
 
     save_json(article_id, article_type, title, article_url, responses)
 

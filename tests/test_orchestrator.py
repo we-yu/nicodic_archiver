@@ -84,8 +84,11 @@ def test_collect_all_responses_stops_on_empty_page(
         [{"res_no": 1}, {"res_no": 2}],
         [],
     ]
-    result = collect_all_responses("https://dic.nicovideo.jp/b/a/12345/")
-    assert result == [{"res_no": 1}, {"res_no": 2}]
+    responses, interrupted = collect_all_responses(
+        "https://dic.nicovideo.jp/b/a/12345/"
+    )
+    assert responses == [{"res_no": 1}, {"res_no": 2}]
+    assert interrupted is False
     assert mock_fetch.call_count == 2
     mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/1-")
     mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/3-")
@@ -101,8 +104,11 @@ def test_collect_all_responses_returns_empty_for_missing_bbs(
     mock_fetch.side_effect = RuntimeError(
         "Failed to fetch https://dic.nicovideo.jp/b/a/12345/1- (status=404)"
     )
-    result = collect_all_responses("https://dic.nicovideo.jp/b/a/12345/")
-    assert result == []
+    responses, interrupted = collect_all_responses(
+        "https://dic.nicovideo.jp/b/a/12345/"
+    )
+    assert responses == []
+    assert interrupted is False
     mock_fetch.assert_called_once()
     mock_parse.assert_not_called()
     mock_sleep.assert_not_called()
@@ -131,10 +137,33 @@ def test_collect_all_responses_single_page(
 ):
     mock_fetch.return_value = MagicMock()
     mock_parse.return_value = []
-    result = collect_all_responses("https://dic.nicovideo.jp/b/a/12345/")
-    assert result == []
+    responses, interrupted = collect_all_responses(
+        "https://dic.nicovideo.jp/b/a/12345/"
+    )
+    assert responses == []
+    assert interrupted is False
     mock_fetch.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/1-")
     mock_sleep.assert_not_called()
+
+
+@patch("orchestrator.time.sleep")
+@patch("orchestrator.parse_responses")
+@patch("orchestrator.fetch_page")
+def test_collect_all_responses_marks_later_page_interruption_and_keeps_partial_data(
+    mock_fetch, mock_parse, mock_sleep
+):
+    mock_fetch.side_effect = [MagicMock(), RuntimeError("network unavailable")]
+    mock_parse.return_value = [{"res_no": 1}, {"res_no": 2}]
+
+    responses, interrupted = collect_all_responses(
+        "https://dic.nicovideo.jp/b/a/12345/"
+    )
+
+    assert responses == [{"res_no": 1}, {"res_no": 2}]
+    assert interrupted is True
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/1-")
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/3-")
+    mock_sleep.assert_called_once_with(1)
 
 
 # ----- run_scrape orchestration flow -----
@@ -153,7 +182,7 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
         ) as mock_build:
             with patch(
                 "orchestrator.collect_all_responses",
-                return_value=[{"res_no": 1}],
+                return_value=([{"res_no": 1}], False),
             ) as mock_collect:
                 with patch("orchestrator.save_json") as mock_save_json:
                     conn = MagicMock()
@@ -239,7 +268,7 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
         ) as mock_build:
             with patch(
                 "orchestrator.collect_all_responses",
-                return_value=[],
+                return_value=([], False),
             ) as mock_collect:
                 with patch("orchestrator.save_json") as mock_save_json:
                     conn = MagicMock()
@@ -263,4 +292,50 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
     )
     conn.close.assert_called_once_with()
     mock_print.assert_any_call("No BBS responses found; saving empty result")
+    mock_print.assert_any_call("Saved to SQLite")
+
+
+def test_run_scrape_saves_partial_result_after_later_page_interruption():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=("12345", "a", "Title"),
+    ) as mock_meta:
+        with patch(
+            "orchestrator.build_bbs_base_url",
+            return_value="https://dic.nicovideo.jp/b/a/12345/",
+        ) as mock_build:
+            with patch(
+                "orchestrator.collect_all_responses",
+                return_value=([{"res_no": 1}], True),
+            ) as mock_collect:
+                with patch("orchestrator.save_json") as mock_save_json:
+                    conn = MagicMock()
+                    with patch("orchestrator.init_db", return_value=conn) as mock_init:
+                        with patch("orchestrator.save_to_db") as mock_save_db:
+                            with patch("orchestrator.print") as mock_print:
+                                run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_build.assert_called_once_with(article_url)
+    mock_collect.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/")
+    mock_save_json.assert_called_once_with(
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        [{"res_no": 1}],
+    )
+    mock_init.assert_called_once_with()
+    mock_save_db.assert_called_once_with(
+        conn,
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        [{"res_no": 1}],
+    )
+    conn.close.assert_called_once_with()
+    mock_print.assert_any_call("Later-page fetch interrupted; saving partial result")
     mock_print.assert_any_call("Saved to SQLite")
