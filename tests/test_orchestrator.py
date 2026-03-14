@@ -448,3 +448,143 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
     )
     assert "Response cap reached; saving partial responses" in joined_calls
     assert "3 items" in joined_calls
+
+
+@pytest.mark.parametrize(
+    ("scenario_name", "collected", "expected_message", "expected_responses"),
+    [
+        (
+            "normal_save_path",
+            ([{"res_no": 1}], False, False),
+            None,
+            [{"res_no": 1}],
+        ),
+        (
+            "empty_result",
+            ([], False, False),
+            "No BBS responses found; saving empty result",
+            [],
+        ),
+        (
+            "later_page_interruption",
+            ([{"res_no": 1}], True, False),
+            "BBS fetch interrupted; saving partial responses",
+            [{"res_no": 1}],
+        ),
+        (
+            "cap_reached",
+            ([{"res_no": 1}, {"res_no": 2}, {"res_no": 3}], False, True),
+            "Response cap reached; saving partial responses",
+            [{"res_no": 1}, {"res_no": 2}, {"res_no": 3}],
+        ),
+    ],
+)
+def test_run_scrape_representative_save_path_regression(
+    scenario_name, collected, expected_message, expected_responses
+):
+    article_url = "https://dic.nicovideo.jp/a/12345"
+    scenario_messages = [
+        "No BBS responses found; saving empty result",
+        "BBS fetch interrupted; saving partial responses",
+        "Response cap reached; saving partial responses",
+    ]
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=("12345", "a", "Title"),
+    ) as mock_meta:
+        with patch(
+            "orchestrator.build_bbs_base_url",
+            return_value="https://dic.nicovideo.jp/b/a/12345/",
+        ) as mock_build:
+            with patch(
+                "orchestrator.collect_all_responses",
+                return_value=collected,
+            ) as mock_collect:
+                with patch("orchestrator.save_json") as mock_save_json:
+                    conn = MagicMock()
+                    with patch("orchestrator.init_db", return_value=conn) as mock_init:
+                        with patch("orchestrator.save_to_db") as mock_save_db:
+                            with patch("orchestrator.print") as mock_print:
+                                run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_build.assert_called_once_with(article_url)
+    mock_collect.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/")
+    mock_save_json.assert_called_once_with(
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        expected_responses,
+    )
+    mock_init.assert_called_once_with()
+    mock_save_db.assert_called_once_with(
+        conn,
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        expected_responses,
+    )
+    conn.close.assert_called_once_with()
+    mock_print.assert_any_call("Saved to SQLite")
+
+    if expected_message is None:
+        joined_calls = " ".join(
+            " ".join(map(str, c.args)) for c in mock_print.call_args_list
+        )
+        assert not any(message in joined_calls for message in scenario_messages)
+    else:
+        joined_calls = " ".join(
+            " ".join(map(str, c.args)) for c in mock_print.call_args_list
+        )
+        assert expected_message in joined_calls
+
+
+@pytest.mark.parametrize(
+    ("scenario_name", "metadata_side_effect", "metadata_value", "expected_message"),
+    [
+        (
+            "article_not_found",
+            ArticleNotFoundError("Article not found: https://dic.nicovideo.jp/a/999"),
+            None,
+            "Article not found: https://dic.nicovideo.jp/a/999",
+        ),
+        (
+            "known_high_volume_skip",
+            None,
+            ("480340", "a", "Title"),
+            "Skipping article (high-volume).",
+        ),
+    ],
+)
+def test_run_scrape_representative_skip_path_regression(
+    scenario_name, metadata_side_effect, metadata_value, expected_message
+):
+    article_url = (
+        "https://dic.nicovideo.jp/a/999"
+        if scenario_name == "article_not_found"
+        else "https://dic.nicovideo.jp/a/480340"
+    )
+
+    fetch_kwargs = {"side_effect": metadata_side_effect}
+    if metadata_side_effect is None:
+        fetch_kwargs = {"return_value": metadata_value}
+
+    with patch("orchestrator.fetch_article_metadata", **fetch_kwargs) as mock_meta:
+        with patch("orchestrator.build_bbs_base_url") as mock_build:
+            with patch("orchestrator.collect_all_responses") as mock_collect:
+                with patch("orchestrator.save_json") as mock_save_json:
+                    with patch("orchestrator.init_db") as mock_init:
+                        with patch("orchestrator.save_to_db") as mock_save_db:
+                            with patch("orchestrator.print") as mock_print:
+                                run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_build.assert_not_called()
+    mock_collect.assert_not_called()
+    mock_save_json.assert_not_called()
+    mock_init.assert_not_called()
+    mock_save_db.assert_not_called()
+    mock_print.assert_any_call(expected_message)
