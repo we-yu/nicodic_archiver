@@ -1,4 +1,8 @@
-"""Unit tests for orchestrator: URL building, metadata, pagination, orchestration."""
+"""Representative regression coverage for single-article scrape behavior.
+
+Scenarios: article not found, no-BBS/zero-response, later-page interruption,
+known high-volume skip, response-cap reached, normal save path.
+"""
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -232,6 +236,7 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
         article_url,
         [{"res_no": 1}],
     )
+    assert mock_save_json.call_args[0][4] == mock_save_db.call_args[0][5]
 
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
@@ -244,7 +249,6 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
     )
     conn.close.assert_called_once_with()
 
-    # Final status message
     mock_print.assert_any_call("Saved to SQLite")
 
 
@@ -285,6 +289,19 @@ def test_run_scrape_article_not_found_skips_save_path():
     mock_print.assert_any_call(f"Article not found: {article_url}")
 
 
+def test_run_scrape_article_not_found_build_bbs_base_url_not_called():
+    article_url = "https://dic.nicovideo.jp/a/999"
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        side_effect=ArticleNotFoundError(f"Article not found: {article_url}"),
+    ):
+        with patch("orchestrator.build_bbs_base_url") as mock_build:
+            with patch("orchestrator.collect_all_responses"):
+                with patch("orchestrator.print"):
+                    run_scrape(article_url)
+    mock_build.assert_not_called()
+
+
 def test_run_scrape_saves_empty_result_for_zero_response_case():
     article_url = "https://dic.nicovideo.jp/a/12345"
 
@@ -311,6 +328,7 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
     mock_build.assert_called_once_with(article_url)
     mock_collect.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/")
     mock_save_json.assert_called_once_with("12345", "a", "Title", article_url, [])
+    assert mock_save_json.call_args[0][4] == []
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,
@@ -320,6 +338,7 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
         article_url,
         [],
     )
+    assert mock_save_db.call_args[0][5] == []
     conn.close.assert_called_once_with()
     mock_print.assert_any_call("No BBS responses found; saving empty result")
     mock_print.assert_any_call("Saved to SQLite")
@@ -359,6 +378,7 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
         article_url,
         partial,
     )
+    assert len(mock_save_json.call_args[0][4]) == len(partial)
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,
@@ -369,7 +389,6 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
         partial,
     )
     conn.close.assert_called_once_with()
-    # later-page interruption 向けのログが出ていること
     joined_calls = " ".join(
         " ".join(map(str, c.args)) for c in mock_print.call_args_list
     )
@@ -442,6 +461,7 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
         article_url,
         partial,
     )
+    assert len(mock_save_db.call_args[0][5]) == 3
     conn.close.assert_called_once_with()
     joined_calls = " ".join(
         " ".join(map(str, c.args)) for c in mock_print.call_args_list
