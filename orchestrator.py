@@ -24,14 +24,19 @@ def build_bbs_base_url(article_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}/b/{article_type}/{article_id}/"
 
 
-def collect_all_responses(bbs_base_url: str) -> list:
+def collect_all_responses(bbs_base_url: str) -> tuple[list, bool]:
     """
     ページネーションを辿り全レス収集。
     404または空ページで終了。
+
+    Returns:
+        (all_responses, interrupted)
+        interrupted=True は「途中ページでの取得エラーにより中断した」ことを表す。
     """
 
     all_responses = []
     start = 1
+    interrupted = False
 
     while True:
 
@@ -41,14 +46,20 @@ def collect_all_responses(bbs_base_url: str) -> list:
         try:
             soup = fetch_page(page_url)
         except RuntimeError as e:
+            # 1ページ目の404は「掲示板が存在しない」ケースとして扱い、
+            # empty-result として返す（中断フラグは立てない）。
             if start == 1 and "status=404" in str(e):
                 print("No BBS found:", bbs_base_url)
-                return []
+                return [], False
 
+            # 1ページ目のその他エラーは従来どおり上位へ伝播させる。
             if start == 1:
                 raise
 
+            # 2ページ目以降のエラーは「later-page interruption」として扱う。
+            print("Later-page fetch interrupted:", page_url)
             print(e)
+            interrupted = True
             break
 
         page_responses = parse_responses(soup)
@@ -68,7 +79,7 @@ def collect_all_responses(bbs_base_url: str) -> list:
         # 過度アクセス回避
         time.sleep(1)
 
-    return all_responses
+    return all_responses, interrupted
 
 
 def fetch_article_metadata(article_url: str):
@@ -111,10 +122,18 @@ def run_scrape(article_url: str):
 
     bbs_base_url = build_bbs_base_url(article_url)
 
-    responses = collect_all_responses(bbs_base_url)
+    responses, interrupted = collect_all_responses(bbs_base_url)
 
-    if not responses:
+    # empty-result（レス0件）と later-page interruption を区別して扱う。
+    if not responses and not interrupted:
+        # 掲示板は存在するがレスが0件、あるいは掲示板自体が存在しないケース。
         print("No BBS responses found; saving empty result")
+    elif interrupted and responses:
+        # 途中ページでのエラーにより中断したが、一部レスは取得済み。
+        print(
+            f"BBS fetch interrupted; saving partial responses "
+            f"({len(responses)} items) for: {article_url}"
+        )
 
     save_json(article_id, article_type, title, article_url, responses)
 
