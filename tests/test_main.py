@@ -27,6 +27,31 @@ def test_main_inspect_mode_with_last_n(mock_inspect):
     mock_inspect.assert_called_once_with("12345", "a", 10)
 
 
+@patch("main.load_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/12345",
+    "https://dic.nicovideo.jp/a/99999",
+])
+def test_main_targets_mode_loads_and_prints_targets(mock_load_targets, capsys):
+    with patch("sys.argv", ["main.py", "targets", "targets.txt"]):
+        main_module.main()
+
+    mock_load_targets.assert_called_once_with("targets.txt")
+    out = capsys.readouterr().out
+    assert "Loaded 2 scrape target(s) from targets.txt" in out
+    assert "https://dic.nicovideo.jp/a/12345" in out
+    assert "https://dic.nicovideo.jp/a/99999" in out
+
+
+def test_main_targets_without_path_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "targets"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: targets <target_list_path>" in out
+
+
 def test_main_too_few_args_exits_with_usage(capsys):
     with patch("sys.argv", ["main.py"]):
         with pytest.raises(SystemExit) as exc_info:
@@ -35,6 +60,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     out = capsys.readouterr().out
     assert "python main.py <article_url>" in out
     assert "inspect" in out
+    assert "targets <target_list_path>" in out
 
 
 def test_main_inspect_without_id_type_exits_with_usage(capsys):
