@@ -2,6 +2,7 @@ import sys
 
 from cli import inspect_article
 from orchestrator import run_scrape
+from target_list import load_target_urls
 
 
 # ============================================================
@@ -19,6 +20,7 @@ def main():
         print("Usage:")
         print("  python main.py <article_url>")
         print("  python main.py inspect <article_id> <article_type> [--last N]")
+        print("  python main.py targets <target_list_path>")
         sys.exit(1)
 
     # inspectモード
@@ -37,6 +39,20 @@ def main():
             last_n = int(sys.argv[idx + 1])
 
         inspect_article(article_id, article_type, last_n)
+        return
+
+    if sys.argv[1] == "targets":
+
+        if len(sys.argv) < 3:
+            print("Usage: targets <target_list_path>")
+            sys.exit(1)
+
+        target_list_path = sys.argv[2]
+        targets = load_target_urls(target_list_path)
+
+        print(f"Loaded {len(targets)} scrape target(s) from {target_list_path}")
+        for target in targets:
+            print(target)
         return
 
     # 通常スクレイプモード
