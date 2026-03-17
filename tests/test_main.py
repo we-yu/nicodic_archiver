@@ -61,6 +61,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "python main.py <article_url>" in out
     assert "inspect" in out
     assert "targets <target_list_path>" in out
+    assert "batch <target_list_path>" in out
 
 
 def test_main_inspect_without_id_type_exits_with_usage(capsys):
@@ -70,3 +71,71 @@ def test_main_inspect_without_id_type_exits_with_usage(capsys):
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "inspect <article_id> <article_type>" in out
+
+
+@patch("main.load_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.run_scrape", side_effect=[True, True])
+def test_main_batch_all_success_exits_zero(
+    mock_run_scrape, mock_load_targets, capsys
+):
+    with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
+        main_module.main()
+
+    assert mock_run_scrape.call_count == 2
+    mock_run_scrape.assert_any_call("https://dic.nicovideo.jp/a/1")
+    mock_run_scrape.assert_any_call("https://dic.nicovideo.jp/a/2")
+    out = capsys.readouterr().out
+    assert "[OK] https://dic.nicovideo.jp/a/1" in out
+    assert "[OK] https://dic.nicovideo.jp/a/2" in out
+
+
+@patch("main.load_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.run_scrape", side_effect=[False, True])
+def test_main_batch_failure_sets_nonzero_exit_and_continues(
+    mock_run_scrape, mock_load_targets, capsys
+):
+    with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    assert mock_run_scrape.call_count == 2
+    out = capsys.readouterr().out
+    assert "[FAIL] https://dic.nicovideo.jp/a/1" in out
+    assert "[OK] https://dic.nicovideo.jp/a/2" in out
+
+
+@patch("main.load_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.run_scrape", side_effect=[RuntimeError("boom"), True])
+def test_main_batch_exception_sets_nonzero_exit_and_continues(
+    mock_run_scrape, mock_load_targets, capsys
+):
+    with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    assert mock_run_scrape.call_count == 2
+    out = capsys.readouterr().out
+    assert "[FAIL] https://dic.nicovideo.jp/a/1" in out
+    assert "RuntimeError" in out
+    assert "[OK] https://dic.nicovideo.jp/a/2" in out
+
+
+def test_main_batch_without_path_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "batch"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: batch <target_list_path>" in out
