@@ -1,7 +1,6 @@
 """Unit tests for main.py: CLI dispatch (inspect vs scrape, usage/exit)."""
-from unittest.mock import patch
+from unittest.mock import call, patch
 
-import os
 from pathlib import Path
 
 import pytest
@@ -65,6 +64,9 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "inspect" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
+    assert (
+        "periodic <target_list_path> <interval_seconds> [--max-runs N]" in out
+    )
 
 
 def test_main_inspect_without_id_type_exits_with_usage(capsys):
@@ -82,9 +84,9 @@ def test_main_inspect_without_id_type_exits_with_usage(capsys):
 ])
 @patch("main.run_scrape", side_effect=[True, True])
 def test_main_batch_all_success_exits_zero(
-    mock_run_scrape, mock_load_targets, tmp_path, capsys
+    mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
 ):
-    os.environ["BATCH_LOG_DIR"] = str(tmp_path)
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
     with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
         main_module.main()
 
@@ -112,9 +114,9 @@ def test_main_batch_all_success_exits_zero(
 ])
 @patch("main.run_scrape", side_effect=[False, True])
 def test_main_batch_failure_sets_nonzero_exit_and_continues(
-    mock_run_scrape, mock_load_targets, tmp_path, capsys
+    mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
 ):
-    os.environ["BATCH_LOG_DIR"] = str(tmp_path)
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
     with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
         with pytest.raises(SystemExit) as exc_info:
             main_module.main()
@@ -143,9 +145,9 @@ def test_main_batch_failure_sets_nonzero_exit_and_continues(
 ])
 @patch("main.run_scrape", side_effect=[RuntimeError("boom"), True])
 def test_main_batch_exception_sets_nonzero_exit_and_continues(
-    mock_run_scrape, mock_load_targets, tmp_path, capsys
+    mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
 ):
-    os.environ["BATCH_LOG_DIR"] = str(tmp_path)
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
     with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
         with pytest.raises(SystemExit) as exc_info:
             main_module.main()
@@ -175,3 +177,96 @@ def test_main_batch_without_path_exits_with_usage(capsys):
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "Usage: batch <target_list_path>" in out
+
+
+@patch(
+    "main.run_batch_scrape",
+    side_effect=[("success", 0), ("partial_failure", 1)],
+)
+@patch("main.time.sleep")
+def test_main_periodic_runs_full_batch_per_cycle_and_honors_max_runs(
+    mock_sleep, mock_run_batch, capsys
+):
+    with patch(
+        "sys.argv",
+        ["main.py", "periodic", "targets.txt", "30", "--max-runs", "2"],
+    ):
+        main_module.main()
+
+    assert mock_run_batch.call_args_list == [
+        call("targets.txt"),
+        call("targets.txt"),
+    ]
+    mock_sleep.assert_called_once_with(30.0)
+
+    out = capsys.readouterr().out
+    assert "[periodic] Run 1 starting" in out
+    assert "[periodic] Run 1 finished with status=success failed_targets=0" in out
+    assert "[periodic] Sleeping 30.0 second(s)" in out
+    assert "[periodic] Run 2 starting" in out
+    assert (
+        "[periodic] Run 2 finished with status=partial_failure failed_targets=1"
+        in out
+    )
+
+
+@patch(
+    "main.run_batch_scrape",
+    side_effect=[("failure", 2), ("success", 0)],
+)
+@patch("main.time.sleep")
+def test_main_periodic_continues_after_failure_statuses(
+    mock_sleep, mock_run_batch, capsys
+):
+    with patch(
+        "sys.argv",
+        ["main.py", "periodic", "targets.txt", "5", "--max-runs", "2"],
+    ):
+        main_module.main()
+
+    assert mock_run_batch.call_args_list == [
+        call("targets.txt"),
+        call("targets.txt"),
+    ]
+    mock_sleep.assert_called_once_with(5.0)
+
+    out = capsys.readouterr().out
+    assert "status=failure failed_targets=2" in out
+    assert "status=success failed_targets=0" in out
+
+
+@patch("main.run_batch_scrape", return_value=("success", 0))
+@patch("main.time.sleep", side_effect=KeyboardInterrupt)
+def test_main_periodic_exits_safely_on_ctrl_c_during_sleep(
+    mock_sleep, mock_run_batch, capsys
+):
+    with patch("sys.argv", ["main.py", "periodic", "targets.txt", "5"]):
+        main_module.main()
+
+    mock_run_batch.assert_called_once_with("targets.txt")
+    mock_sleep.assert_called_once_with(5.0)
+    out = capsys.readouterr().out
+    assert "Periodic execution interrupted. Exiting safely." in out
+
+
+@patch("main.run_batch_scrape", side_effect=KeyboardInterrupt)
+def test_main_periodic_exits_safely_on_ctrl_c_during_run(mock_run_batch, capsys):
+    with patch("sys.argv", ["main.py", "periodic", "targets.txt", "5"]):
+        main_module.main()
+
+    mock_run_batch.assert_called_once_with("targets.txt")
+    out = capsys.readouterr().out
+    assert "Periodic execution interrupted. Exiting safely." in out
+
+
+def test_main_periodic_without_required_args_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "periodic", "targets.txt"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert (
+        "Usage: periodic <target_list_path> <interval_seconds> [--max-runs N]"
+        in out
+    )
