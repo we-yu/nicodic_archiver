@@ -1,6 +1,9 @@
 """Unit tests for main.py: CLI dispatch (inspect vs scrape, usage/exit)."""
 from unittest.mock import patch
 
+import os
+from pathlib import Path
+
 import pytest
 
 import main as main_module
@@ -79,8 +82,9 @@ def test_main_inspect_without_id_type_exits_with_usage(capsys):
 ])
 @patch("main.run_scrape", side_effect=[True, True])
 def test_main_batch_all_success_exits_zero(
-    mock_run_scrape, mock_load_targets, capsys
+    mock_run_scrape, mock_load_targets, tmp_path, capsys
 ):
+    os.environ["BATCH_LOG_DIR"] = str(tmp_path)
     with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
         main_module.main()
 
@@ -91,6 +95,16 @@ def test_main_batch_all_success_exits_zero(
     assert "[OK] https://dic.nicovideo.jp/a/1" in out
     assert "[OK] https://dic.nicovideo.jp/a/2" in out
 
+    logs = list(Path(tmp_path).glob("batch_*.log"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert "BATCH_RUN_START" in text
+    assert "BATCH_RUN_END" in text
+    assert "total_targets=2" in text
+    assert "failed_targets=0" in text
+    assert "final_status=success" in text
+    assert "\nFAIL\n" not in text
+
 
 @patch("main.load_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
@@ -98,8 +112,9 @@ def test_main_batch_all_success_exits_zero(
 ])
 @patch("main.run_scrape", side_effect=[False, True])
 def test_main_batch_failure_sets_nonzero_exit_and_continues(
-    mock_run_scrape, mock_load_targets, capsys
+    mock_run_scrape, mock_load_targets, tmp_path, capsys
 ):
+    os.environ["BATCH_LOG_DIR"] = str(tmp_path)
     with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
         with pytest.raises(SystemExit) as exc_info:
             main_module.main()
@@ -110,6 +125,17 @@ def test_main_batch_failure_sets_nonzero_exit_and_continues(
     assert "[FAIL] https://dic.nicovideo.jp/a/1" in out
     assert "[OK] https://dic.nicovideo.jp/a/2" in out
 
+    logs = list(Path(tmp_path).glob("batch_*.log"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert "failed_targets=1" in text
+    assert "total_targets=2" in text
+    assert "final_status=partial_failure" in text
+    assert "FAIL\n" in text
+    assert "target=https://dic.nicovideo.jp/a/1" in text
+    assert "short_reason=run_scrape_returned_false" in text
+    assert "target=https://dic.nicovideo.jp/a/2" not in text
+
 
 @patch("main.load_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
@@ -117,8 +143,9 @@ def test_main_batch_failure_sets_nonzero_exit_and_continues(
 ])
 @patch("main.run_scrape", side_effect=[RuntimeError("boom"), True])
 def test_main_batch_exception_sets_nonzero_exit_and_continues(
-    mock_run_scrape, mock_load_targets, capsys
+    mock_run_scrape, mock_load_targets, tmp_path, capsys
 ):
+    os.environ["BATCH_LOG_DIR"] = str(tmp_path)
     with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
         with pytest.raises(SystemExit) as exc_info:
             main_module.main()
@@ -129,6 +156,15 @@ def test_main_batch_exception_sets_nonzero_exit_and_continues(
     assert "[FAIL] https://dic.nicovideo.jp/a/1" in out
     assert "RuntimeError" in out
     assert "[OK] https://dic.nicovideo.jp/a/2" in out
+
+    logs = list(Path(tmp_path).glob("batch_*.log"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert "failed_targets=1" in text
+    assert "final_status=partial_failure" in text
+    assert "target=https://dic.nicovideo.jp/a/1" in text
+    assert "short_reason=RuntimeError: boom" in text
+    assert "target=https://dic.nicovideo.jp/a/2" not in text
 
 
 def test_main_batch_without_path_exits_with_usage(capsys):
