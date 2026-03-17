@@ -9,6 +9,36 @@ from target_list import load_target_urls
 # エントリポイント
 # ============================================================
 
+
+def run_batch_scrape(target_list_path: str) -> int:
+    """Run a serial batch by reusing the existing single-article scrape flow."""
+
+    targets = load_target_urls(target_list_path)
+    total = len(targets)
+    failures = 0
+
+    print(f"Loaded {total} scrape target(s) from {target_list_path}")
+
+    for index, target_url in enumerate(targets, start=1):
+        print(f"[{index}/{total}] START {target_url}")
+
+        try:
+            run_scrape(target_url)
+        except Exception as exc:
+            failures += 1
+            print(f"[{index}/{total}] FAILED {target_url}: {exc}")
+            continue
+
+        print(f"[{index}/{total}] OK {target_url}")
+
+    if failures:
+        print(f"Batch finished with failures: {failures}/{total}")
+        return 1
+
+    print(f"Batch finished successfully: {total}/{total}")
+    return 0
+
+
 def main():
     """
     CLIエントリポイント。
@@ -21,6 +51,7 @@ def main():
         print("  python main.py <article_url>")
         print("  python main.py inspect <article_id> <article_type> [--last N]")
         print("  python main.py targets <target_list_path>")
+        print("  python main.py batch <target_list_path>")
         sys.exit(1)
 
     # inspectモード
@@ -53,6 +84,17 @@ def main():
         print(f"Loaded {len(targets)} scrape target(s) from {target_list_path}")
         for target in targets:
             print(target)
+        return
+
+    if sys.argv[1] == "batch":
+
+        if len(sys.argv) < 3:
+            print("Usage: batch <target_list_path>")
+            sys.exit(1)
+
+        exit_code = run_batch_scrape(sys.argv[2])
+        if exit_code != 0:
+            sys.exit(exit_code)
         return
 
     # 通常スクレイプモード
