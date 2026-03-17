@@ -21,6 +21,7 @@ def main():
         print("  python main.py <article_url>")
         print("  python main.py inspect <article_id> <article_type> [--last N]")
         print("  python main.py targets <target_list_path>")
+        print("  python main.py batch <target_list_path>")
         sys.exit(1)
 
     # inspectモード
@@ -53,6 +54,37 @@ def main():
         print(f"Loaded {len(targets)} scrape target(s) from {target_list_path}")
         for target in targets:
             print(target)
+        return
+
+    if sys.argv[1] == "batch":
+
+        if len(sys.argv) < 3:
+            print("Usage: batch <target_list_path>")
+            sys.exit(1)
+
+        target_list_path = sys.argv[2]
+        targets = load_target_urls(target_list_path)
+
+        print(f"Loaded {len(targets)} scrape target(s) from {target_list_path}")
+
+        any_failed = False
+        for idx, target in enumerate(targets, start=1):
+            print(f"[{idx}/{len(targets)}] Scraping: {target}")
+            try:
+                ok = run_scrape(target)
+            except Exception as exc:
+                any_failed = True
+                print(f"[FAIL] {target} ({type(exc).__name__}: {exc})")
+                continue
+
+            if ok:
+                print(f"[OK] {target}")
+            else:
+                any_failed = True
+                print(f"[FAIL] {target}")
+
+        if any_failed:
+            sys.exit(1)
         return
 
     # 通常スクレイプモード

@@ -126,17 +126,17 @@ def fetch_article_metadata(article_url: str):
     return article_id, article_type, title
 
 
-def run_scrape(article_url: str):
+def run_scrape(article_url: str) -> bool:
     try:
         article_id, article_type, title = fetch_article_metadata(article_url)
 
     except ArticleNotFoundError:
         print(f"Article not found: {article_url}")
-        return
+        return False
 
     if article_id in DENYLIST_ARTICLE_IDS:
         print("Skipping article (high-volume).")
-        return
+        return False
 
     bbs_base_url = build_bbs_base_url(article_url)
 
@@ -166,3 +166,4 @@ def run_scrape(article_url: str):
     conn.close()
 
     print("Saved to SQLite")
+    return True

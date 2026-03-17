@@ -219,7 +219,7 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
                     with patch("orchestrator.init_db", return_value=conn) as mock_init:
                         with patch("orchestrator.save_to_db") as mock_save_db:
                             with patch("orchestrator.print") as mock_print:
-                                run_scrape(article_url)
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -246,6 +246,7 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
 
     # Final status message
     mock_print.assert_any_call("Saved to SQLite")
+    assert ok is True
 
 
 def test_run_scrape_propagates_error_from_metadata_and_does_not_init_db():
@@ -275,7 +276,7 @@ def test_run_scrape_article_not_found_skips_save_path():
                 with patch("orchestrator.init_db") as mock_init:
                     with patch("orchestrator.save_to_db") as mock_save_db:
                         with patch("orchestrator.print") as mock_print:
-                            run_scrape(article_url)
+                            ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_collect.assert_not_called()
@@ -283,6 +284,7 @@ def test_run_scrape_article_not_found_skips_save_path():
     mock_init.assert_not_called()
     mock_save_db.assert_not_called()
     mock_print.assert_any_call(f"Article not found: {article_url}")
+    assert ok is False
 
 
 def test_run_scrape_saves_empty_result_for_zero_response_case():
@@ -305,7 +307,7 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
                     with patch("orchestrator.init_db", return_value=conn) as mock_init:
                         with patch("orchestrator.save_to_db") as mock_save_db:
                             with patch("orchestrator.print") as mock_print:
-                                run_scrape(article_url)
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -323,6 +325,7 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
     conn.close.assert_called_once_with()
     mock_print.assert_any_call("No BBS responses found; saving empty result")
     mock_print.assert_any_call("Saved to SQLite")
+    assert ok is True
 
 
 def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
@@ -346,7 +349,7 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
                     with patch("orchestrator.init_db", return_value=conn) as mock_init:
                         with patch("orchestrator.save_to_db") as mock_save_db:
                             with patch("orchestrator.print") as mock_print:
-                                run_scrape(article_url)
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -374,6 +377,7 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
         " ".join(map(str, c.args)) for c in mock_print.call_args_list
     )
     assert "BBS fetch interrupted; saving partial responses" in joined_calls
+    assert ok is True
 
 
 def test_run_scrape_denylist_skips_collection_and_save():
@@ -389,7 +393,7 @@ def test_run_scrape_denylist_skips_collection_and_save():
                     with patch("orchestrator.init_db") as mock_init:
                         with patch("orchestrator.save_to_db") as mock_save_db:
                             with patch("orchestrator.print") as mock_print:
-                                run_scrape(article_url)
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_not_called()
@@ -398,6 +402,7 @@ def test_run_scrape_denylist_skips_collection_and_save():
     mock_init.assert_not_called()
     mock_save_db.assert_not_called()
     mock_print.assert_any_call("Skipping article (high-volume).")
+    assert ok is False
 
 
 def test_run_scrape_cap_reached_saves_partial_and_logs():
@@ -421,7 +426,7 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
                     with patch("orchestrator.init_db", return_value=conn) as mock_init:
                         with patch("orchestrator.save_to_db") as mock_save_db:
                             with patch("orchestrator.print") as mock_print:
-                                run_scrape(article_url)
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -448,6 +453,7 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
     )
     assert "Response cap reached; saving partial responses" in joined_calls
     assert "3 items" in joined_calls
+    assert ok is True
 
 
 @pytest.mark.parametrize(
@@ -506,7 +512,7 @@ def test_run_scrape_representative_save_path_regression(
                     with patch("orchestrator.init_db", return_value=conn) as mock_init:
                         with patch("orchestrator.save_to_db") as mock_save_db:
                             with patch("orchestrator.print") as mock_print:
-                                run_scrape(article_url)
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -529,6 +535,7 @@ def test_run_scrape_representative_save_path_regression(
     )
     conn.close.assert_called_once_with()
     mock_print.assert_any_call("Saved to SQLite")
+    assert ok is True
 
     if expected_message is None:
         joined_calls = " ".join(
@@ -579,7 +586,7 @@ def test_run_scrape_representative_skip_path_regression(
                     with patch("orchestrator.init_db") as mock_init:
                         with patch("orchestrator.save_to_db") as mock_save_db:
                             with patch("orchestrator.print") as mock_print:
-                                run_scrape(article_url)
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_not_called()
@@ -588,3 +595,4 @@ def test_run_scrape_representative_skip_path_regression(
     mock_init.assert_not_called()
     mock_save_db.assert_not_called()
     mock_print.assert_any_call(expected_message)
+    assert ok is False
