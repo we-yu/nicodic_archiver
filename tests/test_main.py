@@ -65,6 +65,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "inspect" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
+    assert "periodic <target_list_path> <interval_seconds>" in out
 
 
 def test_main_inspect_without_id_type_exits_with_usage(capsys):
@@ -175,3 +176,41 @@ def test_main_batch_without_path_exits_with_usage(capsys):
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "Usage: batch <target_list_path>" in out
+
+
+@patch("main._run_batch_from_target_list_path")
+@patch("main.time.sleep")
+def test_main_periodic_runs_max_runs_and_sleeps_between(
+    mock_sleep, mock_run_batch, capsys
+):
+    with patch(
+        "sys.argv",
+        ["main.py", "periodic", "targets.txt", "5", "--max-runs", "3"],
+    ):
+        main_module.main()
+
+    assert mock_run_batch.call_count == 3
+    mock_run_batch.assert_any_call("targets.txt")
+    assert mock_sleep.call_count == 2
+    mock_sleep.assert_called_with(5.0)
+
+
+@patch("main._run_batch_from_target_list_path")
+@patch("main.time.sleep", side_effect=KeyboardInterrupt)
+def test_main_periodic_ctrl_c_exits_safely(mock_sleep, mock_run_batch, capsys):
+    with patch("sys.argv", ["main.py", "periodic", "targets.txt", "5"]):
+        main_module.main()
+
+    assert mock_run_batch.call_count == 1
+    out = capsys.readouterr().out
+    assert "Ctrl+C" in out
+
+
+def test_main_periodic_missing_args_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "periodic", "targets.txt"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: periodic" in out
