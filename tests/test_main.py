@@ -77,7 +77,7 @@ def test_main_inspect_without_id_type_exits_with_usage(capsys):
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
 ])
-@patch("main.run_scrape", side_effect=[True, True])
+@patch("main.run_scrape", side_effect=[None, None])
 def test_main_batch_all_success_exits_zero(
     mock_run_scrape, mock_load_targets, capsys
 ):
@@ -90,6 +90,7 @@ def test_main_batch_all_success_exits_zero(
     out = capsys.readouterr().out
     assert "[OK] https://dic.nicovideo.jp/a/1" in out
     assert "[OK] https://dic.nicovideo.jp/a/2" in out
+    assert "Batch final status: success" in out
 
 
 @patch("main.load_target_urls", return_value=[
@@ -109,6 +110,7 @@ def test_main_batch_failure_sets_nonzero_exit_and_continues(
     out = capsys.readouterr().out
     assert "[FAIL] https://dic.nicovideo.jp/a/1" in out
     assert "[OK] https://dic.nicovideo.jp/a/2" in out
+    assert "Batch final status: partial_failure" in out
 
 
 @patch("main.load_target_urls", return_value=[
@@ -129,6 +131,99 @@ def test_main_batch_exception_sets_nonzero_exit_and_continues(
     assert "[FAIL] https://dic.nicovideo.jp/a/1" in out
     assert "RuntimeError" in out
     assert "[OK] https://dic.nicovideo.jp/a/2" in out
+    assert "Batch final status: partial_failure" in out
+
+
+@patch("main.load_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.run_scrape", side_effect=[False, False])
+def test_main_batch_all_failures_report_failure_status(
+    mock_run_scrape, mock_load_targets, capsys, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    assert mock_run_scrape.call_count == 2
+    out = capsys.readouterr().out
+    assert "Batch final status: failure" in out
+
+    log_files = list((tmp_path / "data" / "batch_runs").glob("*.log"))
+    assert len(log_files) == 1
+
+    log_text = log_files[0].read_text(encoding="utf-8")
+    assert "failed_targets=2" in log_text
+    assert "final_status=failure" in log_text
+    assert "FAIL target=https://dic.nicovideo.jp/a/1 reason=returned_false" in log_text
+    assert "FAIL target=https://dic.nicovideo.jp/a/2 reason=returned_false" in log_text
+
+
+@patch("main.load_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.run_scrape", side_effect=[RuntimeError("boom"), None])
+def test_main_batch_writes_log_summary_and_failure_details(
+    mock_run_scrape, mock_load_targets, capsys, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    assert mock_load_targets.called
+    assert mock_run_scrape.call_count == 2
+
+    log_files = list((tmp_path / "data" / "batch_runs").glob("*.log"))
+    assert len(log_files) == 1
+
+    log_text = log_files[0].read_text(encoding="utf-8")
+    assert "START run_id=batch-" in log_text
+    assert "END run_id=batch-" in log_text
+    assert "started_at=" in log_text
+    assert "ended_at=" in log_text
+    assert "total_targets=2" in log_text
+    assert "failed_targets=1" in log_text
+    assert "final_status=partial_failure" in log_text
+    assert (
+        "FAIL target=https://dic.nicovideo.jp/a/1 "
+        "reason=RuntimeError: boom"
+    ) in log_text
+    assert "target=https://dic.nicovideo.jp/a/2" not in log_text
+
+
+@patch("main.load_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.run_scrape", side_effect=[None, None])
+def test_main_batch_writes_success_log_without_per_target_success_details(
+    mock_run_scrape, mock_load_targets, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
+        main_module.main()
+
+    assert mock_load_targets.called
+    assert mock_run_scrape.call_count == 2
+
+    log_files = list((tmp_path / "data" / "batch_runs").glob("*.log"))
+    assert len(log_files) == 1
+
+    log_text = log_files[0].read_text(encoding="utf-8")
+    assert "START run_id=batch-" in log_text
+    assert "END run_id=batch-" in log_text
+    assert "failed_targets=0" in log_text
+    assert "final_status=success" in log_text
+    assert "FAIL target=" not in log_text
 
 
 def test_main_batch_without_path_exits_with_usage(capsys):

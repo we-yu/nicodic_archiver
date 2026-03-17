@@ -1,5 +1,10 @@
 import sys
 
+from batch_log import (
+    append_batch_failure_detail,
+    finish_batch_run_log,
+    start_batch_run_log,
+)
 from cli import inspect_article
 from orchestrator import run_scrape
 from target_list import load_target_urls
@@ -64,27 +69,43 @@ def main():
 
         target_list_path = sys.argv[2]
         targets = load_target_urls(target_list_path)
+        batch_log = start_batch_run_log(len(targets))
 
         print(f"Loaded {len(targets)} scrape target(s) from {target_list_path}")
 
-        any_failed = False
+        failed_targets = 0
         for idx, target in enumerate(targets, start=1):
             print(f"[{idx}/{len(targets)}] Scraping: {target}")
             try:
                 ok = run_scrape(target)
             except Exception as exc:
-                any_failed = True
-                print(f"[FAIL] {target} ({type(exc).__name__}: {exc})")
+                failed_targets += 1
+                reason = f"{type(exc).__name__}: {exc}"
+                append_batch_failure_detail(batch_log, target, reason)
+                print(f"[FAIL] {target} ({reason})")
                 continue
 
-            if ok:
-                print(f"[OK] {target}")
-            else:
-                any_failed = True
+            if ok is False:
+                failed_targets += 1
+                append_batch_failure_detail(batch_log, target, "returned_false")
                 print(f"[FAIL] {target}")
+                continue
 
-        if any_failed:
+            print(f"[OK] {target}")
+
+        final_status = finish_batch_run_log(
+            batch_log,
+            total_targets=len(targets),
+            failed_targets=failed_targets,
+        )
+
+        if failed_targets:
+            print(f"Batch finished with failures: {failed_targets}/{len(targets)}")
+            print(f"Batch final status: {final_status}")
             sys.exit(1)
+
+        print(f"Batch finished successfully: {len(targets)}/{len(targets)}")
+        print(f"Batch final status: {final_status}")
         return
 
     # 通常スクレイプモード
