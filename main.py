@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cli import export_article, inspect_article
 from orchestrator import run_scrape
-from target_list import load_target_urls
+from target_list import add_target_url, load_target_urls
 
 
 # ============================================================
@@ -130,6 +130,7 @@ def main():
         print("  python main.py inspect <article_id> <article_type> [--last N]")
         print("  python main.py export <article_id> <article_type> --format txt")
         print("  python main.py export <article_id> <article_type> --format md")
+        print("  python main.py add-target <article_url> <target_list_path>")
         print("  python main.py targets <target_list_path>")
         print("  python main.py batch <target_list_path>")
         print(
@@ -169,6 +170,23 @@ def main():
         if not export_article(article_id, article_type, output_format):
             sys.exit(1)
         return
+
+    if sys.argv[1] == "add-target":
+
+        if len(sys.argv) < 4:
+            print("Usage: add-target <article_url> <target_list_path>")
+            sys.exit(1)
+
+        result = add_target_url(sys.argv[2], sys.argv[3])
+        if result == "added":
+            print(f"Added target: {sys.argv[2]}")
+            return
+        if result == "duplicate":
+            print(f"Target already exists: {sys.argv[2]}")
+            return
+
+        print(f"Invalid target URL: {sys.argv[2]}")
+        sys.exit(1)
 
     if sys.argv[1] == "targets":
 
