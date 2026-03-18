@@ -22,6 +22,32 @@ def test_main_inspect_mode_calls_inspect_article(mock_inspect):
     mock_inspect.assert_called_once_with("12345", "a", None)
 
 
+@patch("main.export_article")
+def test_main_export_mode_calls_export_article(mock_export):
+    mock_export.return_value = True
+
+    with patch(
+        "sys.argv",
+        ["main.py", "export", "12345", "a", "--format", "txt"],
+    ):
+        main_module.main()
+
+    mock_export.assert_called_once_with("12345", "a", "txt")
+
+
+@patch("main.export_article", return_value=False)
+def test_main_export_mode_exits_non_zero_on_export_failure(mock_export):
+    with patch(
+        "sys.argv",
+        ["main.py", "export", "12345", "a", "--format", "md"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_export.assert_called_once_with("12345", "a", "md")
+
+
 @patch("main.inspect_article")
 def test_main_inspect_mode_with_last_n(mock_inspect):
     with patch("sys.argv", ["main.py", "inspect", "12345", "a", "--last", "10"]):
@@ -54,6 +80,16 @@ def test_main_targets_without_path_exits_with_usage(capsys):
     assert "Usage: targets <target_list_path>" in out
 
 
+def test_main_export_without_required_args_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "export", "12345", "a"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: export <article_id> <article_type> --format txt|md" in out
+
+
 def test_main_too_few_args_exits_with_usage(capsys):
     with patch("sys.argv", ["main.py"]):
         with pytest.raises(SystemExit) as exc_info:
@@ -62,6 +98,8 @@ def test_main_too_few_args_exits_with_usage(capsys):
     out = capsys.readouterr().out
     assert "python main.py <article_url>" in out
     assert "inspect" in out
+    assert "export <article_id> <article_type> --format txt" in out
+    assert "export <article_id> <article_type> --format md" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
     assert (
