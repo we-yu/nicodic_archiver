@@ -1,0 +1,17 @@
+services:
+  personal_runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    working_dir: /app
+    environment:
+      BATCH_LOG_DIR: /runtime/logs/batch_runs
+    volumes:
+      - ./runtime/targets:/runtime/targets
+      - ./runtime/data:/app/data
+      - ./runtime/logs:/runtime/logs
+    stdin_open: true
+    tty: true
+    command: ["tail", "-f", "/dev/null"]
+

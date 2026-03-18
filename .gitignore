@@ -9,6 +9,19 @@ __pycache__/
 # Runtime data
 data/
 
+# Allow tracked runtime placeholders while keeping runtime contents ignored
+!runtime/data/
+runtime/data/*
+!runtime/data/.gitkeep
+
+!runtime/logs/
+runtime/logs/*
+!runtime/logs/.gitkeep
+
+!runtime/targets/
+runtime/targets/*
+!runtime/targets/.gitkeep
+
 # OS
 .DS_Store
 
