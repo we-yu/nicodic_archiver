@@ -100,11 +100,49 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "inspect" in out
     assert "export <article_id> <article_type> --format txt" in out
     assert "export <article_id> <article_type> --format md" in out
+    assert "add-target <article_url> <target_list_path>" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
     assert (
         "periodic <target_list_path> <interval_seconds> [--max-runs N]" in out
     )
+
+
+@patch("main.add_target_url", return_value=(True, "added"))
+def test_main_add_target_calls_add_target_url(mock_add):
+    with patch(
+        "sys.argv",
+        ["main.py", "add-target", "https://dic.nicovideo.jp/a/12345", "targets.txt"],
+    ):
+        main_module.main()
+
+    mock_add.assert_called_once_with(
+        "https://dic.nicovideo.jp/a/12345",
+        "targets.txt",
+    )
+
+
+@patch("main.add_target_url", return_value=(False, "duplicate"))
+def test_main_add_target_failure_exits_nonzero(mock_add):
+    with patch(
+        "sys.argv",
+        ["main.py", "add-target", "https://dic.nicovideo.jp/a/12345", "targets.txt"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_add.assert_called_once()
+
+
+def test_main_add_target_missing_args_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "add-target"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: add-target <article_url> <target_list_path>" in out
 
 
 def test_main_inspect_without_id_type_exits_with_usage(capsys):

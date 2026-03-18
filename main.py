@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cli import export_article, inspect_article
 from orchestrator import run_scrape
-from target_list import load_target_urls
+from target_list import add_target_url, load_target_urls
 
 
 # ============================================================
@@ -130,6 +130,7 @@ def main():
         print("  python main.py inspect <article_id> <article_type> [--last N]")
         print("  python main.py export <article_id> <article_type> --format txt")
         print("  python main.py export <article_id> <article_type> --format md")
+        print("  python main.py add-target <article_url> <target_list_path>")
         print("  python main.py targets <target_list_path>")
         print("  python main.py batch <target_list_path>")
         print(
@@ -169,6 +170,21 @@ def main():
         if not export_article(article_id, article_type, output_format):
             sys.exit(1)
         return
+
+    if sys.argv[1] == "add-target":
+        if len(sys.argv) < 4:
+            print("Usage: add-target <article_url> <target_list_path>")
+            sys.exit(1)
+
+        article_url = sys.argv[2]
+        target_list_path = sys.argv[3]
+        added, reason = add_target_url(article_url, target_list_path)
+        if added:
+            print("Added target")
+            return
+
+        print(f"Did not add target: {reason}")
+        sys.exit(1)
 
     if sys.argv[1] == "targets":
 
