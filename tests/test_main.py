@@ -35,6 +35,38 @@ def test_main_export_mode_calls_export_article(mock_export):
     mock_export.assert_called_once_with("12345", "a", "txt")
 
 
+@patch("main.list_articles")
+def test_main_list_articles_calls_list_articles(mock_list_articles):
+    with patch("sys.argv", ["main.py", "list-articles"]):
+        main_module.main()
+
+    mock_list_articles.assert_called_once_with()
+
+
+@patch("main.export_all_articles", return_value=True)
+def test_main_export_all_articles_calls_export_all_articles(mock_export_all):
+    with patch(
+        "sys.argv",
+        ["main.py", "export-all-articles", "--format", "txt"],
+    ):
+        main_module.main()
+
+    mock_export_all.assert_called_once_with("txt")
+
+
+@patch("main.export_all_articles", return_value=False)
+def test_main_export_all_articles_exits_non_zero_on_failure(mock_export_all):
+    with patch(
+        "sys.argv",
+        ["main.py", "export-all-articles", "--format", "html"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_export_all.assert_called_once_with("html")
+
+
 @patch("main.add_target_url", return_value="added")
 def test_main_add_target_calls_add_target_url(mock_add_target, capsys):
     with patch(
@@ -137,8 +169,21 @@ def test_main_targets_without_path_exits_with_usage(capsys):
     assert "Usage: targets <target_list_path>" in out
 
 
+def test_main_export_all_articles_without_required_args_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "export-all-articles"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: export-all-articles --format txt" in out
+
+
 def test_main_add_target_without_required_args_exits_with_usage(capsys):
-    with patch("sys.argv", ["main.py", "add-target", "https://dic.nicovideo.jp/a/1"]):
+    with patch(
+        "sys.argv",
+        ["main.py", "add-target", "https://dic.nicovideo.jp/a/1"],
+    ):
         with pytest.raises(SystemExit) as exc_info:
             main_module.main()
 
@@ -167,6 +212,8 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "inspect" in out
     assert "export <article_id> <article_type> --format txt" in out
     assert "export <article_id> <article_type> --format md" in out
+    assert "list-articles" in out
+    assert "export-all-articles --format txt" in out
     assert "add-target <article_url> <target_list_path>" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out

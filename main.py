@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cli import export_article, inspect_article
+from cli import export_all_articles, export_article, inspect_article, list_articles
 from orchestrator import run_scrape
 from target_list import add_target_url, load_target_urls
 
@@ -130,6 +130,8 @@ def main():
         print("  python main.py inspect <article_id> <article_type> [--last N]")
         print("  python main.py export <article_id> <article_type> --format txt")
         print("  python main.py export <article_id> <article_type> --format md")
+        print("  python main.py list-articles")
+        print("  python main.py export-all-articles --format txt")
         print("  python main.py add-target <article_url> <target_list_path>")
         print("  python main.py targets <target_list_path>")
         print("  python main.py batch <target_list_path>")
@@ -168,6 +170,20 @@ def main():
         output_format = sys.argv[5]
 
         if not export_article(article_id, article_type, output_format):
+            sys.exit(1)
+        return
+
+    if sys.argv[1] == "list-articles":
+        list_articles()
+        return
+
+    if sys.argv[1] == "export-all-articles":
+
+        if len(sys.argv) < 4 or sys.argv[2] != "--format":
+            print("Usage: export-all-articles --format txt")
+            sys.exit(1)
+
+        if not export_all_articles(sys.argv[3]):
             sys.exit(1)
         return
 
