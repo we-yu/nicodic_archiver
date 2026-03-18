@@ -62,11 +62,47 @@ def test_main_too_few_args_exits_with_usage(capsys):
     out = capsys.readouterr().out
     assert "python main.py <article_url>" in out
     assert "inspect" in out
+    assert "export <article_id> <article_type> --format txt" in out
+    assert "export <article_id> <article_type> --format md" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
     assert (
         "periodic <target_list_path> <interval_seconds> [--max-runs N]" in out
     )
+
+
+@patch("main.export_article", return_value=True)
+def test_main_export_calls_export_article_txt(mock_export):
+    with patch(
+        "sys.argv",
+        ["main.py", "export", "12345", "a", "--format", "txt"],
+    ):
+        main_module.main()
+
+    mock_export.assert_called_once_with("12345", "a", "txt")
+
+
+@patch("main.export_article", return_value=False)
+def test_main_export_failure_exits_nonzero(mock_export):
+    with patch(
+        "sys.argv",
+        ["main.py", "export", "12345", "a", "--format", "txt"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_export.assert_called_once_with("12345", "a", "txt")
+
+
+def test_main_export_missing_format_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "export", "12345", "a"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: export <article_id> <article_type> --format txt|md" in out
 
 
 def test_main_inspect_without_id_type_exits_with_usage(capsys):

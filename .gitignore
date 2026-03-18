@@ -16,4 +16,9 @@ data/
 export_project.sh
 project_summary.txt
 
+# For cursor setting
 .cursor/
+
+# Report file (this is temporary utility file) is unnecessary to version-control
+TASK*report.txt
+
