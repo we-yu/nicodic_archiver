@@ -35,6 +35,63 @@ def test_main_export_mode_calls_export_article(mock_export):
     mock_export.assert_called_once_with("12345", "a", "txt")
 
 
+@patch("main.add_target_url", return_value="added")
+def test_main_add_target_calls_add_target_url(mock_add_target, capsys):
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "add-target",
+            "https://dic.nicovideo.jp/a/12345",
+            "targets.txt",
+        ],
+    ):
+        main_module.main()
+
+    mock_add_target.assert_called_once_with(
+        "https://dic.nicovideo.jp/a/12345",
+        "targets.txt",
+    )
+    out = capsys.readouterr().out
+    assert "Added target: https://dic.nicovideo.jp/a/12345" in out
+
+
+@patch("main.add_target_url", return_value="duplicate")
+def test_main_add_target_reports_duplicate_without_error(mock_add_target, capsys):
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "add-target",
+            "https://dic.nicovideo.jp/a/12345",
+            "targets.txt",
+        ],
+    ):
+        main_module.main()
+
+    mock_add_target.assert_called_once_with(
+        "https://dic.nicovideo.jp/a/12345",
+        "targets.txt",
+    )
+    out = capsys.readouterr().out
+    assert "Target already exists: https://dic.nicovideo.jp/a/12345" in out
+
+
+@patch("main.add_target_url", return_value="invalid")
+def test_main_add_target_exits_non_zero_for_invalid_url(mock_add_target, capsys):
+    with patch(
+        "sys.argv",
+        ["main.py", "add-target", "not-a-url", "targets.txt"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_add_target.assert_called_once_with("not-a-url", "targets.txt")
+    out = capsys.readouterr().out
+    assert "Invalid target URL: not-a-url" in out
+
+
 @patch("main.export_article", return_value=False)
 def test_main_export_mode_exits_non_zero_on_export_failure(mock_export):
     with patch(
@@ -80,6 +137,16 @@ def test_main_targets_without_path_exits_with_usage(capsys):
     assert "Usage: targets <target_list_path>" in out
 
 
+def test_main_add_target_without_required_args_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "add-target", "https://dic.nicovideo.jp/a/1"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: add-target <article_url> <target_list_path>" in out
+
+
 def test_main_export_without_required_args_exits_with_usage(capsys):
     with patch("sys.argv", ["main.py", "export", "12345", "a"]):
         with pytest.raises(SystemExit) as exc_info:
@@ -100,6 +167,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "inspect" in out
     assert "export <article_id> <article_type> --format txt" in out
     assert "export <article_id> <article_type> --format md" in out
+    assert "add-target <article_url> <target_list_path>" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
     assert (
