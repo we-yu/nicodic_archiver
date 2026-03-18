@@ -1,4 +1,5 @@
 """Unit tests for main.py: CLI dispatch (inspect vs scrape, usage/exit)."""
+import sqlite3
 from unittest.mock import call, patch
 
 from pathlib import Path
@@ -6,6 +7,41 @@ from pathlib import Path
 import pytest
 
 import main as main_module
+
+
+def _init_archive_schema(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE articles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id TEXT NOT NULL,
+            article_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            canonical_url TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(article_id, article_type)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE responses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id TEXT NOT NULL,
+            article_type TEXT NOT NULL,
+            res_no INTEGER NOT NULL,
+            id_hash TEXT,
+            poster_name TEXT,
+            posted_at TEXT,
+            content_html TEXT,
+            content_text TEXT,
+            scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(article_id, article_type, res_no)
+        )
+        """
+    )
+    conn.commit()
 
 
 @patch("main.run_scrape")
@@ -33,6 +69,121 @@ def test_main_export_mode_calls_export_article(mock_export):
         main_module.main()
 
     mock_export.assert_called_once_with("12345", "a", "txt")
+
+
+def test_main_list_articles_normal_case(capsys):
+    conn = sqlite3.connect(":memory:")
+    _init_archive_schema(conn)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO articles (article_id, article_type,
+            title, canonical_url, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        ("12345", "a", "Title", "https://dic.nicovideo.jp/a/12345", "2026-01-01"),
+    )
+    cur.execute(
+        """
+        INSERT INTO responses (article_id, article_type, res_no, content_text)
+        VALUES (?, ?, ?, ?)
+        """,
+        ("12345", "a", 1, "hello"),
+    )
+    conn.commit()
+
+    with patch("cli.sqlite3.connect", return_value=conn):
+        with patch("sys.argv", ["main.py", "list-articles"]):
+            main_module.main()
+
+    out = capsys.readouterr().out
+    assert "=== ARTICLES ===" in out
+    assert "12345 a" in out
+    assert "Title" in out
+    assert "2026-01-01" in out
+    assert "responses=1" in out
+
+
+def test_main_list_articles_empty_db_prints_message(capsys):
+    conn = sqlite3.connect(":memory:")
+    _init_archive_schema(conn)
+
+    with patch("cli.sqlite3.connect", return_value=conn):
+        with patch("sys.argv", ["main.py", "list-articles"]):
+            main_module.main()
+
+    out = capsys.readouterr().out
+    assert "No articles found in DB" in out
+
+
+def test_main_export_all_articles_normal_case_txt(capsys):
+    conn = sqlite3.connect(":memory:")
+    _init_archive_schema(conn)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO articles (article_id, article_type,
+            title, canonical_url, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        ("12345", "a", "Title", "https://dic.nicovideo.jp/a/12345", "2026-01-01"),
+    )
+    cur.execute(
+        """
+        INSERT INTO responses (article_id, article_type, res_no, content_text)
+        VALUES (?, ?, ?, ?)
+        """,
+        ("12345", "a", 1, "hello"),
+    )
+    conn.commit()
+
+    with patch("cli.sqlite3.connect", return_value=conn):
+        with patch(
+            "sys.argv",
+            ["main.py", "export-all-articles", "--format", "txt"],
+        ):
+            main_module.main()
+
+    out = capsys.readouterr().out
+    assert "=== ARTICLE ARCHIVE ===" in out
+    assert "Exported At:" in out
+    assert "ID: 12345" in out
+    assert "Title: Title" in out
+    assert "URL: https://dic.nicovideo.jp/a/12345" in out
+    assert ">1" in out
+    assert "hello" in out
+
+
+def test_main_export_all_articles_empty_db_prints_message(capsys):
+    conn = sqlite3.connect(":memory:")
+    _init_archive_schema(conn)
+
+    with patch("cli.sqlite3.connect", return_value=conn):
+        with patch(
+            "sys.argv",
+            ["main.py", "export-all-articles", "--format", "txt"],
+        ):
+            main_module.main()
+
+    out = capsys.readouterr().out
+    assert "No articles found in DB" in out
+
+
+def test_main_export_all_articles_unsupported_format_exits_nonzero(capsys):
+    conn = sqlite3.connect(":memory:")
+    _init_archive_schema(conn)
+
+    with patch("cli.sqlite3.connect", return_value=conn):
+        with patch(
+            "sys.argv",
+            ["main.py", "export-all-articles", "--format", "md"],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Unsupported" in out
 
 
 @patch("main.add_target_url", return_value="added")
@@ -167,6 +318,8 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "inspect" in out
     assert "export <article_id> <article_type> --format txt" in out
     assert "export <article_id> <article_type> --format md" in out
+    assert "list-articles" in out
+    assert "export-all-articles --format txt" in out
     assert "add-target <article_url> <target_list_path>" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
