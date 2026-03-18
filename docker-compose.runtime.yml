@@ -1,0 +1,8 @@
+services:
+  scraper:
+    build: .
+    container_name: nicodic_archiver_runtime
+    volumes:
+      - ./data:/app/data
+    environment:
+      - BATCH_LOG_DIR=/app/data/batch_runs
