@@ -217,6 +217,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "add-target <article_url> <target_list_path>" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
+    assert "periodic-once <target_list_path>" in out
     assert (
         "periodic <target_list_path> <interval_seconds> [--max-runs N]" in out
     )
@@ -330,6 +331,37 @@ def test_main_batch_without_path_exits_with_usage(capsys):
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "Usage: batch <target_list_path>" in out
+
+
+@patch("main.run_periodic_once")
+def test_main_periodic_once_calls_run_periodic_once(mock_run_periodic_once):
+    with patch("sys.argv", ["main.py", "periodic-once", "targets.txt"]):
+        main_module.main()
+
+    mock_run_periodic_once.assert_called_once_with("targets.txt")
+
+
+def test_main_periodic_once_without_path_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "periodic-once"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: periodic-once <target_list_path>" in out
+
+
+@patch("main.run_periodic_scrape")
+def test_run_periodic_once_delegates_to_single_periodic_cycle(
+    mock_run_periodic_scrape,
+):
+    main_module.run_periodic_once("targets.txt")
+
+    mock_run_periodic_scrape.assert_called_once_with(
+        "targets.txt",
+        0.0,
+        max_runs=1,
+    )
 
 
 @patch(

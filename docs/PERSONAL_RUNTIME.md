@@ -13,8 +13,12 @@ What this profile does:
 
 What this profile does not do yet:
 - cron or repeated scheduling inside the container
-- overlap or lock policy
 - target storage migration away from the text file
+
+What this profile now adds for periodic operation:
+- a host-side one-shot wrapper that calls the existing periodic path
+- simple lock + skip handling to avoid overlap
+- a scheduler-friendly non-interactive invocation shape
 
 ## Mounted Paths
 
@@ -98,6 +102,24 @@ Run one batch pass:
 Run the current periodic CLI entrypoint manually:
 
 `docker compose -f docker-compose.runtime.yml exec personal_runtime python main.py periodic /runtime/targets/targets.txt 300`
+
+Run one scheduler-friendly periodic cycle through the wrapper:
+
+`./runtime/periodic_once.sh`
+
+The wrapper acquires a simple host-side lock under `runtime/logs`. If another
+run is already active, it prints a skip message and exits without starting a
+second overlapping periodic pass.
+
+Useful environment overrides for external schedulers:
+- `TARGET_LIST_PATH` defaults to `/runtime/targets/targets.txt`
+- `COMPOSE_FILE_PATH` defaults to `docker-compose.runtime.yml`
+- `COMPOSE_SERVICE_NAME` defaults to `personal_runtime`
+- `LOCK_DIR_PATH` defaults to `runtime/logs/periodic_once.lock`
+
+Example scheduler-facing invocation shape:
+
+`TARGET_LIST_PATH=/runtime/targets/targets.txt ./runtime/periodic_once.sh`
 
 List saved articles:
 

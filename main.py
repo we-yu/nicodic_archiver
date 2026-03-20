@@ -117,6 +117,12 @@ def run_periodic_scrape(
             return
 
 
+def run_periodic_once(target_list_path: str) -> None:
+    """Run one periodic cycle without requiring a sleep interval argument."""
+
+    run_periodic_scrape(target_list_path, 0.0, max_runs=1)
+
+
 def main():
     """
     CLIエントリポイント。
@@ -135,6 +141,7 @@ def main():
         print("  python main.py add-target <article_url> <target_list_path>")
         print("  python main.py targets <target_list_path>")
         print("  python main.py batch <target_list_path>")
+        print("  python main.py periodic-once <target_list_path>")
         print(
             "  python main.py periodic <target_list_path> <interval_seconds> "
             "[--max-runs N]"
@@ -228,6 +235,15 @@ def main():
 
         if failed_targets:
             sys.exit(1)
+        return
+
+    if sys.argv[1] == "periodic-once":
+
+        if len(sys.argv) < 3:
+            print("Usage: periodic-once <target_list_path>")
+            sys.exit(1)
+
+        run_periodic_once(sys.argv[2])
         return
 
     if sys.argv[1] == "periodic":
