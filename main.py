@@ -117,6 +117,38 @@ def run_periodic_scrape(
             return
 
 
+def run_periodic_one_shot(
+    target_list_path: str,
+    lock_path: str = "data/periodic_one_shot.lock",
+) -> tuple[str, int, bool]:
+    """
+    Run one full batch pass with simple lock+skip behavior.
+
+    Returns:
+        (final_status, failed_targets, skipped)
+    """
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = None
+
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        print(f"Skip periodic one-shot; lock exists: {lock_path}")
+        return "skipped", 0, True
+
+    try:
+        os.write(lock_fd, f"pid={os.getpid()}\n".encode("utf-8"))
+        final_status, failed_targets = run_batch_scrape(target_list_path)
+        return final_status, failed_targets, False
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        try:
+            os.unlink(lock_path)
+        except FileNotFoundError:
+            pass
+
+
 def main():
     """
     CLIエントリポイント。
@@ -135,6 +167,7 @@ def main():
         print("  python main.py add-target <article_url> <target_list_path>")
         print("  python main.py targets <target_list_path>")
         print("  python main.py batch <target_list_path>")
+        print("  python main.py periodic-one-shot <target_list_path>")
         print(
             "  python main.py periodic <target_list_path> <interval_seconds> "
             "[--max-runs N]"
@@ -227,6 +260,34 @@ def main():
         _, failed_targets = run_batch_scrape(sys.argv[2])
 
         if failed_targets:
+            sys.exit(1)
+        return
+
+    if sys.argv[1] == "periodic-one-shot":
+        if len(sys.argv) < 3:
+            print(
+                "Usage: periodic-one-shot <target_list_path> "
+                "[--lock-path /path/to/lock]"
+            )
+            sys.exit(1)
+
+        target_list_path = sys.argv[2]
+        lock_path = "data/periodic_one_shot.lock"
+        if "--lock-path" in sys.argv:
+            idx = sys.argv.index("--lock-path")
+            if idx + 1 >= len(sys.argv):
+                print(
+                    "Usage: periodic-one-shot <target_list_path> "
+                    "[--lock-path /path/to/lock]"
+                )
+                sys.exit(1)
+            lock_path = sys.argv[idx + 1]
+
+        _, failed_targets, skipped = run_periodic_one_shot(
+            target_list_path,
+            lock_path=lock_path,
+        )
+        if not skipped and failed_targets:
             sys.exit(1)
         return
 

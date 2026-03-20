@@ -217,6 +217,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "add-target <article_url> <target_list_path>" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
+    assert "periodic-one-shot <target_list_path>" in out
     assert (
         "periodic <target_list_path> <interval_seconds> [--max-runs N]" in out
     )
@@ -330,6 +331,103 @@ def test_main_batch_without_path_exits_with_usage(capsys):
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "Usage: batch <target_list_path>" in out
+
+
+@patch("main.run_periodic_one_shot", return_value=("success", 0, False))
+def test_main_periodic_one_shot_runs_once_and_exits_zero(mock_run_one_shot):
+    with patch(
+        "sys.argv",
+        ["main.py", "periodic-one-shot", "targets.txt"],
+    ):
+        main_module.main()
+
+    mock_run_one_shot.assert_called_once_with(
+        "targets.txt",
+        lock_path="data/periodic_one_shot.lock",
+    )
+
+
+@patch("main.run_periodic_one_shot", return_value=("partial_failure", 2, False))
+def test_main_periodic_one_shot_nonzero_on_failures(mock_run_one_shot):
+    with patch(
+        "sys.argv",
+        ["main.py", "periodic-one-shot", "targets.txt"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_run_one_shot.assert_called_once()
+
+
+@patch("main.run_periodic_one_shot", return_value=("skipped", 0, True))
+def test_main_periodic_one_shot_skip_due_to_lock_exits_zero(mock_run_one_shot):
+    with patch(
+        "sys.argv",
+        ["main.py", "periodic-one-shot", "targets.txt"],
+    ):
+        main_module.main()
+
+    mock_run_one_shot.assert_called_once()
+
+
+@patch("main.run_periodic_one_shot", return_value=("success", 0, False))
+def test_main_periodic_one_shot_accepts_custom_lock_path(mock_run_one_shot):
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "periodic-one-shot",
+            "targets.txt",
+            "--lock-path",
+            "/tmp/periodic.lock",
+        ],
+    ):
+        main_module.main()
+
+    mock_run_one_shot.assert_called_once_with(
+        "targets.txt",
+        lock_path="/tmp/periodic.lock",
+    )
+
+
+def test_main_periodic_one_shot_without_target_path_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "periodic-one-shot"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: periodic-one-shot <target_list_path>" in out
+
+
+def test_main_periodic_one_shot_missing_lock_path_value_exits(capsys):
+    with patch(
+        "sys.argv",
+        ["main.py", "periodic-one-shot", "targets.txt", "--lock-path"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "--lock-path /path/to/lock" in out
+
+
+@patch("main.run_batch_scrape", return_value=("success", 0))
+def test_run_periodic_one_shot_returns_skip_when_lock_exists(mock_run_batch, capsys):
+    with patch("main.os.open", side_effect=FileExistsError):
+        status, failed, skipped = main_module.run_periodic_one_shot(
+            "targets.txt",
+            lock_path="data/lock.file",
+        )
+
+    assert status == "skipped"
+    assert failed == 0
+    assert skipped is True
+    mock_run_batch.assert_not_called()
+    out = capsys.readouterr().out
+    assert "Skip periodic one-shot; lock exists:" in out
 
 
 @patch(
