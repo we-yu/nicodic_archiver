@@ -43,6 +43,16 @@ def test_main_list_articles_calls_list_articles(mock_list_articles):
     mock_list_articles.assert_called_once_with()
 
 
+@patch("cli.fetch_article_summaries", return_value=[])
+def test_main_list_articles_reaches_archive_read_seam(mock_fetch, capsys):
+    with patch("sys.argv", ["main.py", "list-articles"]):
+        main_module.main()
+
+    mock_fetch.assert_called_once_with()
+    out = capsys.readouterr().out
+    assert "No saved articles found." in out
+
+
 @patch("main.export_all_articles", return_value=True)
 def test_main_export_all_articles_calls_export_all_articles(mock_export_all):
     with patch(
@@ -122,6 +132,19 @@ def test_main_add_target_exits_non_zero_for_invalid_url(mock_add_target, capsys)
     mock_add_target.assert_called_once_with("not-a-url", "targets.txt")
     out = capsys.readouterr().out
     assert "Invalid target URL: not-a-url" in out
+
+
+@patch("cli.fetch_article_archive", return_value=None)
+def test_main_export_single_article_invokes_archive_fetch_seam(mock_fetch):
+    with patch(
+        "sys.argv",
+        ["main.py", "export", "1", "a", "--format", "txt"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_fetch.assert_called_once_with("1", "a")
 
 
 @patch("main.export_article", return_value=False)
