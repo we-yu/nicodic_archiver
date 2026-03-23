@@ -51,6 +51,67 @@ def init_db():
     return conn
 
 
+def get_max_saved_res_no(
+    article_id: str,
+    article_type: str,
+    conn=None,
+) -> int | None:
+    """Return max res_no in DB for the article, or None if none stored."""
+
+    def _query(c):
+        cur = c.cursor()
+        cur.execute(
+            """
+            SELECT MAX(res_no) FROM responses
+            WHERE article_id=? AND article_type=?
+            """,
+            (article_id, article_type),
+        )
+        row = cur.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return int(row[0])
+
+    if conn is not None:
+        return _query(conn)
+
+    os.makedirs("data", exist_ok=True)
+    own = sqlite3.connect("data/nicodic.db")
+    try:
+        return _query(own)
+    finally:
+        own.close()
+
+
+def fetch_responses_as_save_format(conn, article_id: str, article_type: str) -> list:
+    """Load all stored responses for JSON export (ordered by res_no)."""
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT res_no, id_hash, poster_name, posted_at, content_text, content_html
+        FROM responses
+        WHERE article_id=? AND article_type=?
+        ORDER BY res_no ASC
+        """,
+        (article_id, article_type),
+    )
+    out = []
+    for row in cur.fetchall():
+        res_no, id_hash, poster_name, posted_at, content_text, content_html = row
+        out.append(
+            {
+                "res_no": res_no,
+                "id_hash": id_hash,
+                "poster_name": poster_name,
+                "posted_at": posted_at,
+                "content": content_text,
+                "content_html": content_html or "",
+            }
+        )
+    return out
+
+
 def save_to_db(conn, article_id, article_type, title, article_url, responses):
     """
     記事およびレスをSQLiteへ保存。

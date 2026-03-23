@@ -18,6 +18,22 @@ def test_load_target_urls_reads_plain_text_targets_stably(tmp_path):
     ]
 
 
+def test_load_target_urls_strips_whitespace_and_skips_blank_lines(tmp_path):
+    target_file = tmp_path / "targets.txt"
+    target_file.write_text(
+        "  \n"
+        "  https://dic.nicovideo.jp/a/99999  \n"
+        "\n"
+        "https://dic.nicovideo.jp/a/12345\n",
+        encoding="utf-8",
+    )
+
+    assert load_target_urls(str(target_file)) == [
+        "https://dic.nicovideo.jp/a/99999",
+        "https://dic.nicovideo.jp/a/12345",
+    ]
+
+
 def test_load_target_urls_ignores_duplicate_lines_while_preserving_order(tmp_path):
     target_file = tmp_path / "targets.txt"
     target_file.write_text(
