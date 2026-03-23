@@ -33,6 +33,22 @@ def test_load_target_urls_ignores_duplicate_lines_while_preserving_order(tmp_pat
     ]
 
 
+def test_load_target_urls_trims_whitespace_and_ignores_comment_lines(tmp_path):
+    target_file = tmp_path / "targets.txt"
+    target_file.write_text(
+        "  # comment line to ignore  \n"
+        "  https://dic.nicovideo.jp/a/12345  \n"
+        "\n"
+        "\thttps://dic.nicovideo.jp/a/77777\t\n",
+        encoding="utf-8",
+    )
+
+    assert load_target_urls(str(target_file)) == [
+        "https://dic.nicovideo.jp/a/12345",
+        "https://dic.nicovideo.jp/a/77777",
+    ]
+
+
 def test_validate_target_url_accepts_minimally_valid_nicopedia_article_url():
     assert validate_target_url("https://dic.nicovideo.jp/a/12345") is True
 

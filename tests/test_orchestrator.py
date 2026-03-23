@@ -9,6 +9,8 @@ from orchestrator import (
     build_bbs_base_url,
     fetch_article_metadata,
     collect_all_responses,
+    get_max_saved_res_no,
+    load_saved_responses,
     run_scrape,
 )
 
@@ -93,6 +95,60 @@ def test_collect_all_responses_stops_on_empty_page(
     assert mock_fetch.call_count == 2
     mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/1-")
     mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/3-")
+    mock_sleep.assert_called_once_with(1)
+
+
+@patch("orchestrator.time.sleep")
+@patch("orchestrator.parse_responses")
+@patch("orchestrator.fetch_page")
+def test_collect_all_responses_resumes_from_anchor_and_filters_existing_first_page(
+    mock_fetch, mock_parse, mock_sleep
+):
+    mock_fetch.return_value = MagicMock()
+    mock_parse.side_effect = [
+        [{"res_no": 4}, {"res_no": 5}],
+        [{"res_no": 6}],
+        [],
+    ]
+
+    result, interrupted, cap_reached = collect_all_responses(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        start=4,
+        max_saved_res_no=4,
+    )
+
+    assert result == [{"res_no": 5}, {"res_no": 6}]
+    assert interrupted is False
+    assert cap_reached is False
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/4-")
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/6-")
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/7-")
+    assert mock_sleep.call_count == 2
+
+
+@patch("orchestrator.time.sleep")
+@patch("orchestrator.parse_responses")
+@patch("orchestrator.fetch_page")
+def test_collect_all_responses_resume_can_return_zero_new_without_failure(
+    mock_fetch, mock_parse, mock_sleep
+):
+    mock_fetch.return_value = MagicMock()
+    mock_parse.side_effect = [
+        [{"res_no": 4}],
+        [],
+    ]
+
+    result, interrupted, cap_reached = collect_all_responses(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        start=4,
+        max_saved_res_no=4,
+    )
+
+    assert result == []
+    assert interrupted is False
+    assert cap_reached is False
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/4-")
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/5-")
     mock_sleep.assert_called_once_with(1)
 
 
@@ -210,16 +266,20 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
             "orchestrator.build_bbs_base_url",
             return_value="https://dic.nicovideo.jp/b/a/12345/",
         ) as mock_build:
-            with patch(
-                "orchestrator.collect_all_responses",
-                return_value=([{"res_no": 1}], False, False),
-            ) as mock_collect:
-                with patch("orchestrator.save_json") as mock_save_json:
-                    conn = MagicMock()
-                    with patch("orchestrator.init_db", return_value=conn) as mock_init:
-                        with patch("orchestrator.save_to_db") as mock_save_db:
-                            with patch("orchestrator.print") as mock_print:
-                                ok = run_scrape(article_url)
+            with patch("orchestrator.get_max_saved_res_no", return_value=None):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=([{"res_no": 1}], False, False),
+                ) as mock_collect:
+                    with patch("orchestrator.save_json") as mock_save_json:
+                        conn = MagicMock()
+                        with patch(
+                            "orchestrator.init_db",
+                            return_value=conn,
+                        ) as mock_init:
+                            with patch("orchestrator.save_to_db") as mock_save_db:
+                                with patch("orchestrator.print") as mock_print:
+                                    ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -298,16 +358,20 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
             "orchestrator.build_bbs_base_url",
             return_value="https://dic.nicovideo.jp/b/a/12345/",
         ) as mock_build:
-            with patch(
-                "orchestrator.collect_all_responses",
-                return_value=([], False, False),
-            ) as mock_collect:
-                with patch("orchestrator.save_json") as mock_save_json:
-                    conn = MagicMock()
-                    with patch("orchestrator.init_db", return_value=conn) as mock_init:
-                        with patch("orchestrator.save_to_db") as mock_save_db:
-                            with patch("orchestrator.print") as mock_print:
-                                ok = run_scrape(article_url)
+            with patch("orchestrator.get_max_saved_res_no", return_value=None):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=([], False, False),
+                ) as mock_collect:
+                    with patch("orchestrator.save_json") as mock_save_json:
+                        conn = MagicMock()
+                        with patch(
+                            "orchestrator.init_db",
+                            return_value=conn,
+                        ) as mock_init:
+                            with patch("orchestrator.save_to_db") as mock_save_db:
+                                with patch("orchestrator.print") as mock_print:
+                                    ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -340,16 +404,20 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
             return_value="https://dic.nicovideo.jp/b/a/12345/",
         ) as mock_build:
             partial = [{"res_no": 1}]
-            with patch(
-                "orchestrator.collect_all_responses",
-                return_value=(partial, True, False),
-            ) as mock_collect:
-                with patch("orchestrator.save_json") as mock_save_json:
-                    conn = MagicMock()
-                    with patch("orchestrator.init_db", return_value=conn) as mock_init:
-                        with patch("orchestrator.save_to_db") as mock_save_db:
-                            with patch("orchestrator.print") as mock_print:
-                                ok = run_scrape(article_url)
+            with patch("orchestrator.get_max_saved_res_no", return_value=None):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=(partial, True, False),
+                ) as mock_collect:
+                    with patch("orchestrator.save_json") as mock_save_json:
+                        conn = MagicMock()
+                        with patch(
+                            "orchestrator.init_db",
+                            return_value=conn,
+                        ) as mock_init:
+                            with patch("orchestrator.save_to_db") as mock_save_db:
+                                with patch("orchestrator.print") as mock_print:
+                                    ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -417,16 +485,20 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
             "orchestrator.build_bbs_base_url",
             return_value="https://dic.nicovideo.jp/b/a/12345/",
         ) as mock_build:
-            with patch(
-                "orchestrator.collect_all_responses",
-                return_value=(partial, False, True),
-            ) as mock_collect:
-                with patch("orchestrator.save_json") as mock_save_json:
-                    conn = MagicMock()
-                    with patch("orchestrator.init_db", return_value=conn) as mock_init:
-                        with patch("orchestrator.save_to_db") as mock_save_db:
-                            with patch("orchestrator.print") as mock_print:
-                                ok = run_scrape(article_url)
+            with patch("orchestrator.get_max_saved_res_no", return_value=None):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=(partial, False, True),
+                ) as mock_collect:
+                    with patch("orchestrator.save_json") as mock_save_json:
+                        conn = MagicMock()
+                        with patch(
+                            "orchestrator.init_db",
+                            return_value=conn,
+                        ) as mock_init:
+                            with patch("orchestrator.save_to_db") as mock_save_db:
+                                with patch("orchestrator.print") as mock_print:
+                                    ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -503,16 +575,20 @@ def test_run_scrape_representative_save_path_regression(
             "orchestrator.build_bbs_base_url",
             return_value="https://dic.nicovideo.jp/b/a/12345/",
         ) as mock_build:
-            with patch(
-                "orchestrator.collect_all_responses",
-                return_value=collected,
-            ) as mock_collect:
-                with patch("orchestrator.save_json") as mock_save_json:
-                    conn = MagicMock()
-                    with patch("orchestrator.init_db", return_value=conn) as mock_init:
-                        with patch("orchestrator.save_to_db") as mock_save_db:
-                            with patch("orchestrator.print") as mock_print:
-                                ok = run_scrape(article_url)
+            with patch("orchestrator.get_max_saved_res_no", return_value=None):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=collected,
+                ) as mock_collect:
+                    with patch("orchestrator.save_json") as mock_save_json:
+                        conn = MagicMock()
+                        with patch(
+                            "orchestrator.init_db",
+                            return_value=conn,
+                        ) as mock_init:
+                            with patch("orchestrator.save_to_db") as mock_save_db:
+                                with patch("orchestrator.print") as mock_print:
+                                    ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -596,3 +672,191 @@ def test_run_scrape_representative_skip_path_regression(
     mock_save_db.assert_not_called()
     mock_print.assert_any_call(expected_message)
     assert ok is False
+
+
+def test_get_max_saved_res_no_returns_none_when_article_has_no_saved_responses():
+    with patch("orchestrator.init_db") as mock_init:
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.return_value = (None,)
+        conn.cursor.return_value = cur
+        mock_init.return_value = conn
+
+        result = get_max_saved_res_no("12345", "a")
+
+    assert result is None
+    cur.execute.assert_called_once()
+    conn.close.assert_called_once_with()
+
+
+def test_load_saved_responses_returns_response_dicts_in_res_no_order():
+    with patch("orchestrator.init_db") as mock_init:
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchall.return_value = [
+            (1, "abc123", "Alice", "2025-01-01 00:00", "Hello", "<p>Hello</p>"),
+            (2, None, None, None, "World", None),
+        ]
+        conn.cursor.return_value = cur
+        mock_init.return_value = conn
+
+        result = load_saved_responses("12345", "a")
+
+    assert result == [
+        {
+            "res_no": 1,
+            "id_hash": "abc123",
+            "poster_name": "Alice",
+            "posted_at": "2025-01-01 00:00",
+            "content": "Hello",
+            "content_html": "<p>Hello</p>",
+        },
+        {
+            "res_no": 2,
+            "id_hash": None,
+            "poster_name": None,
+            "posted_at": None,
+            "content": "World",
+            "content_html": None,
+        },
+    ]
+    conn.close.assert_called_once_with()
+
+
+def test_run_scrape_saved_article_resumes_and_saves_only_new_items():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+    saved_responses = [
+        {
+            "res_no": 61,
+            "id_hash": "old61",
+            "poster_name": "Alice",
+            "posted_at": "2025-01-01 00:00",
+            "content": "Old 61",
+            "content_html": "<p>Old 61</p>",
+        },
+        {
+            "res_no": 65,
+            "id_hash": "old65",
+            "poster_name": "Bob",
+            "posted_at": "2025-01-01 00:01",
+            "content": "Old 65",
+            "content_html": "<p>Old 65</p>",
+        },
+    ]
+    new_responses = [
+        {
+            "res_no": 66,
+            "id_hash": "new66",
+            "poster_name": "Carol",
+            "posted_at": "2025-01-01 00:02",
+            "content": "New 66",
+            "content_html": "<p>New 66</p>",
+        }
+    ]
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=("12345", "a", "Title"),
+    ) as mock_meta:
+        with patch(
+            "orchestrator.build_bbs_base_url",
+            return_value="https://dic.nicovideo.jp/b/a/12345/",
+        ) as mock_build:
+            with patch("orchestrator.get_max_saved_res_no", return_value=65):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=(new_responses, False, False),
+                ) as mock_collect:
+                    with patch(
+                        "orchestrator.load_saved_responses",
+                        return_value=saved_responses,
+                    ) as mock_saved:
+                        with patch("orchestrator.save_json") as mock_save_json:
+                            conn = MagicMock()
+                            with patch(
+                                "orchestrator.init_db",
+                                return_value=conn,
+                            ) as mock_init:
+                                with patch(
+                                    "orchestrator.save_to_db",
+                                ) as mock_save_db:
+                                    with patch(
+                                        "orchestrator.print",
+                                    ) as mock_print:
+                                        ok = run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_build.assert_called_once_with(article_url)
+    mock_collect.assert_called_once_with(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        start=61,
+        max_saved_res_no=65,
+    )
+    mock_saved.assert_called_once_with("12345", "a")
+    mock_save_json.assert_called_once_with(
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        saved_responses + new_responses,
+    )
+    mock_init.assert_called_once_with()
+    mock_save_db.assert_called_once_with(
+        conn,
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        new_responses,
+    )
+    conn.close.assert_called_once_with()
+    mock_print.assert_any_call(
+        "Saved article detected; resuming from max_saved_res_no=65"
+    )
+    assert ok is True
+
+
+def test_run_scrape_saved_article_zero_new_is_success_without_writing():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=("12345", "a", "Title"),
+    ) as mock_meta:
+        with patch(
+            "orchestrator.build_bbs_base_url",
+            return_value="https://dic.nicovideo.jp/b/a/12345/",
+        ) as mock_build:
+            with patch("orchestrator.get_max_saved_res_no", return_value=65):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=([], False, False),
+                ) as mock_collect:
+                    with patch(
+                        "orchestrator.load_saved_responses",
+                    ) as mock_saved:
+                        with patch("orchestrator.save_json") as mock_save_json:
+                            with patch("orchestrator.init_db") as mock_init:
+                                with patch(
+                                    "orchestrator.save_to_db",
+                                ) as mock_save_db:
+                                    with patch(
+                                        "orchestrator.print",
+                                    ) as mock_print:
+                                        ok = run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_build.assert_called_once_with(article_url)
+    mock_collect.assert_called_once_with(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        start=61,
+        max_saved_res_no=65,
+    )
+    mock_saved.assert_not_called()
+    mock_save_json.assert_not_called()
+    mock_init.assert_not_called()
+    mock_save_db.assert_not_called()
+    mock_print.assert_any_call(
+        "No new BBS responses found; article already up to date"
+    )
+    assert ok is True

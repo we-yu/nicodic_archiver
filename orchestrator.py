@@ -11,9 +11,78 @@ RESPONSE_CAP = 1_000_000
 # 仮置き。known high-volume article を skip するための seed。
 DENYLIST_ARTICLE_IDS = frozenset({"480340", "237789"})
 
+BBS_PAGE_SIZE = 30
+
+
+def get_containing_page_start(res_no: int) -> int:
+    """Return the BBS page start that contains the given response number."""
+    return ((res_no - 1) // BBS_PAGE_SIZE) * BBS_PAGE_SIZE + 1
+
 
 class ArticleNotFoundError(RuntimeError):
     """記事ページが見つからない場合の orchestration 用例外。"""
+
+
+def get_max_saved_res_no(article_id: str, article_type: str) -> int | None:
+    """Return the highest saved response number for the article, if any."""
+
+    conn = init_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT MAX(res_no)
+            FROM responses
+            WHERE article_id=? AND article_type=?
+            """,
+            (article_id, article_type),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return row[0]
+    finally:
+        conn.close()
+
+
+def load_saved_responses(article_id: str, article_type: str) -> list[dict]:
+    """Load saved responses in res_no order for JSON refresh after resume."""
+
+    conn = init_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT res_no, id_hash, poster_name, posted_at, content_text,
+                   content_html
+            FROM responses
+            WHERE article_id=? AND article_type=?
+            ORDER BY res_no ASC
+            """,
+            (article_id, article_type),
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    return [
+        {
+            "res_no": res_no,
+            "id_hash": id_hash,
+            "poster_name": poster_name,
+            "posted_at": posted_at,
+            "content": content_text,
+            "content_html": content_html,
+        }
+        for (
+            res_no,
+            id_hash,
+            poster_name,
+            posted_at,
+            content_text,
+            content_html,
+        ) in rows
+    ]
 
 
 def build_bbs_base_url(article_url: str) -> str:
@@ -30,7 +99,11 @@ def build_bbs_base_url(article_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}/b/{article_type}/{article_id}/"
 
 
-def collect_all_responses(bbs_base_url: str) -> tuple[list, bool, bool]:
+def collect_all_responses(
+    bbs_base_url: str,
+    start: int = 1,
+    max_saved_res_no: int | None = None,
+) -> tuple[list, bool, bool]:
     """
     ページネーションを辿り全レス収集。
     404または空ページで終了。RESPONSE_CAP に達した場合も終了。
@@ -42,13 +115,14 @@ def collect_all_responses(bbs_base_url: str) -> tuple[list, bool, bool]:
     """
 
     all_responses = []
-    start = 1
+    next_start = start
     interrupted = False
     cap_reached = False
+    first_request = True
 
     while True:
 
-        page_url = f"{bbs_base_url}{start}-"
+        page_url = f"{bbs_base_url}{next_start}-"
         print("Fetching:", page_url)
 
         try:
@@ -56,12 +130,12 @@ def collect_all_responses(bbs_base_url: str) -> tuple[list, bool, bool]:
         except RuntimeError as e:
             # 1ページ目の404は「掲示板が存在しない」ケースとして扱い、
             # empty-result として返す（中断フラグは立てない）。
-            if start == 1 and "status=404" in str(e):
+            if first_request and "status=404" in str(e):
                 print("No BBS found:", bbs_base_url)
                 return [], False, False
 
             # 1ページ目のその他エラーは従来どおり上位へ伝播させる。
-            if start == 1:
+            if first_request:
                 raise
 
             # 2ページ目以降のエラーは「later-page interruption」として扱う。
@@ -70,10 +144,18 @@ def collect_all_responses(bbs_base_url: str) -> tuple[list, bool, bool]:
             interrupted = True
             break
 
-        page_responses = parse_responses(soup)
+        raw_page_responses = parse_responses(soup)
+        page_responses = raw_page_responses
 
-        if not page_responses:
-            if start == 1:
+        if max_saved_res_no is not None and first_request:
+            page_responses = [
+                response
+                for response in raw_page_responses
+                if response["res_no"] > max_saved_res_no
+            ]
+
+        if not raw_page_responses:
+            if first_request:
                 print("No responses found:", bbs_base_url)
             break
 
@@ -88,7 +170,8 @@ def collect_all_responses(bbs_base_url: str) -> tuple[list, bool, bool]:
         print("Page collected:", len(page_responses))
         print("Total collected:", len(all_responses))
 
-        start += len(page_responses)
+        next_start += len(raw_page_responses)
+        first_request = False
 
         # 過度アクセス回避
         time.sleep(1)
@@ -138,12 +221,38 @@ def run_scrape(article_url: str) -> bool:
         print("Skipping article (high-volume).")
         return False
 
+    max_saved_res_no = get_max_saved_res_no(article_id, article_type)
     bbs_base_url = build_bbs_base_url(article_url)
 
-    responses, interrupted, cap_reached = collect_all_responses(bbs_base_url)
+    if max_saved_res_no is None:
+        responses, interrupted, cap_reached = collect_all_responses(bbs_base_url)
+    else:
+        resume_start = get_containing_page_start(max_saved_res_no)
+        print(
+            f"Saved article detected; resuming from max_saved_res_no="
+            f"{max_saved_res_no}"
+        )
+        responses, interrupted, cap_reached = collect_all_responses(
+            bbs_base_url,
+            start=resume_start,
+            max_saved_res_no=max_saved_res_no,
+        )
+
+    if max_saved_res_no is not None and not responses and not interrupted:
+        print("No new BBS responses found; article already up to date")
+        return True
+
+    json_responses = responses
+    if max_saved_res_no is not None:
+        json_responses = load_saved_responses(article_id, article_type) + responses
 
     # empty-result / later-page interruption / cap reached を区別して扱う。
-    if not responses and not interrupted and not cap_reached:
+    if (
+        max_saved_res_no is None
+        and not responses
+        and not interrupted
+        and not cap_reached
+    ):
         # 掲示板は存在するがレスが0件、あるいは掲示板自体が存在しないケース。
         print("No BBS responses found; saving empty result")
     elif interrupted and responses:
@@ -159,7 +268,7 @@ def run_scrape(article_url: str) -> bool:
             f"({len(responses)} items) for: {article_url}"
         )
 
-    save_json(article_id, article_type, title, article_url, responses)
+    save_json(article_id, article_type, title, article_url, json_responses)
 
     conn = init_db()
     save_to_db(conn, article_id, article_type, title, article_url, responses)
