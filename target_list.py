@@ -2,6 +2,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
+def _parse_target_line(raw_line: str) -> str | None:
+    line = raw_line.strip()
+
+    if not line or line.startswith("#"):
+        return None
+
+    return line
+
+
 # Temporary plain-text input source until a more structured target registry exists.
 def load_target_urls(file_path: str) -> list[str]:
     """Load a stable URL list from a human-editable plain text file."""
@@ -10,9 +19,8 @@ def load_target_urls(file_path: str) -> list[str]:
     targets = []
 
     for raw_line in Path(file_path).read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-
-        if not line or line.startswith("#"):
+        line = _parse_target_line(raw_line)
+        if line is None:
             continue
 
         if line in seen_urls:
