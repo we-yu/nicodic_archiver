@@ -7,7 +7,7 @@ import json
 import sqlite3
 
 import storage
-from storage import init_db, save_json, save_to_db
+from storage import enqueue_article_request, init_db, save_json, save_to_db
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
@@ -28,6 +28,71 @@ def test_init_db_creates_data_dir_db_and_tables(tmp_path, monkeypatch):
         tables = _table_names(conn)
         assert "articles" in tables
         assert "responses" in tables
+        assert "article_request_queue" in tables
+    finally:
+        conn.close()
+
+
+def test_enqueue_article_request_persists_minimal_queue_entry(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    result = enqueue_article_request(
+        {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+        }
+    )
+
+    assert result["status"] == "enqueued"
+    assert result["article_url"] == "https://dic.nicovideo.jp/a/12345"
+    assert result["article_id"] == "12345"
+    assert result["article_type"] == "a"
+    assert result["enqueued_at"]
+
+    conn = init_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT article_url, article_id, article_type FROM article_request_queue"
+        )
+        assert cur.fetchall() == [
+            ("https://dic.nicovideo.jp/a/12345", "12345", "a")
+        ]
+    finally:
+        conn.close()
+
+
+def test_enqueue_article_request_returns_duplicate_without_row_growth(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    canonical_target = {
+        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_id": "12345",
+        "article_type": "a",
+    }
+
+    first = enqueue_article_request(canonical_target)
+    second = enqueue_article_request(canonical_target)
+
+    assert first["status"] == "enqueued"
+    assert second["status"] == "duplicate"
+    assert second["article_url"] == canonical_target["article_url"]
+    assert second["article_id"] == canonical_target["article_id"]
+    assert second["article_type"] == canonical_target["article_type"]
+    assert second["enqueued_at"]
+
+    conn = init_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM article_request_queue")
+        assert cur.fetchone()[0] == 1
     finally:
         conn.close()
 
