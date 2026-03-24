@@ -217,6 +217,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "add-target <article_url> <target_list_path>" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
+    assert "resolve-article <article_input>" in out
     assert "periodic-once <target_list_path>" in out
     assert (
         "periodic <target_list_path> <interval_seconds> [--max-runs N]" in out
@@ -331,6 +332,59 @@ def test_main_batch_without_path_exits_with_usage(capsys):
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "Usage: batch <target_list_path>" in out
+
+
+@patch("main.resolve_article_input")
+def test_main_resolve_article_success(mock_resolve_article_input, capsys):
+    mock_resolve_article_input.return_value = {
+        "ok": True,
+        "canonical_target": {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+        },
+        "title": "Foo",
+        "matched_by": "title_exact",
+        "normalized_input": "Foo",
+    }
+    with patch("sys.argv", ["main.py", "resolve-article", "Foo"]):
+        main_module.main()
+
+    mock_resolve_article_input.assert_called_once_with("Foo")
+    out = capsys.readouterr().out
+    assert "Resolved article input" in out
+    assert "matched_by: title_exact" in out
+    assert "article_url: https://dic.nicovideo.jp/a/12345" in out
+
+
+@patch("main.resolve_article_input")
+def test_main_resolve_article_failure_exits_non_zero(
+    mock_resolve_article_input,
+    capsys,
+):
+    mock_resolve_article_input.return_value = {
+        "ok": False,
+        "error_type": "not_found",
+        "normalized_input": "Foo",
+    }
+    with patch("sys.argv", ["main.py", "resolve-article", "Foo"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_resolve_article_input.assert_called_once_with("Foo")
+    out = capsys.readouterr().out
+    assert "Failed to resolve article input: not_found (Foo)" in out
+
+
+def test_main_resolve_article_without_input_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "resolve-article"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: resolve-article <article_input>" in out
 
 
 @patch("main.run_periodic_once")

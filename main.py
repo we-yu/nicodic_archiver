@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
 from orchestrator import run_scrape
 from target_list import add_target_url, load_target_urls
@@ -141,6 +142,7 @@ def main():
         print("  python main.py add-target <article_url> <target_list_path>")
         print("  python main.py targets <target_list_path>")
         print("  python main.py batch <target_list_path>")
+        print("  python main.py resolve-article <article_input>")
         print("  python main.py periodic-once <target_list_path>")
         print(
             "  python main.py periodic <target_list_path> <interval_seconds> "
@@ -236,6 +238,30 @@ def main():
         if failed_targets:
             sys.exit(1)
         return
+
+    if sys.argv[1] == "resolve-article":
+
+        if len(sys.argv) < 3:
+            print("Usage: resolve-article <article_input>")
+            sys.exit(1)
+
+        result = resolve_article_input(sys.argv[2])
+        if result["ok"] is True:
+            canonical = result["canonical_target"]
+            print("Resolved article input")
+            print(f"  matched_by: {result['matched_by']}")
+            print(f"  normalized_input: {result['normalized_input']}")
+            print(f"  title: {result['title']}")
+            print(f"  article_url: {canonical['article_url']}")
+            print(f"  article_id: {canonical['article_id']}")
+            print(f"  article_type: {canonical['article_type']}")
+            return
+
+        print(
+            f"Failed to resolve article input: "
+            f"{result['error_type']} ({result['normalized_input']})"
+        )
+        sys.exit(1)
 
     if sys.argv[1] == "periodic-once":
 
