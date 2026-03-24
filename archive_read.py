@@ -1,6 +1,25 @@
 import sqlite3
 
 
+def has_saved_article(article_id, article_type):
+    """Return True when the article exists in saved archive."""
+
+    conn = sqlite3.connect("data/nicodic.db")
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT 1
+        FROM articles
+        WHERE article_id=? AND article_type=?
+        LIMIT 1
+        """,
+        (article_id, article_type),
+    )
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
+
+
 def read_article_archive(article_id, article_type, last_n=None):
     conn = sqlite3.connect("data/nicodic.db")
     cur = conn.cursor()
@@ -55,6 +74,62 @@ def read_article_archive(article_id, article_type, last_n=None):
         "url": url,
         "created_at": created_at,
         "responses": rows,
+    }
+
+
+def _render_txt_archive(archive):
+    lines = [
+        "=== ARTICLE META ===",
+        f"ID: {archive['article_id']}",
+        f"Type: {archive['article_type']}",
+        f"Title: {archive['title']}",
+        f"URL: {archive['url']}",
+        f"Created: {archive['created_at']}",
+        "",
+        "=== RESPONSES ===",
+    ]
+
+    for (
+        res_no,
+        poster_name,
+        posted_at,
+        id_hash,
+        content_text,
+    ) in archive["responses"]:
+        poster_name = poster_name or "unknown"
+        posted_at = posted_at or "unknown"
+        id_hash = id_hash or "unknown"
+
+        lines.append(f">{res_no} {poster_name} {posted_at} ID: {id_hash}")
+        lines.append(content_text or "")
+        lines.append("----")
+
+    return "\n".join(lines)
+
+
+def get_saved_article_txt(article_id, article_type):
+    """
+    Return bounded one-article TXT payload for non-CLI consumers.
+
+    Return shape:
+      {"found": True, "content": str, "article_id": str, "article_type": str}
+      {"found": False, "content": None, "article_id": str, "article_type": str}
+    """
+
+    archive = read_article_archive(article_id, article_type)
+    if not archive:
+        return {
+            "found": False,
+            "content": None,
+            "article_id": article_id,
+            "article_type": article_type,
+        }
+
+    return {
+        "found": True,
+        "content": _render_txt_archive(archive),
+        "article_id": article_id,
+        "article_type": article_type,
     }
 
 
