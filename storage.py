@@ -47,6 +47,18 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS queue_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        article_id TEXT NOT NULL,
+        article_type TEXT NOT NULL,
+        article_url TEXT NOT NULL,
+        title TEXT,
+        enqueued_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(article_id, article_type)
+    )
+    """)
+
     conn.commit()
     return conn
 
@@ -112,3 +124,61 @@ def save_json(article_id, article_type, title, article_url, responses):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
     print("Saved JSON:", output_path)
+
+
+def enqueue_canonical_target(conn, canonical_target, title=None):
+    """
+    Enqueue resolved canonical target as a minimal persistent queue request.
+
+    canonical_target requires:
+      - article_url
+      - article_id
+      - article_type
+    """
+
+    article_url = canonical_target["article_url"]
+    article_id = canonical_target["article_id"]
+    article_type = canonical_target["article_type"]
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO queue_requests
+        (article_id, article_type, article_url, title)
+        VALUES (?, ?, ?, ?)
+        """,
+        (article_id, article_type, article_url, title),
+    )
+    inserted = cur.rowcount == 1
+    conn.commit()
+
+    cur.execute(
+        """
+        SELECT article_url, article_id, article_type, title, enqueued_at
+        FROM queue_requests
+        WHERE article_id=? AND article_type=?
+        """,
+        (article_id, article_type),
+    )
+    row = cur.fetchone()
+    entry = {
+        "article_url": row[0],
+        "article_id": row[1],
+        "article_type": row[2],
+        "title": row[3],
+        "enqueued_at": row[4],
+    }
+
+    if inserted:
+        status = "enqueued"
+    else:
+        status = "duplicate"
+
+    return {
+        "status": status,
+        "entry": entry,
+        "queue_identity": {
+            "article_id": article_id,
+            "article_type": article_type,
+        },
+    }

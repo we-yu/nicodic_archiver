@@ -7,7 +7,7 @@ import json
 import sqlite3
 
 import storage
-from storage import init_db, save_json, save_to_db
+from storage import enqueue_canonical_target, init_db, save_json, save_to_db
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
@@ -28,6 +28,7 @@ def test_init_db_creates_data_dir_db_and_tables(tmp_path, monkeypatch):
         tables = _table_names(conn)
         assert "articles" in tables
         assert "responses" in tables
+        assert "queue_requests" in tables
     finally:
         conn.close()
 
@@ -159,3 +160,93 @@ def test_save_json_writes_json_and_sanitizes_title_in_filename(tmp_path, monkeyp
     assert data["collected_at"] == 1700000000
     assert data["response_count"] == 1
     assert data["responses"] == responses
+
+
+def test_enqueue_canonical_target_persists_minimal_queue_entry(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        canonical_target = {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+        }
+
+        result = enqueue_canonical_target(conn, canonical_target, title="First Title")
+
+        assert result["status"] == "enqueued"
+        assert result["queue_identity"] == {
+            "article_id": "12345",
+            "article_type": "a",
+        }
+        assert result["entry"]["article_url"] == canonical_target["article_url"]
+        assert result["entry"]["article_id"] == canonical_target["article_id"]
+        assert result["entry"]["article_type"] == canonical_target["article_type"]
+        assert result["entry"]["title"] == "First Title"
+        assert result["entry"]["enqueued_at"] is not None
+
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM queue_requests")
+        assert cur.fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_enqueue_canonical_target_suppresses_duplicates_as_success_class(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        canonical_target = {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+        }
+
+        first = enqueue_canonical_target(conn, canonical_target, title="First Title")
+        second = enqueue_canonical_target(conn, canonical_target, title="First Title")
+
+        assert first["status"] == "enqueued"
+        assert second["status"] == "duplicate"
+        assert second["queue_identity"] == {
+            "article_id": "12345",
+            "article_type": "a",
+        }
+
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM queue_requests")
+        assert cur.fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_enqueue_canonical_target_is_persistent_across_connections(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    canonical_target = {
+        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_id": "12345",
+        "article_type": "a",
+    }
+
+    conn = init_db()
+    try:
+        first = enqueue_canonical_target(conn, canonical_target, title=None)
+        assert first["status"] == "enqueued"
+    finally:
+        conn.close()
+
+    conn = init_db()
+    try:
+        second = enqueue_canonical_target(conn, canonical_target, title=None)
+        assert second["status"] == "duplicate"
+        assert second["entry"]["title"] is None
+    finally:
+        conn.close()
