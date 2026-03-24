@@ -7,7 +7,14 @@ import json
 import sqlite3
 
 import storage
-from storage import enqueue_canonical_target, init_db, save_json, save_to_db
+from storage import (
+    dequeue_canonical_target,
+    enqueue_canonical_target,
+    init_db,
+    list_queue_requests,
+    save_json,
+    save_to_db,
+)
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
@@ -248,5 +255,64 @@ def test_enqueue_canonical_target_is_persistent_across_connections(
         second = enqueue_canonical_target(conn, canonical_target, title=None)
         assert second["status"] == "duplicate"
         assert second["entry"]["title"] is None
+    finally:
+        conn.close()
+
+
+def test_list_queue_requests_returns_fifo_order(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        enqueue_canonical_target(
+            conn,
+            {
+                "article_url": "https://dic.nicovideo.jp/a/1",
+                "article_id": "1",
+                "article_type": "a",
+            },
+            title="One",
+        )
+        enqueue_canonical_target(
+            conn,
+            {
+                "article_url": "https://dic.nicovideo.jp/a/2",
+                "article_id": "2",
+                "article_type": "a",
+            },
+            title="Two",
+        )
+
+        queued = list_queue_requests(conn)
+        assert [item["article_id"] for item in queued] == ["1", "2"]
+    finally:
+        conn.close()
+
+
+def test_dequeue_canonical_target_removes_only_requested_item(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        enqueue_canonical_target(
+            conn,
+            {
+                "article_url": "https://dic.nicovideo.jp/a/1",
+                "article_id": "1",
+                "article_type": "a",
+            },
+        )
+        enqueue_canonical_target(
+            conn,
+            {
+                "article_url": "https://dic.nicovideo.jp/a/2",
+                "article_id": "2",
+                "article_type": "a",
+            },
+        )
+
+        removed = dequeue_canonical_target(conn, "1", "a")
+        assert removed is True
+
+        queued = list_queue_requests(conn)
+        assert [item["article_id"] for item in queued] == ["2"]
     finally:
         conn.close()
