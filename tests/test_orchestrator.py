@@ -6,9 +6,11 @@ from bs4 import BeautifulSoup
 
 from orchestrator import (
     ArticleNotFoundError,
+    QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP,
     build_bbs_base_url,
     fetch_article_metadata,
     collect_all_responses,
+    drain_queue_requests,
     get_max_saved_res_no,
     load_saved_responses,
     run_scrape,
@@ -283,7 +285,10 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
-    mock_collect.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/")
+    mock_collect.assert_called_once_with(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        response_cap=None,
+    )
 
     mock_save_json.assert_called_once_with(
         "12345",
@@ -375,7 +380,10 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
-    mock_collect.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/")
+    mock_collect.assert_called_once_with(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        response_cap=None,
+    )
     mock_save_json.assert_called_once_with("12345", "a", "Title", article_url, [])
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
@@ -421,7 +429,10 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
-    mock_collect.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/")
+    mock_collect.assert_called_once_with(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        response_cap=None,
+    )
 
     mock_save_json.assert_called_once_with(
         "12345",
@@ -502,7 +513,10 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
-    mock_collect.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/")
+    mock_collect.assert_called_once_with(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        response_cap=None,
+    )
     mock_save_json.assert_called_once_with(
         "12345",
         "a",
@@ -592,7 +606,10 @@ def test_run_scrape_representative_save_path_regression(
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
-    mock_collect.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/")
+    mock_collect.assert_called_once_with(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        response_cap=None,
+    )
     mock_save_json.assert_called_once_with(
         "12345",
         "a",
@@ -791,6 +808,7 @@ def test_run_scrape_saved_article_resumes_and_saves_only_new_items():
         "https://dic.nicovideo.jp/b/a/12345/",
         start=61,
         max_saved_res_no=65,
+        response_cap=None,
     )
     mock_saved.assert_called_once_with("12345", "a")
     mock_save_json.assert_called_once_with(
@@ -851,6 +869,7 @@ def test_run_scrape_saved_article_zero_new_is_success_without_writing():
         "https://dic.nicovideo.jp/b/a/12345/",
         start=61,
         max_saved_res_no=65,
+        response_cap=None,
     )
     mock_saved.assert_not_called()
     mock_save_json.assert_not_called()
@@ -860,3 +879,101 @@ def test_run_scrape_saved_article_zero_new_is_success_without_writing():
         "No new BBS responses found; article already up to date"
     )
     assert ok is True
+
+
+def test_drain_queue_requests_dequeues_when_run_scrape_is_success():
+    queued = [
+        {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+            "title": "Title",
+            "enqueued_at": "2026-01-01 00:00:00",
+        }
+    ]
+    conn = MagicMock()
+
+    with patch("orchestrator.init_db", return_value=conn) as mock_init:
+        with patch("orchestrator.list_queue_requests", return_value=queued):
+            with patch("orchestrator.run_scrape", return_value=True) as mock_run:
+                with patch(
+                    "orchestrator.dequeue_canonical_target",
+                    return_value=True,
+                ) as mock_dequeue:
+                    result = drain_queue_requests()
+
+    mock_init.assert_called_once_with()
+    mock_run.assert_called_once_with(
+        "https://dic.nicovideo.jp/a/12345",
+        response_cap=QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP,
+    )
+    mock_dequeue.assert_called_once_with(conn, "12345", "a")
+    conn.close.assert_called_once_with()
+    assert result == {
+        "processed": 1,
+        "dequeued": 1,
+        "remaining": 0,
+        "errors": 0,
+    }
+
+
+def test_drain_queue_requests_cap_reached_path_is_success_and_dequeues():
+    queued = [
+        {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+            "title": "Title",
+            "enqueued_at": "2026-01-01 00:00:00",
+        }
+    ]
+    conn = MagicMock()
+
+    with patch("orchestrator.init_db", return_value=conn):
+        with patch("orchestrator.list_queue_requests", return_value=queued):
+            with patch("orchestrator.run_scrape", return_value=True):
+                with patch(
+                    "orchestrator.dequeue_canonical_target",
+                    return_value=True,
+                ) as mock_dequeue:
+                    result = drain_queue_requests()
+
+    mock_dequeue.assert_called_once_with(conn, "12345", "a")
+    assert result["dequeued"] == 1
+    assert result["errors"] == 0
+
+
+def test_drain_queue_requests_unexpected_failure_keeps_request_queued():
+    queued = [
+        {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+            "title": "Title",
+            "enqueued_at": "2026-01-01 00:00:00",
+        }
+    ]
+    conn = MagicMock()
+
+    with patch("orchestrator.init_db", return_value=conn):
+        with patch("orchestrator.list_queue_requests", return_value=queued):
+            with patch(
+                "orchestrator.run_scrape",
+                side_effect=RuntimeError("boom"),
+            ) as mock_run:
+                with patch(
+                    "orchestrator.dequeue_canonical_target",
+                ) as mock_dequeue:
+                    result = drain_queue_requests()
+
+    mock_run.assert_called_once_with(
+        "https://dic.nicovideo.jp/a/12345",
+        response_cap=QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP,
+    )
+    mock_dequeue.assert_not_called()
+    assert result == {
+        "processed": 1,
+        "dequeued": 0,
+        "remaining": 1,
+        "errors": 1,
+    }

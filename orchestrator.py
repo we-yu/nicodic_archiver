@@ -3,10 +3,17 @@ from urllib.parse import urlparse
 
 from http_client import fetch_page
 from parser import parse_responses
-from storage import init_db, save_json, save_to_db
+from storage import (
+    dequeue_canonical_target,
+    init_db,
+    list_queue_requests,
+    save_json,
+    save_to_db,
+)
 
 # 取得レス数の上限。未知の high-volume 記事に対する bounded protection。
 RESPONSE_CAP = 1_000_000
+QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP = 10_800
 
 # 仮置き。known high-volume article を skip するための seed。
 DENYLIST_ARTICLE_IDS = frozenset({"480340", "237789"})
@@ -103,6 +110,7 @@ def collect_all_responses(
     bbs_base_url: str,
     start: int = 1,
     max_saved_res_no: int | None = None,
+    response_cap: int | None = None,
 ) -> tuple[list, bool, bool]:
     """
     ページネーションを辿り全レス収集。
@@ -119,6 +127,7 @@ def collect_all_responses(
     interrupted = False
     cap_reached = False
     first_request = True
+    effective_cap = response_cap if response_cap is not None else RESPONSE_CAP
 
     while True:
 
@@ -161,8 +170,8 @@ def collect_all_responses(
 
         all_responses.extend(page_responses)
 
-        if len(all_responses) >= RESPONSE_CAP:
-            all_responses = all_responses[:RESPONSE_CAP]
+        if len(all_responses) >= effective_cap:
+            all_responses = all_responses[:effective_cap]
             cap_reached = True
             print("Total collected:", len(all_responses))
             break
@@ -209,7 +218,7 @@ def fetch_article_metadata(article_url: str):
     return article_id, article_type, title
 
 
-def run_scrape(article_url: str) -> bool:
+def run_scrape(article_url: str, response_cap: int | None = None) -> bool:
     try:
         article_id, article_type, title = fetch_article_metadata(article_url)
 
@@ -225,7 +234,10 @@ def run_scrape(article_url: str) -> bool:
     bbs_base_url = build_bbs_base_url(article_url)
 
     if max_saved_res_no is None:
-        responses, interrupted, cap_reached = collect_all_responses(bbs_base_url)
+        responses, interrupted, cap_reached = collect_all_responses(
+            bbs_base_url,
+            response_cap=response_cap,
+        )
     else:
         resume_start = get_containing_page_start(max_saved_res_no)
         print(
@@ -236,6 +248,7 @@ def run_scrape(article_url: str) -> bool:
             bbs_base_url,
             start=resume_start,
             max_saved_res_no=max_saved_res_no,
+            response_cap=response_cap,
         )
 
     if max_saved_res_no is not None and not responses and not interrupted:
@@ -276,3 +289,53 @@ def run_scrape(article_url: str) -> bool:
 
     print("Saved to SQLite")
     return True
+
+
+def drain_queue_requests(max_requests: int | None = None) -> dict:
+    """
+    Execute persisted queued requests in bounded single-process order.
+
+    Success-class terminal outcomes are dequeued.
+    Unexpected failures keep requests queued.
+    """
+
+    conn = init_db()
+    try:
+        queued = list_queue_requests(conn, limit=max_requests)
+        dequeued_count = 0
+        error_count = 0
+
+        for request in queued:
+            article_url = request["article_url"]
+            article_id = request["article_id"]
+            article_type = request["article_type"]
+
+            try:
+                ok = run_scrape(
+                    article_url,
+                    response_cap=QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP,
+                )
+            except Exception as exc:
+                print(
+                    f"Queue drain failed unexpectedly for {article_url}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                error_count += 1
+                continue
+
+            if ok:
+                removed = dequeue_canonical_target(conn, article_id, article_type)
+                if removed:
+                    dequeued_count += 1
+                continue
+
+            error_count += 1
+
+        return {
+            "processed": len(queued),
+            "dequeued": dequeued_count,
+            "remaining": len(queued) - dequeued_count,
+            "errors": error_count,
+        }
+    finally:
+        conn.close()
