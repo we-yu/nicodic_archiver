@@ -1,36 +1,10 @@
 from datetime import datetime, timezone
 
-from archive_read import read_article_archive, read_article_summaries
-
-
-def _render_txt_archive(archive):
-    lines = [
-        "=== ARTICLE META ===",
-        f"ID: {archive['article_id']}",
-        f"Type: {archive['article_type']}",
-        f"Title: {archive['title']}",
-        f"URL: {archive['url']}",
-        f"Created: {archive['created_at']}",
-        "",
-        "=== RESPONSES ===",
-    ]
-
-    for (
-        res_no,
-        poster_name,
-        posted_at,
-        id_hash,
-        content_text,
-    ) in archive["responses"]:
-        poster_name = poster_name or "unknown"
-        posted_at = posted_at or "unknown"
-        id_hash = id_hash or "unknown"
-
-        lines.append(f">{res_no} {poster_name} {posted_at} ID: {id_hash}")
-        lines.append(content_text or "")
-        lines.append("----")
-
-    return "\n".join(lines)
+from archive_read import (
+    get_saved_article_txt,
+    read_article_archive,
+    read_article_summaries,
+)
 
 
 def _render_md_archive(archive):
@@ -72,14 +46,19 @@ def _render_md_archive(archive):
 
 
 def export_article(article_id, article_type, output_format):
+    if output_format == "txt":
+        content = get_saved_article_txt(article_id, article_type)
+        if content is None:
+            print("Article not found in DB")
+            return False
+
+        print(content)
+        return True
+
     archive = read_article_archive(article_id, article_type)
     if not archive:
         print("Article not found in DB")
         return False
-
-    if output_format == "txt":
-        print(_render_txt_archive(archive))
-        return True
 
     if output_format == "md":
         print(_render_md_archive(archive))

@@ -152,20 +152,16 @@ def test_list_articles_uses_summary_read_seam(mock_read_summaries, capsys):
     assert "12345 a | title=First Title" in out
 
 
-@patch("cli.read_article_archive")
-def test_export_article_uses_archive_read_seam(mock_read_archive, capsys):
-    mock_read_archive.return_value = {
-        "article_id": "12345",
-        "article_type": "a",
-        "title": "First Title",
-        "url": "https://dic.nicovideo.jp/a/12345",
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "responses": [(1, "Alice", "2025-01-01 00:00", "abc123", "Hello")],
-    }
+@patch("cli.get_saved_article_txt")
+def test_export_article_uses_read_side_txt_reuse_interface(
+    mock_get_saved_article_txt,
+    capsys,
+):
+    mock_get_saved_article_txt.return_value = "=== ARTICLE META ===\nHello"
 
     assert export_article("12345", "a", "txt") is True
 
-    mock_read_archive.assert_called_once_with("12345", "a")
+    mock_get_saved_article_txt.assert_called_once_with("12345", "a")
     out = capsys.readouterr().out
-    assert "Title: First Title" in out
+    assert "=== ARTICLE META ===" in out
     assert "Hello" in out

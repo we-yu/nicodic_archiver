@@ -58,6 +58,48 @@ def read_article_archive(article_id, article_type, last_n=None):
     }
 
 
+def has_saved_article(article_id, article_type) -> bool:
+    return read_article_archive(article_id, article_type) is not None
+
+
+def render_txt_archive(archive: dict) -> str:
+    lines = [
+        "=== ARTICLE META ===",
+        f"ID: {archive['article_id']}",
+        f"Type: {archive['article_type']}",
+        f"Title: {archive['title']}",
+        f"URL: {archive['url']}",
+        f"Created: {archive['created_at']}",
+        "",
+        "=== RESPONSES ===",
+    ]
+
+    for (
+        res_no,
+        poster_name,
+        posted_at,
+        id_hash,
+        content_text,
+    ) in archive["responses"]:
+        poster_name = poster_name or "unknown"
+        posted_at = posted_at or "unknown"
+        id_hash = id_hash or "unknown"
+
+        lines.append(f">{res_no} {poster_name} {posted_at} ID: {id_hash}")
+        lines.append(content_text or "")
+        lines.append("----")
+
+    return "\n".join(lines)
+
+
+def get_saved_article_txt(article_id, article_type, last_n=None) -> str | None:
+    archive = read_article_archive(article_id, article_type, last_n=last_n)
+    if archive is None:
+        return None
+
+    return render_txt_archive(archive)
+
+
 def read_article_summaries():
     conn = sqlite3.connect("data/nicodic.db")
     cur = conn.cursor()
