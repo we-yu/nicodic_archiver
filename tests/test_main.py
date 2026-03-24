@@ -88,6 +88,55 @@ def test_main_add_target_calls_add_target_url(mock_add_target, capsys):
     assert "Added target: https://dic.nicovideo.jp/a/12345" in out
 
 
+@patch("main.resolve_article_input")
+def test_main_resolve_article_calls_resolver_and_prints_success(
+    mock_resolve_article_input,
+    capsys,
+):
+    mock_resolve_article_input.return_value = {
+        "ok": True,
+        "canonical_target": {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+        },
+        "title": "Foo",
+        "matched_by": "exact_title",
+        "normalized_input": "Foo",
+    }
+
+    with patch("sys.argv", ["main.py", "resolve-article", "Foo"]):
+        main_module.main()
+
+    mock_resolve_article_input.assert_called_once_with("Foo")
+    out = capsys.readouterr().out
+    assert "Resolved article target" in out
+    assert "Matched By: exact_title" in out
+    assert "URL: https://dic.nicovideo.jp/a/12345" in out
+
+
+@patch("main.resolve_article_input")
+def test_main_resolve_article_exits_non_zero_on_resolution_failure(
+    mock_resolve_article_input,
+    capsys,
+):
+    mock_resolve_article_input.return_value = {
+        "ok": False,
+        "failure_kind": "not_found",
+        "normalized_input": "Foo",
+    }
+
+    with patch("sys.argv", ["main.py", "resolve-article", "Foo"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_resolve_article_input.assert_called_once_with("Foo")
+    out = capsys.readouterr().out
+    assert "Article resolution failed: not_found" in out
+    assert "Input: Foo" in out
+
+
 @patch("main.add_target_url", return_value="duplicate")
 def test_main_add_target_reports_duplicate_without_error(mock_add_target, capsys):
     with patch(
@@ -192,6 +241,16 @@ def test_main_add_target_without_required_args_exits_with_usage(capsys):
     assert "Usage: add-target <article_url> <target_list_path>" in out
 
 
+def test_main_resolve_article_without_required_args_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "resolve-article"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Usage: resolve-article <article_url_or_full_title>" in out
+
+
 def test_main_export_without_required_args_exits_with_usage(capsys):
     with patch("sys.argv", ["main.py", "export", "12345", "a"]):
         with pytest.raises(SystemExit) as exc_info:
@@ -215,6 +274,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "list-articles" in out
     assert "export-all-articles --format txt" in out
     assert "add-target <article_url> <target_list_path>" in out
+    assert "resolve-article <article_url_or_full_title>" in out
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
     assert "periodic-once <target_list_path>" in out

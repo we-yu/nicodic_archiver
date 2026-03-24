@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
 from orchestrator import run_scrape
 from target_list import add_target_url, load_target_urls
@@ -139,6 +140,7 @@ def main():
         print("  python main.py list-articles")
         print("  python main.py export-all-articles --format txt")
         print("  python main.py add-target <article_url> <target_list_path>")
+        print("  python main.py resolve-article <article_url_or_full_title>")
         print("  python main.py targets <target_list_path>")
         print("  python main.py batch <target_list_path>")
         print("  python main.py periodic-once <target_list_path>")
@@ -210,6 +212,27 @@ def main():
 
         print(f"Invalid target URL: {sys.argv[2]}")
         sys.exit(1)
+
+    if sys.argv[1] == "resolve-article":
+
+        if len(sys.argv) < 3:
+            print("Usage: resolve-article <article_url_or_full_title>")
+            sys.exit(1)
+
+        result = resolve_article_input(sys.argv[2])
+        if not result["ok"]:
+            print(f"Article resolution failed: {result['failure_kind']}")
+            print(f"Input: {result['normalized_input']}")
+            sys.exit(1)
+
+        print("Resolved article target")
+        print(f"Input: {result['normalized_input']}")
+        print(f"Matched By: {result['matched_by']}")
+        print(f"Title: {result['title']}")
+        print(f"URL: {result['canonical_target']['article_url']}")
+        print(f"ID: {result['canonical_target']['article_id']}")
+        print(f"Type: {result['canonical_target']['article_type']}")
+        return
 
     if sys.argv[1] == "targets":
 
