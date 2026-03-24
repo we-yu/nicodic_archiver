@@ -182,3 +182,48 @@ def enqueue_canonical_target(conn, canonical_target, title=None):
             "article_type": article_type,
         },
     }
+
+
+def list_queue_requests(conn, limit=None):
+    """Return queued requests in enqueue order."""
+
+    cur = conn.cursor()
+
+    query = (
+        "SELECT article_url, article_id, article_type, title, enqueued_at "
+        "FROM queue_requests "
+        "ORDER BY enqueued_at ASC, id ASC"
+    )
+    params = ()
+    if limit is not None:
+        query += " LIMIT ?"
+        params = (limit,)
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+
+    return [
+        {
+            "article_url": article_url,
+            "article_id": article_id,
+            "article_type": article_type,
+            "title": title,
+            "enqueued_at": enqueued_at,
+        }
+        for article_url, article_id, article_type, title, enqueued_at in rows
+    ]
+
+
+def remove_queue_request(conn, article_id, article_type):
+    """Remove one queued request after a success-class terminal outcome."""
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        DELETE FROM queue_requests
+        WHERE article_id=? AND article_type=?
+        """,
+        (article_id, article_type),
+    )
+    conn.commit()
+    return cur.rowcount == 1

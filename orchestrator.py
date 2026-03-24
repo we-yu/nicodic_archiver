@@ -210,16 +210,38 @@ def fetch_article_metadata(article_url: str):
 
 
 def run_scrape(article_url: str) -> bool:
+    return run_scrape_outcome(article_url)["ok"]
+
+
+def run_scrape_outcome(
+    article_url: str,
+    response_cap: int | None = None,
+) -> dict:
+    """Run scrape and return a bounded execution outcome envelope."""
+
+    if response_cap is None:
+        return _run_scrape_internal(article_url)
+
+    global RESPONSE_CAP
+    original_response_cap = RESPONSE_CAP
+    RESPONSE_CAP = response_cap
+    try:
+        return _run_scrape_internal(article_url)
+    finally:
+        RESPONSE_CAP = original_response_cap
+
+
+def _run_scrape_internal(article_url: str) -> dict:
     try:
         article_id, article_type, title = fetch_article_metadata(article_url)
 
     except ArticleNotFoundError:
         print(f"Article not found: {article_url}")
-        return False
+        return {"ok": False, "cap_reached": False}
 
     if article_id in DENYLIST_ARTICLE_IDS:
         print("Skipping article (high-volume).")
-        return False
+        return {"ok": False, "cap_reached": False}
 
     max_saved_res_no = get_max_saved_res_no(article_id, article_type)
     bbs_base_url = build_bbs_base_url(article_url)
@@ -240,7 +262,7 @@ def run_scrape(article_url: str) -> bool:
 
     if max_saved_res_no is not None and not responses and not interrupted:
         print("No new BBS responses found; article already up to date")
-        return True
+        return {"ok": True, "cap_reached": False}
 
     json_responses = responses
     if max_saved_res_no is not None:
@@ -275,4 +297,4 @@ def run_scrape(article_url: str) -> bool:
     conn.close()
 
     print("Saved to SQLite")
-    return True
+    return {"ok": True, "cap_reached": cap_reached}
