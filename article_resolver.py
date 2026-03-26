@@ -39,6 +39,10 @@ def _build_failure_result(failure_kind: str, normalized_input: str) -> dict:
     }
 
 
+def _is_not_found_runtime_error(exc: RuntimeError) -> bool:
+    return "status=404" in str(exc)
+
+
 def _looks_like_url_input(normalized_input: str) -> bool:
     parsed = urlparse(normalized_input)
     return bool(parsed.scheme or parsed.netloc)
@@ -98,7 +102,7 @@ def _resolve_from_article_url(
     try:
         soup = fetch_page(article_url)
     except RuntimeError as exc:
-        if "status=404" in str(exc):
+        if _is_not_found_runtime_error(exc):
             return _build_failure_result("not_found", normalized_input)
         raise
 
@@ -151,7 +155,13 @@ def _extract_exact_title_candidate_urls(soup, normalized_title: str) -> list[str
 
 def _resolve_from_exact_title(normalized_title: str) -> dict:
     search_url = _build_title_search_url(normalized_title)
-    soup = fetch_page(search_url)
+    try:
+        soup = fetch_page(search_url)
+    except RuntimeError as exc:
+        if _is_not_found_runtime_error(exc):
+            return _build_failure_result("not_found", normalized_title)
+        raise
+
     candidate_urls = _extract_exact_title_candidate_urls(soup, normalized_title)
 
     if not candidate_urls:

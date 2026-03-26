@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 from bs4 import BeautifulSoup
+import pytest
 
 from article_resolver import resolve_article_input
 
@@ -120,3 +121,33 @@ def test_resolve_article_input_returns_ambiguous_for_multiple_exact_titles():
         "failure_kind": "ambiguous",
         "normalized_input": "Foo",
     }
+
+
+def test_resolve_article_input_returns_not_found_when_title_search_is_404():
+    with patch(
+        "article_resolver.fetch_page",
+        side_effect=RuntimeError(
+            "Failed to fetch https://dic.nicovideo.jp/search/Foo (status=404)"
+        ),
+    ):
+        result = resolve_article_input("Foo")
+
+    assert result == {
+        "ok": False,
+        "failure_kind": "not_found",
+        "normalized_input": "Foo",
+    }
+
+
+def test_resolve_article_input_still_raises_unexpected_title_search_errors():
+    with patch(
+        "article_resolver.fetch_page",
+        side_effect=RuntimeError(
+            "Failed to fetch https://dic.nicovideo.jp/search/Foo "
+            "(timeout=10s)"
+        ),
+    ):
+        with pytest.raises(RuntimeError) as exc_info:
+            resolve_article_input("Foo")
+
+    assert "timeout=10s" in str(exc_info.value)
