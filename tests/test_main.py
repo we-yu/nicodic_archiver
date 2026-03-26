@@ -261,6 +261,25 @@ def test_main_export_without_required_args_exits_with_usage(capsys):
     assert "Usage: export <article_id> <article_type> --format txt|md" in out
 
 
+@patch("main.serve_web_app")
+def test_main_web_mode_calls_serve_web_app_with_defaults(mock_serve_web_app):
+    with patch("sys.argv", ["main.py", "web"]):
+        main_module.main()
+
+    mock_serve_web_app.assert_called_once_with(host="127.0.0.1", port=8000)
+
+
+@patch("main.serve_web_app")
+def test_main_web_mode_allows_host_and_port_override(mock_serve_web_app):
+    with patch(
+        "sys.argv",
+        ["main.py", "web", "--host", "0.0.0.0", "--port", "9001"],
+    ):
+        main_module.main()
+
+    mock_serve_web_app.assert_called_once_with(host="0.0.0.0", port=9001)
+
+
 def test_main_too_few_args_exits_with_usage(capsys):
     with patch("sys.argv", ["main.py"]):
         with pytest.raises(SystemExit) as exc_info:

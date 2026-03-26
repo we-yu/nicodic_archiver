@@ -9,6 +9,7 @@ from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
 from orchestrator import run_scrape
 from target_list import add_target_url, load_target_urls
+from web_app import serve_web_app
 
 
 # ============================================================
@@ -144,6 +145,7 @@ def main():
         print("  python main.py targets <target_list_path>")
         print("  python main.py batch <target_list_path>")
         print("  python main.py periodic-once <target_list_path>")
+        print("  python main.py web [--host HOST] [--port PORT]")
         print(
             "  python main.py periodic <target_list_path> <interval_seconds> "
             "[--max-runs N]"
@@ -287,6 +289,21 @@ def main():
             max_runs = int(sys.argv[idx + 1])
 
         run_periodic_scrape(target_list_path, interval_seconds, max_runs=max_runs)
+        return
+
+    if sys.argv[1] == "web":
+        host = "127.0.0.1"
+        port = 8000
+
+        if "--host" in sys.argv:
+            idx = sys.argv.index("--host")
+            host = sys.argv[idx + 1]
+
+        if "--port" in sys.argv:
+            idx = sys.argv.index("--port")
+            port = int(sys.argv[idx + 1])
+
+        serve_web_app(host=host, port=port)
         return
 
     # 通常スクレイプモード
