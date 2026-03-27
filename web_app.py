@@ -4,10 +4,12 @@ from urllib.parse import urlparse
 from wsgiref.simple_server import make_server
 
 from archive_read import (
+    get_saved_article_txt,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
 )
 from article_resolver import resolve_article_input
+from storage import enqueue_canonical_target, init_db
 
 
 def _normalize_web_input(article_input: str) -> str:
@@ -101,7 +103,90 @@ def _read_post_input(environ: dict) -> str:
     return form_data.get("article_input", [""])[0]
 
 
-def _render_message_area(result: dict | None) -> str:
+def _read_post_form(environ: dict) -> dict:
+    content_length = environ.get("CONTENT_LENGTH", "0").strip()
+    try:
+        body_size = int(content_length)
+    except ValueError:
+        body_size = 0
+
+    body = environ["wsgi.input"].read(body_size).decode("utf-8")
+    form_data = parse_qs(body, keep_blank_values=True)
+    return {key: values[0] if values else "" for key, values in form_data.items()}
+
+
+def _build_action_result_message(action_result: dict) -> str:
+    status = action_result["status"]
+    if status == "download_ready":
+        return "Saved article TXT download is ready."
+    if status == "enqueued":
+        if action_result.get("enqueue_status") == "duplicate":
+            return "Queue request accepted (already queued)."
+        return "Queue request accepted."
+    if status == "already_saved":
+        return "Article is already saved; queue request was skipped."
+    if status == "action_error":
+        return action_result["message"]
+    return "Action completed."
+
+
+def _followup_action(article_input: str, action: str) -> dict:
+    status_result = check_article_status(article_input)
+    if status_result["status"] not in {"saved", "unsaved"}:
+        return {
+            "status": "action_error",
+            "message": "Action requires a saved or unsaved resolved article.",
+            "check_result": status_result,
+        }
+
+    if action == "download_txt":
+        if status_result["status"] != "saved":
+            return {
+                "status": "action_error",
+                "message": "TXT download is only available for saved articles.",
+                "check_result": status_result,
+            }
+        return {
+            "status": "download_ready",
+            "check_result": status_result,
+        }
+
+    if action == "enqueue_request":
+        if status_result["status"] == "saved":
+            return {
+                "status": "already_saved",
+                "check_result": status_result,
+            }
+
+        canonical_target = {
+            "article_url": status_result["article_url"],
+            "article_id": status_result["article_id"],
+            "article_type": status_result["article_type"],
+        }
+        conn = init_db()
+        try:
+            enqueue_result = enqueue_canonical_target(
+                conn,
+                canonical_target,
+                title=status_result["title"],
+            )
+        finally:
+            conn.close()
+
+        return {
+            "status": "enqueued",
+            "enqueue_status": enqueue_result["status"],
+            "check_result": status_result,
+        }
+
+    return {
+        "status": "action_error",
+        "message": "Unsupported action.",
+        "check_result": status_result,
+    }
+
+
+def _render_message_area(result: dict | None, action_result: dict | None = None) -> str:
     if result is None:
         return (
             '<section class="message-area empty">'
@@ -120,6 +205,13 @@ def _render_message_area(result: dict | None) -> str:
         "<h2>Result</h2>",
         f'<p class="status-line">{message}</p>',
     ]
+
+    if action_result is not None:
+        lines.append(
+            "<p>Action status: "
+            f"<strong>{escape(_build_action_result_message(action_result))}</strong>"
+            "</p>"
+        )
 
     if result["status"] == "resolution_failure":
         lines.append(
@@ -152,14 +244,36 @@ def _render_message_area(result: dict | None) -> str:
             "<p>Saved response count: "
             f"{escape(str(result['response_count']))}</p>"
         )
+        lines.append(
+            "<form method=\"post\" action=\"/action\">"
+            f"<input type=\"hidden\" name=\"article_input\" "
+            f"value=\"{escape(result['input'])}\">"
+            "<input type=\"hidden\" name=\"action\" value=\"download_txt\">"
+            "<button type=\"submit\">Download TXT</button>"
+            "</form>"
+        )
+
+    if result["status"] == "unsaved":
+        lines.append(
+            "<form method=\"post\" action=\"/action\">"
+            f"<input type=\"hidden\" name=\"article_input\" "
+            f"value=\"{escape(result['input'])}\">"
+            "<input type=\"hidden\" name=\"action\" value=\"enqueue_request\">"
+            "<button type=\"submit\">Enqueue Request</button>"
+            "</form>"
+        )
 
     lines.append("</section>")
     return "".join(lines)
 
 
-def _render_page(article_input: str, result: dict | None = None) -> bytes:
+def _render_page(
+    article_input: str,
+    result: dict | None = None,
+    action_result: dict | None = None,
+) -> bytes:
     safe_input = escape(article_input)
-    message_area = _render_message_area(result)
+    message_area = _render_message_area(result, action_result)
     html = f"""<!doctype html>
 <html lang=\"en\">
 <head>
@@ -265,7 +379,7 @@ def _render_page(article_input: str, result: dict | None = None) -> bytes:
           value=\"{safe_input}\"
           placeholder=\"https://dic.nicovideo.jp/a/... or exact title\"
         >
-        <button type=\"submit\">Check archive status</button>
+        <button type=\"submit\">Submit</button>
       </form>
       {message_area}
     </section>
@@ -281,18 +395,7 @@ def create_app():
         method = environ.get("REQUEST_METHOD", "GET").upper()
         path = environ.get("PATH_INFO", "/")
 
-        if path != "/":
-            body = b"Not Found"
-            start_response(
-                "404 Not Found",
-                [
-                    ("Content-Type", "text/plain; charset=utf-8"),
-                    ("Content-Length", str(len(body))),
-                ],
-            )
-            return [body]
-
-        if method == "GET":
+        if method == "GET" and path == "/":
             body = _render_page("")
             start_response(
                 "200 OK",
@@ -303,13 +406,82 @@ def create_app():
             )
             return [body]
 
-        if method == "POST":
+        if method == "POST" and path == "/":
             article_input = _read_post_input(environ)
             body = _render_page(article_input, check_article_status(article_input))
             start_response(
                 "200 OK",
                 [
                     ("Content-Type", "text/html; charset=utf-8"),
+                    ("Content-Length", str(len(body))),
+                ],
+            )
+            return [body]
+
+        if method == "POST" and path == "/action":
+            form = _read_post_form(environ)
+            article_input = form.get("article_input", "")
+            action = form.get("action", "")
+
+            action_result = _followup_action(article_input, action)
+            check_result = action_result["check_result"]
+
+            if action_result["status"] == "download_ready":
+                txt_result = get_saved_article_txt(
+                    check_result["article_id"],
+                    check_result["article_type"],
+                )
+                if not txt_result["found"]:
+                    body = _render_page(
+                        article_input,
+                        check_result,
+                        {
+                            "status": "action_error",
+                            "message": "Saved article was not found for TXT download.",
+                        },
+                    )
+                    start_response(
+                        "200 OK",
+                        [
+                            ("Content-Type", "text/html; charset=utf-8"),
+                            ("Content-Length", str(len(body))),
+                        ],
+                    )
+                    return [body]
+
+                filename = (
+                    f"{check_result['article_id']}{check_result['article_type']}.txt"
+                )
+                body = txt_result["content"].encode("utf-8")
+                start_response(
+                    "200 OK",
+                    [
+                        ("Content-Type", "text/plain; charset=utf-8"),
+                        (
+                            "Content-Disposition",
+                            f'attachment; filename="{filename}"',
+                        ),
+                        ("Content-Length", str(len(body))),
+                    ],
+                )
+                return [body]
+
+            body = _render_page(article_input, check_result, action_result)
+            start_response(
+                "200 OK",
+                [
+                    ("Content-Type", "text/html; charset=utf-8"),
+                    ("Content-Length", str(len(body))),
+                ],
+            )
+            return [body]
+
+        if path not in {"/", "/action"}:
+            body = b"Not Found"
+            start_response(
+                "404 Not Found",
+                [
+                    ("Content-Type", "text/plain; charset=utf-8"),
                     ("Content-Length", str(len(body))),
                 ],
             )
