@@ -1,4 +1,9 @@
-from target_list import add_target_url, load_target_urls, validate_target_url
+from target_list import (
+    add_target_url,
+    load_target_urls,
+    register_article_target_url,
+    validate_target_url,
+)
 
 
 def test_load_target_urls_reads_plain_text_targets_stably(tmp_path):
@@ -102,3 +107,14 @@ def test_add_target_url_rejects_invalid_target_without_writing(tmp_path):
 
     assert result == "invalid"
     assert target_file.exists() is False
+
+
+def test_register_article_target_url_appends_like_add_target_url(tmp_path):
+    target_file = tmp_path / "targets.txt"
+
+    assert register_article_target_url(
+        "https://dic.nicovideo.jp/a/100", str(target_file)
+    ) == "added"
+    assert target_file.read_text(encoding="utf-8") == (
+        "https://dic.nicovideo.jp/a/100\n"
+    )

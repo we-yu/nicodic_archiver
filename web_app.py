@@ -1,3 +1,4 @@
+import os
 from html import escape
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
@@ -10,6 +11,14 @@ from archive_read import (
 )
 from article_resolver import resolve_article_input
 from storage import enqueue_canonical_target, init_db
+from target_list import register_article_target_url
+
+
+def _default_target_list_path() -> str:
+    return os.environ.get(
+        "NICODIC_TARGET_LIST_PATH",
+        os.environ.get("TARGET_LIST_PATH", "runtime/targets/targets.txt"),
+    )
 
 
 def _normalize_web_input(article_input: str) -> str:
@@ -125,12 +134,22 @@ def _build_action_result_message(action_result: dict) -> str:
         return "Queue request accepted."
     if status == "already_saved":
         return "Article is already saved; queue request was skipped."
+    if status == "target_registered":
+        return "Added canonical URL to the plain-text target list."
+    if status == "target_duplicate":
+        return "Target list already contains this URL (no change)."
+    if status == "target_invalid":
+        return "Target list rejected the URL (invalid for this list)."
     if status == "action_error":
         return action_result["message"]
     return "Action completed."
 
 
-def _followup_action(article_input: str, action: str) -> dict:
+def _followup_action(
+    article_input: str,
+    action: str,
+    target_list_path: str,
+) -> dict:
     status_result = check_article_status(article_input)
     if status_result["status"] not in {"saved", "unsaved"}:
         return {
@@ -176,6 +195,26 @@ def _followup_action(article_input: str, action: str) -> dict:
         return {
             "status": "enqueued",
             "enqueue_status": enqueue_result["status"],
+            "check_result": status_result,
+        }
+
+    if action == "register_target":
+        outcome = register_article_target_url(
+            status_result["article_url"],
+            target_list_path,
+        )
+        if outcome == "added":
+            return {
+                "status": "target_registered",
+                "check_result": status_result,
+            }
+        if outcome == "duplicate":
+            return {
+                "status": "target_duplicate",
+                "check_result": status_result,
+            }
+        return {
+            "status": "target_invalid",
             "check_result": status_result,
         }
 
@@ -252,6 +291,14 @@ def _render_message_area(result: dict | None, action_result: dict | None = None)
             "<button type=\"submit\">Download TXT</button>"
             "</form>"
         )
+        lines.append(
+            "<form method=\"post\" action=\"/action\">"
+            f"<input type=\"hidden\" name=\"article_input\" "
+            f"value=\"{escape(result['input'])}\">"
+            "<input type=\"hidden\" name=\"action\" value=\"register_target\">"
+            "<button type=\"submit\">Add to target list</button>"
+            "</form>"
+        )
 
     if result["status"] == "unsaved":
         lines.append(
@@ -260,6 +307,14 @@ def _render_message_area(result: dict | None, action_result: dict | None = None)
             f"value=\"{escape(result['input'])}\">"
             "<input type=\"hidden\" name=\"action\" value=\"enqueue_request\">"
             "<button type=\"submit\">Enqueue Request</button>"
+            "</form>"
+        )
+        lines.append(
+            "<form method=\"post\" action=\"/action\">"
+            f"<input type=\"hidden\" name=\"article_input\" "
+            f"value=\"{escape(result['input'])}\">"
+            "<input type=\"hidden\" name=\"action\" value=\"register_target\">"
+            "<button type=\"submit\">Add to target list</button>"
             "</form>"
         )
 
@@ -390,7 +445,9 @@ def _render_page(
     return html.encode("utf-8")
 
 
-def create_app():
+def create_app(target_list_path: str | None = None):
+    resolved_target_path = target_list_path or _default_target_list_path()
+
     def app(environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET").upper()
         path = environ.get("PATH_INFO", "/")
@@ -423,7 +480,11 @@ def create_app():
             article_input = form.get("article_input", "")
             action = form.get("action", "")
 
-            action_result = _followup_action(article_input, action)
+            action_result = _followup_action(
+                article_input,
+                action,
+                resolved_target_path,
+            )
             check_result = action_result["check_result"]
 
             if action_result["status"] == "download_ready":
@@ -503,7 +564,24 @@ def create_app():
 application = create_app()
 
 
-def serve_web_app(host: str = "127.0.0.1", port: int = 8000) -> None:
-    with make_server(host, port, application) as server:
-        print(f"Serving web app at http://{host}:{port}")
+def serve_web_app(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    target_list_path: str | None = None,
+) -> None:
+    resolved_path = (
+        target_list_path
+        if target_list_path is not None
+        else _default_target_list_path()
+    )
+    app = create_app(target_list_path=resolved_path)
+    with make_server(host, port, app) as server:
+        if host in {"0.0.0.0", "::"}:
+            print(
+                "Serving web app on "
+                f"{host}:{port} (open http://127.0.0.1:{port} or "
+                f"http://<host-ip>:{port})"
+            )
+        else:
+            print(f"Serving web app at http://{host}:{port}")
         server.serve_forever()

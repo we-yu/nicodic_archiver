@@ -1,4 +1,5 @@
 """Unit tests for main.py: CLI dispatch (inspect vs scrape, usage/exit)."""
+import os
 from unittest.mock import call, patch
 
 from pathlib import Path
@@ -266,7 +267,11 @@ def test_main_web_mode_calls_serve_web_app_with_defaults(mock_serve_web_app):
     with patch("sys.argv", ["main.py", "web"]):
         main_module.main()
 
-    mock_serve_web_app.assert_called_once_with(host="127.0.0.1", port=8000)
+    mock_serve_web_app.assert_called_once_with(
+        host="0.0.0.0",
+        port=8000,
+        target_list_path=None,
+    )
 
 
 @patch("main.serve_web_app")
@@ -277,7 +282,24 @@ def test_main_web_mode_allows_host_and_port_override(mock_serve_web_app):
     ):
         main_module.main()
 
-    mock_serve_web_app.assert_called_once_with(host="0.0.0.0", port=9001)
+    mock_serve_web_app.assert_called_once_with(
+        host="0.0.0.0",
+        port=9001,
+        target_list_path=None,
+    )
+
+
+@patch("main.serve_web_app")
+def test_main_web_mode_passes_target_list_path_from_env(mock_serve_web_app):
+    with patch.dict(os.environ, {"NICODIC_TARGET_LIST_PATH": "/tmp/t.txt"}):
+        with patch("sys.argv", ["main.py", "web"]):
+            main_module.main()
+
+    mock_serve_web_app.assert_called_once_with(
+        host="0.0.0.0",
+        port=8000,
+        target_list_path="/tmp/t.txt",
+    )
 
 
 def test_main_too_few_args_exits_with_usage(capsys):

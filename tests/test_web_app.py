@@ -265,6 +265,7 @@ def test_application_post_renders_saved_result_message():
     assert "Canonical target: a/12345" in response["body"]
     assert "Saved response count: 42" in response["body"]
     assert "Download TXT" in response["body"]
+    assert "Add to target list" in response["body"]
 
 
 def test_application_post_renders_title_resolution_failure_message():
@@ -300,6 +301,96 @@ def test_application_post_renders_unsaved_result_with_enqueue_action():
 
     assert response["status"] == "200 OK"
     assert "Enqueue Request" in response["body"]
+    assert "Add to target list" in response["body"]
+
+
+@patch("web_app.register_article_target_url")
+@patch("web_app.check_article_status")
+def test_application_action_register_target_unsaved_added(
+    mock_check_status,
+    mock_register,
+):
+    mock_check_status.return_value = {
+        "status": "unsaved",
+        "input": "Foo",
+        "title": "Foo",
+        "matched_by": "exact_title",
+        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_id": "12345",
+        "article_type": "a",
+        "message": "Resolved article, but no saved archive was found yet.",
+    }
+    mock_register.return_value = "added"
+
+    response = _run_wsgi_request(
+        "POST",
+        path="/action",
+        body="article_input=Foo&action=register_target",
+    )
+
+    assert response["status"] == "200 OK"
+    assert "Added canonical URL to the plain-text target list." in response["body"]
+    mock_register.assert_called_once_with(
+        "https://dic.nicovideo.jp/a/12345",
+        "runtime/targets/targets.txt",
+    )
+
+
+@patch("web_app.register_article_target_url")
+@patch("web_app.check_article_status")
+def test_application_action_register_target_duplicate_bounded_message(
+    mock_check_status,
+    mock_register,
+):
+    mock_check_status.return_value = {
+        "status": "saved",
+        "input": "Foo",
+        "title": "Foo",
+        "matched_by": "exact_title",
+        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_id": "12345",
+        "article_type": "a",
+        "response_count": 0,
+        "message": "Saved archive found for the resolved article.",
+    }
+    mock_register.return_value = "duplicate"
+
+    response = _run_wsgi_request(
+        "POST",
+        path="/action",
+        body="article_input=Foo&action=register_target",
+    )
+
+    assert response["status"] == "200 OK"
+    assert "Target list already contains this URL (no change)." in response["body"]
+
+
+@patch("web_app.register_article_target_url")
+@patch("web_app.check_article_status")
+def test_application_action_register_target_invalid_bounded_message(
+    mock_check_status,
+    mock_register,
+):
+    mock_check_status.return_value = {
+        "status": "unsaved",
+        "input": "Foo",
+        "title": "Foo",
+        "matched_by": "exact_title",
+        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_id": "12345",
+        "article_type": "a",
+        "message": "Resolved article, but no saved archive was found yet.",
+    }
+    mock_register.return_value = "invalid"
+
+    response = _run_wsgi_request(
+        "POST",
+        path="/action",
+        body="article_input=Foo&action=register_target",
+    )
+
+    assert response["status"] == "200 OK"
+    assert "Target list rejected the URL (invalid for this list)." in response["body"]
 
 
 @patch("web_app.get_saved_article_txt")

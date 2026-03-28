@@ -111,6 +111,33 @@ The wrapper acquires a simple host-side lock under `runtime/logs`. If another
 run is already active, it prints a skip message and exits without starting a
 second overlapping periodic pass.
 
+## Web UI (single-operator)
+
+The minimal archive checker can run inside the runtime container and be
+reached from a browser on the host or another machine on the same network.
+
+Typical bind (listens on all interfaces so you can use the host IP):
+
+```
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+  python main.py web
+```
+
+The compose file maps port `8000` on the host to `8000` in the container.
+Open `http://127.0.0.1:8000` on the same machine, or `http://<host-ip>:8000`
+from another device on the LAN.
+
+`NICODIC_TARGET_LIST_PATH` defaults to `/runtime/targets/targets.txt` in the
+runtime compose file. The "Add to target list" action appends the resolved
+canonical article URL to that file. It does not enqueue work or scrape
+immediately; periodic or batch runs pick up new lines on their own schedule.
+
+Override listen address or port if needed:
+
+- `NICODIC_WEB_HOST` (default `0.0.0.0`; override with `--host` or env)
+- `NICODIC_WEB_PORT` (default `8000`)
+- CLI: `python main.py web --host 127.0.0.1 --port 9000`
+
 Useful environment overrides for external schedulers:
 - `TARGET_LIST_PATH` defaults to `/runtime/targets/targets.txt`
 - `COMPOSE_FILE_PATH` defaults to `docker-compose.runtime.yml`

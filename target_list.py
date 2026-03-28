@@ -79,3 +79,9 @@ def add_target_url(article_url: str, target_list_path: str) -> str:
         target_file.write(f"{prefix}{candidate}\n")
 
     return "added"
+
+
+def register_article_target_url(article_url: str, target_list_path: str) -> str:
+    """Append a canonical article URL for later periodic runs (plain-text today)."""
+
+    return add_target_url(article_url, target_list_path)

@@ -5,8 +5,11 @@ services:
       dockerfile: Dockerfile.runtime
     user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     working_dir: /app
+    ports:
+      - "8000:8000"
     environment:
       BATCH_LOG_DIR: /runtime/logs/batch_runs
+      NICODIC_TARGET_LIST_PATH: /runtime/targets/targets.txt
     volumes:
       - ./runtime/targets:/runtime/targets
       - ./runtime/data:/app/data

@@ -292,8 +292,8 @@ def main():
         return
 
     if sys.argv[1] == "web":
-        host = "127.0.0.1"
-        port = 8000
+        host = os.environ.get("NICODIC_WEB_HOST", "0.0.0.0")
+        port = int(os.environ.get("NICODIC_WEB_PORT", "8000"))
 
         if "--host" in sys.argv:
             idx = sys.argv.index("--host")
@@ -303,7 +303,8 @@ def main():
             idx = sys.argv.index("--port")
             port = int(sys.argv[idx + 1])
 
-        serve_web_app(host=host, port=port)
+        list_path = os.environ.get("NICODIC_TARGET_LIST_PATH")
+        serve_web_app(host=host, port=port, target_list_path=list_path)
         return
 
     # 通常スクレイプモード
