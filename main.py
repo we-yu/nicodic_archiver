@@ -145,7 +145,10 @@ def main():
         print("  python main.py targets <target_list_path>")
         print("  python main.py batch <target_list_path>")
         print("  python main.py periodic-once <target_list_path>")
-        print("  python main.py web [--host HOST] [--port PORT]")
+        print(
+            "  python main.py web [--host HOST] [--port PORT] "
+            "[--target-list-path PATH]"
+        )
         print(
             "  python main.py periodic <target_list_path> <interval_seconds> "
             "[--max-runs N]"
@@ -294,6 +297,10 @@ def main():
     if sys.argv[1] == "web":
         host = "127.0.0.1"
         port = 8000
+        target_list_path = os.environ.get(
+            "TARGET_LIST_PATH",
+            "runtime/targets/targets.txt",
+        )
 
         if "--host" in sys.argv:
             idx = sys.argv.index("--host")
@@ -303,7 +310,15 @@ def main():
             idx = sys.argv.index("--port")
             port = int(sys.argv[idx + 1])
 
-        serve_web_app(host=host, port=port)
+        if "--target-list-path" in sys.argv:
+            idx = sys.argv.index("--target-list-path")
+            target_list_path = sys.argv[idx + 1]
+
+        serve_web_app(
+            host=host,
+            port=port,
+            target_list_path=target_list_path,
+        )
         return
 
     # 通常スクレイプモード

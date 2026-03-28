@@ -266,18 +266,35 @@ def test_main_web_mode_calls_serve_web_app_with_defaults(mock_serve_web_app):
     with patch("sys.argv", ["main.py", "web"]):
         main_module.main()
 
-    mock_serve_web_app.assert_called_once_with(host="127.0.0.1", port=8000)
+    mock_serve_web_app.assert_called_once_with(
+        host="127.0.0.1",
+        port=8000,
+        target_list_path="runtime/targets/targets.txt",
+    )
 
 
 @patch("main.serve_web_app")
 def test_main_web_mode_allows_host_and_port_override(mock_serve_web_app):
     with patch(
         "sys.argv",
-        ["main.py", "web", "--host", "0.0.0.0", "--port", "9001"],
+        [
+            "main.py",
+            "web",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9001",
+            "--target-list-path",
+            "/runtime/targets/custom.txt",
+        ],
     ):
         main_module.main()
 
-    mock_serve_web_app.assert_called_once_with(host="0.0.0.0", port=9001)
+    mock_serve_web_app.assert_called_once_with(
+        host="0.0.0.0",
+        port=9001,
+        target_list_path="/runtime/targets/custom.txt",
+    )
 
 
 def test_main_too_few_args_exits_with_usage(capsys):
@@ -297,6 +314,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "targets <target_list_path>" in out
     assert "batch <target_list_path>" in out
     assert "periodic-once <target_list_path>" in out
+    assert "web [--host HOST] [--port PORT] [--target-list-path PATH]" in out
     assert (
         "periodic <target_list_path> <interval_seconds> [--max-runs N]" in out
     )
