@@ -8,7 +8,7 @@ intended to keep a long-lived container available for manual CLI use.
 
 What this profile does:
 - builds a runtime image from Dockerfile.runtime
-- keeps one terminal-friendly container running
+- keeps one single-operator web runtime running on a host IP:port
 - preserves targets, SQLite data, archives, and batch logs through mounts
 
 What this profile does not do yet:
@@ -19,6 +19,11 @@ What this profile now adds for periodic operation:
 - a host-side one-shot wrapper that calls the existing periodic path
 - simple lock + skip handling to avoid overlap
 - a scheduler-friendly non-interactive invocation shape
+
+What this profile now adds for web operation:
+- starts the existing web app inside the runtime container
+- publishes the web app on a host-visible IP:port mapping
+- keeps target intake bounded to canonical article URLs in the text target list
 
 ## Mounted Paths
 
@@ -36,6 +41,9 @@ Because the application already reads and writes under data/ and uses the
 BATCH_LOG_DIR environment variable for batch logs, no product behavior needs
 to change.
 
+The runtime profile also sets TARGET_LIST_PATH to /runtime/targets/targets.txt
+for the web process.
+
 ## Host UID/GID Handling
 
 To keep generated files writable from the host shell, pass the host UID/GID
@@ -43,7 +51,10 @@ only when starting the runtime container.
 
 Recommended start command:
 
-`LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) docker compose -f docker-compose.runtime.yml up -d --build`
+```sh
+LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) \
+	docker compose -f docker-compose.runtime.yml up -d --build
+```
 
 This avoids relying on persistent host-side environment variable setup.
 The values are resolved from the current host at container start time.
@@ -52,10 +63,34 @@ The values are resolved from the current host at container start time.
 
 Build and start the provisional runtime container:
 
-`LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) docker compose -f docker-compose.runtime.yml up -d --build`
+```sh
+LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) \
+	docker compose -f docker-compose.runtime.yml up -d --build
+```
 
-The container stays running with a simple foreground process so that human
-operators can execute the existing CLI commands inside it.
+The container starts the existing web app on port 8000 inside the container.
+By default, docker-compose.runtime.yml publishes that as 127.0.0.1:8000 on
+the host.
+
+Open the web UI from the host browser at:
+
+`http://127.0.0.1:8000`
+
+To bind a different host IP or port without editing files:
+
+```sh
+WEB_BIND_HOST=0.0.0.0 WEB_PORT=8010 \
+LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) \
+	docker compose -f docker-compose.runtime.yml up -d --build
+```
+
+The web app remains a thin entrypoint. A web-side registration adds only the
+canonical article URL to runtime/targets/targets.txt. It does not enqueue or
+scrape immediately; the next periodic or batch pass performs the actual scrape.
+
+The web UI is intentionally separated from immediate execution. It performs
+bounded validation / existence checks, target-list registration, and saved
+article TXT download only.
 
 ## Stop
 
@@ -71,6 +106,9 @@ Create or edit the target list at:
 
 That file remains a human-editable plain text target source.
 
+The web UI writes the same file when a resolved article is added through the
+Add To Target List action.
+
 ## Initial Smoke Test
 
 On a fresh runtime data directory, run one scrape or batch pass before using
@@ -83,25 +121,52 @@ Reason:
 
 Recommended first-pass smoke test:
 
-`docker compose -f docker-compose.runtime.yml exec personal_runtime python main.py batch /runtime/targets/targets.txt`
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py batch /runtime/targets/targets.txt
+```
 
 After that, this command should work as expected:
 
-`docker compose -f docker-compose.runtime.yml exec personal_runtime python main.py list-articles`
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py list-articles
+```
 
 ## Common Commands
 
+Follow the published web runtime logs:
+
+`docker compose -f docker-compose.runtime.yml logs -f personal_runtime`
+
 Show the target list currently mounted into the runtime:
 
-`docker compose -f docker-compose.runtime.yml exec personal_runtime python main.py targets /runtime/targets/targets.txt`
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py targets /runtime/targets/targets.txt
+```
 
 Run one batch pass:
 
-`docker compose -f docker-compose.runtime.yml exec personal_runtime python main.py batch /runtime/targets/targets.txt`
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py batch /runtime/targets/targets.txt
+```
 
 Run the current periodic CLI entrypoint manually:
 
-`docker compose -f docker-compose.runtime.yml exec personal_runtime python main.py periodic /runtime/targets/targets.txt 300`
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py periodic /runtime/targets/targets.txt 300
+```
+
+Run the web app manually with an explicit target list path if needed:
+
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py web --host 0.0.0.0 --port 8000 \
+	--target-list-path /runtime/targets/targets.txt
+```
 
 Run one scheduler-friendly periodic cycle through the wrapper:
 
@@ -123,11 +188,17 @@ Example scheduler-facing invocation shape:
 
 List saved articles:
 
-`docker compose -f docker-compose.runtime.yml exec personal_runtime python main.py list-articles`
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py list-articles
+```
 
 Export all saved articles:
 
-`docker compose -f docker-compose.runtime.yml exec personal_runtime python main.py export-all-articles --format txt`
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py export-all-articles --format txt
+```
 
 ## Cleanup After A Smoke Test
 
@@ -154,4 +225,3 @@ runtime profile:
 
 These directories are included only as a provisional runtime shape. A later
 task can package scheduling or host deployment more tightly if needed.
-

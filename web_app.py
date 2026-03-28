@@ -1,3 +1,4 @@
+import os
 from html import escape
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
@@ -9,7 +10,13 @@ from archive_read import (
     get_saved_article_summary_by_exact_title,
 )
 from article_resolver import resolve_article_input
-from storage import enqueue_canonical_target, init_db
+from target_list import add_target_url
+
+
+DEFAULT_TARGET_LIST_PATH = os.environ.get(
+    "TARGET_LIST_PATH",
+    "runtime/targets/targets.txt",
+)
 
 
 def _normalize_web_input(article_input: str) -> str:
@@ -91,18 +98,6 @@ def check_article_status(article_input: str) -> dict:
         }
 
 
-def _read_post_input(environ: dict) -> str:
-    content_length = environ.get("CONTENT_LENGTH", "0").strip()
-    try:
-        body_size = int(content_length)
-    except ValueError:
-        body_size = 0
-
-    body = environ["wsgi.input"].read(body_size).decode("utf-8")
-    form_data = parse_qs(body, keep_blank_values=True)
-    return form_data.get("article_input", [""])[0]
-
-
 def _read_post_form(environ: dict) -> dict:
     content_length = environ.get("CONTENT_LENGTH", "0").strip()
     try:
@@ -119,18 +114,20 @@ def _build_action_result_message(action_result: dict) -> str:
     status = action_result["status"]
     if status == "download_ready":
         return "Saved article TXT download is ready."
-    if status == "enqueued":
-        if action_result.get("enqueue_status") == "duplicate":
-            return "Queue request accepted (already queued)."
-        return "Queue request accepted."
-    if status == "already_saved":
-        return "Article is already saved; queue request was skipped."
+    if status == "target_added":
+        return "Canonical article URL was added to the target list."
+    if status == "target_duplicate":
+        return "Canonical article URL is already present in the target list."
     if status == "action_error":
         return action_result["message"]
     return "Action completed."
 
 
-def _followup_action(article_input: str, action: str) -> dict:
+def _followup_action(
+    article_input: str,
+    action: str,
+    target_list_path: str,
+) -> dict:
     status_result = check_article_status(article_input)
     if status_result["status"] not in {"saved", "unsaved"}:
         return {
@@ -151,31 +148,24 @@ def _followup_action(article_input: str, action: str) -> dict:
             "check_result": status_result,
         }
 
-    if action == "enqueue_request":
-        if status_result["status"] == "saved":
+    if action == "add_target":
+        add_result = add_target_url(
+            status_result["article_url"],
+            target_list_path,
+        )
+        if add_result == "added":
             return {
-                "status": "already_saved",
+                "status": "target_added",
                 "check_result": status_result,
             }
-
-        canonical_target = {
-            "article_url": status_result["article_url"],
-            "article_id": status_result["article_id"],
-            "article_type": status_result["article_type"],
-        }
-        conn = init_db()
-        try:
-            enqueue_result = enqueue_canonical_target(
-                conn,
-                canonical_target,
-                title=status_result["title"],
-            )
-        finally:
-            conn.close()
-
+        if add_result == "duplicate":
+            return {
+                "status": "target_duplicate",
+                "check_result": status_result,
+            }
         return {
-            "status": "enqueued",
-            "enqueue_status": enqueue_result["status"],
+            "status": "action_error",
+            "message": "Canonical article URL could not be added.",
             "check_result": status_result,
         }
 
@@ -186,7 +176,10 @@ def _followup_action(article_input: str, action: str) -> dict:
     }
 
 
-def _render_message_area(result: dict | None, action_result: dict | None = None) -> str:
+def _render_message_area(
+    result: dict | None,
+    action_result: dict | None = None,
+) -> str:
     if result is None:
         return (
             '<section class="message-area empty">'
@@ -245,22 +238,37 @@ def _render_message_area(result: dict | None, action_result: dict | None = None)
             f"{escape(str(result['response_count']))}</p>"
         )
         lines.append(
-            "<form method=\"post\" action=\"/action\">"
-            f"<input type=\"hidden\" name=\"article_input\" "
-            f"value=\"{escape(result['input'])}\">"
-            "<input type=\"hidden\" name=\"action\" value=\"download_txt\">"
-            "<button type=\"submit\">Download TXT</button>"
-            "</form>"
+            (
+                "<form method=\"post\" action=\"/action\">"
+                f"<input type=\"hidden\" name=\"article_input\" "
+                f"value=\"{escape(result['input'])}\">"
+                "<input type=\"hidden\" name=\"action\" "
+                "value=\"download_txt\">"
+                "<button type=\"submit\">Download TXT</button>"
+                "</form>"
+            )
+        )
+        lines.append(
+            (
+                "<form method=\"post\" action=\"/action\">"
+                f"<input type=\"hidden\" name=\"article_input\" "
+                f"value=\"{escape(result['input'])}\">"
+                "<input type=\"hidden\" name=\"action\" value=\"add_target\">"
+                "<button type=\"submit\">Add To Target List</button>"
+                "</form>"
+            )
         )
 
     if result["status"] == "unsaved":
         lines.append(
-            "<form method=\"post\" action=\"/action\">"
-            f"<input type=\"hidden\" name=\"article_input\" "
-            f"value=\"{escape(result['input'])}\">"
-            "<input type=\"hidden\" name=\"action\" value=\"enqueue_request\">"
-            "<button type=\"submit\">Enqueue Request</button>"
-            "</form>"
+            (
+                "<form method=\"post\" action=\"/action\">"
+                f"<input type=\"hidden\" name=\"article_input\" "
+                f"value=\"{escape(result['input'])}\">"
+                "<input type=\"hidden\" name=\"action\" value=\"add_target\">"
+                "<button type=\"submit\">Add To Target List</button>"
+                "</form>"
+            )
         )
 
     lines.append("</section>")
@@ -390,7 +398,7 @@ def _render_page(
     return html.encode("utf-8")
 
 
-def create_app():
+def create_app(target_list_path: str = DEFAULT_TARGET_LIST_PATH):
     def app(environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET").upper()
         path = environ.get("PATH_INFO", "/")
@@ -407,7 +415,8 @@ def create_app():
             return [body]
 
         if method == "POST" and path == "/":
-            article_input = _read_post_input(environ)
+            form = _read_post_form(environ)
+            article_input = form.get("article_input", "")
             body = _render_page(article_input, check_article_status(article_input))
             start_response(
                 "200 OK",
@@ -423,7 +432,11 @@ def create_app():
             article_input = form.get("article_input", "")
             action = form.get("action", "")
 
-            action_result = _followup_action(article_input, action)
+            action_result = _followup_action(
+                article_input,
+                action,
+                target_list_path,
+            )
             check_result = action_result["check_result"]
 
             if action_result["status"] == "download_ready":
@@ -503,7 +516,12 @@ def create_app():
 application = create_app()
 
 
-def serve_web_app(host: str = "127.0.0.1", port: int = 8000) -> None:
-    with make_server(host, port, application) as server:
+def serve_web_app(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    target_list_path: str = DEFAULT_TARGET_LIST_PATH,
+) -> None:
+    app = create_app(target_list_path=target_list_path)
+    with make_server(host, port, app) as server:
         print(f"Serving web app at http://{host}:{port}")
         server.serve_forever()
