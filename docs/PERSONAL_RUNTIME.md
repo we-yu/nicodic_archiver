@@ -9,11 +9,10 @@ intended to keep a long-lived container available for manual CLI use.
 What this profile does:
 - builds a runtime image from Dockerfile.runtime
 - keeps one single-operator web runtime running on a host IP:port
-- preserves targets, SQLite data, archives, and batch logs through mounts
+- preserves SQLite data (including scrape targets), archives, and batch logs
 
 What this profile does not do yet:
 - cron or repeated scheduling inside the container
-- target storage migration away from the text file
 
 What this profile now adds for periodic operation:
 - a host-side one-shot wrapper that calls the existing periodic path
@@ -23,7 +22,7 @@ What this profile now adds for periodic operation:
 What this profile now adds for web operation:
 - starts the existing web app inside the runtime container
 - publishes the web app on a host-visible IP:port mapping
-- keeps target intake bounded to canonical article URLs in the text target list
+- keeps target intake bounded to canonical article rows in the sqlite target table
 
 ## Mounted Paths
 
@@ -40,9 +39,6 @@ Container-side path mapping:
 Because the application already reads and writes under data/ and uses the
 BATCH_LOG_DIR environment variable for batch logs, no product behavior needs
 to change.
-
-The runtime profile also sets TARGET_LIST_PATH to /runtime/targets/targets.txt
-for the web process.
 
 ## Host UID/GID Handling
 
@@ -84,13 +80,14 @@ LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) \
 	docker compose -f docker-compose.runtime.yml up -d --build
 ```
 
-The web app remains a thin entrypoint. A web-side registration adds only the
-canonical article URL to runtime/targets/targets.txt. It does not enqueue or
-scrape immediately; the next periodic or batch pass performs the actual scrape.
+The web app remains a thin entrypoint. A web-side registration inserts only a
+row into the sqlite `target` table (canonical identity + URL). It does not
+enqueue or scrape immediately; the next periodic or batch pass reads that
+table and performs scrapes.
 
 The web UI is intentionally separated from immediate execution. It performs
-bounded validation / existence checks, target-list registration, and saved
-article TXT download only.
+bounded validation / existence checks, target-registry registration, and
+saved article TXT download only.
 
 ## Stop
 
@@ -98,16 +95,21 @@ Stop and remove the provisional runtime container:
 
 `docker compose -f docker-compose.runtime.yml down`
 
-## Target List Location
+## Scrape target registry (sqlite)
 
-Create or edit the target list at:
+Authoritative scrape targets live in the `target` table inside the mounted
+sqlite DB (`runtime/data` on the host, `data/nicodic.db` in the container).
 
-`runtime/targets/targets.txt`
+Optional legacy plain text at `runtime/targets/targets.txt` is not a
+source-of-truth. Use a one-shot admin import when migrating old files:
 
-That file remains a human-editable plain text target source.
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py import-targets-from-txt /runtime/targets/targets.txt
+```
 
-The web UI writes the same file when a resolved article is added through the
-Add To Target List action.
+The web UI registers resolved articles through the same table via
+Add To Target List (no enqueue, no immediate scrape).
 
 ## Initial Smoke Test
 
@@ -119,11 +121,11 @@ Reason:
 - but `list-articles` expects the SQLite archive schema to already exist
 - the first scrape or batch pass creates the initial archive DB state
 
-Recommended first-pass smoke test:
+Recommended first-pass smoke test (after registering at least one target):
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py batch /runtime/targets/targets.txt
+	python main.py batch
 ```
 
 After that, this command should work as expected:
@@ -139,33 +141,32 @@ Follow the published web runtime logs:
 
 `docker compose -f docker-compose.runtime.yml logs -f personal_runtime`
 
-Show the target list currently mounted into the runtime:
+List active scrape targets from sqlite:
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py targets /runtime/targets/targets.txt
+	python main.py targets
 ```
 
-Run one batch pass:
+Run one batch pass (reads the `target` table):
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py batch /runtime/targets/targets.txt
+	python main.py batch
 ```
 
-Run the current periodic CLI entrypoint manually:
+Run the periodic CLI manually (interval in seconds):
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py periodic /runtime/targets/targets.txt 300
+	python main.py periodic 300
 ```
 
-Run the web app manually with an explicit target list path if needed:
+Run the web app manually (bind and port only):
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py web --host 0.0.0.0 --port 8000 \
-	--target-list-path /runtime/targets/targets.txt
+	python main.py web --host 0.0.0.0 --port 8000
 ```
 
 Run one scheduler-friendly periodic cycle through the wrapper:
@@ -177,14 +178,13 @@ run is already active, it prints a skip message and exits without starting a
 second overlapping periodic pass.
 
 Useful environment overrides for external schedulers:
-- `TARGET_LIST_PATH` defaults to `/runtime/targets/targets.txt`
 - `COMPOSE_FILE_PATH` defaults to `docker-compose.runtime.yml`
 - `COMPOSE_SERVICE_NAME` defaults to `personal_runtime`
 - `LOCK_DIR_PATH` defaults to `runtime/logs/periodic_once.lock`
 
-Example scheduler-facing invocation shape:
+Example scheduler-facing invocation:
 
-`TARGET_LIST_PATH=/runtime/targets/targets.txt ./runtime/periodic_once.sh`
+`./runtime/periodic_once.sh`
 
 List saved articles:
 
@@ -219,8 +219,8 @@ normally work without requiring `sudo chown`.
 
 The following repository-local directories act as persistence anchors for the
 runtime profile:
-- runtime/targets: the target list file you maintain
-- runtime/data: SQLite database plus saved article archives
+- runtime/targets: optional legacy plain text for admin import only
+- runtime/data: SQLite database (archives, queue, and scrape `target` registry)
 - runtime/logs: batch and periodic run logs
 
 These directories are included only as a provisional runtime shape. A later

@@ -11,9 +11,8 @@ def _parse_target_line(raw_line: str) -> str | None:
     return line
 
 
-# Temporary plain-text input source until a more structured target registry exists.
 def load_target_urls(file_path: str) -> list[str]:
-    """Load a stable URL list from a human-editable plain text file."""
+    """Load URLs from a plain-text file (admin import / legacy tooling only)."""
 
     seen_urls = set()
     targets = []
@@ -30,6 +29,19 @@ def load_target_urls(file_path: str) -> list[str]:
         targets.append(line)
 
     return targets
+
+
+def parse_article_identity_from_url(article_url: str) -> tuple[str, str] | None:
+    """Return (article_type, article_id) for a nicopedia article-shaped URL path."""
+
+    parsed = urlparse(article_url.strip())
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if len(path_parts) != 2:
+        return None
+    article_type, article_id = path_parts
+    if not article_type or not article_id:
+        return None
+    return (article_type, article_id)
 
 
 def validate_target_url(article_url: str) -> bool:

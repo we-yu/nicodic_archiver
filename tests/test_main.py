@@ -67,25 +67,46 @@ def test_main_export_all_articles_exits_non_zero_on_failure(mock_export_all):
     mock_export_all.assert_called_once_with("html")
 
 
-@patch("main.add_target_url", return_value="added")
-def test_main_add_target_calls_add_target_url(mock_add_target, capsys):
+@patch("main.register_scrape_target", return_value="added")
+@patch("main.init_db")
+@patch("main.resolve_article_input")
+def test_main_add_target_registers_resolved_article(
+    mock_resolve,
+    mock_init_db,
+    mock_register,
+    capsys,
+):
+    class _Conn:
+        def close(self):
+            return None
+
+    mock_init_db.return_value = _Conn()
+    mock_resolve.return_value = {
+        "ok": True,
+        "canonical_target": {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+        },
+        "title": "T",
+        "matched_by": "article_url",
+        "normalized_input": "https://dic.nicovideo.jp/a/12345",
+    }
+
     with patch(
         "sys.argv",
-        [
-            "main.py",
-            "add-target",
-            "https://dic.nicovideo.jp/a/12345",
-            "targets.txt",
-        ],
+        ["main.py", "add-target", "https://dic.nicovideo.jp/a/12345"],
     ):
         main_module.main()
 
-    mock_add_target.assert_called_once_with(
+    mock_register.assert_called_once_with(
+        mock_init_db.return_value,
+        "12345",
+        "a",
         "https://dic.nicovideo.jp/a/12345",
-        "targets.txt",
     )
     out = capsys.readouterr().out
-    assert "Added target: https://dic.nicovideo.jp/a/12345" in out
+    assert "Registered scrape target: https://dic.nicovideo.jp/a/12345" in out
 
 
 @patch("main.resolve_article_input")
@@ -137,40 +158,78 @@ def test_main_resolve_article_exits_non_zero_on_resolution_failure(
     assert "Input: Foo" in out
 
 
-@patch("main.add_target_url", return_value="duplicate")
-def test_main_add_target_reports_duplicate_without_error(mock_add_target, capsys):
+@patch("main.register_scrape_target", return_value="duplicate")
+@patch("main.init_db")
+@patch("main.resolve_article_input")
+def test_main_add_target_reports_duplicate_without_error(
+    mock_resolve,
+    mock_init_db,
+    mock_register,
+    capsys,
+):
+    class _Conn:
+        def close(self):
+            return None
+
+    mock_init_db.return_value = _Conn()
+    mock_resolve.return_value = {
+        "ok": True,
+        "canonical_target": {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+        },
+        "title": "T",
+        "matched_by": "article_url",
+        "normalized_input": "x",
+    }
+
     with patch(
         "sys.argv",
-        [
-            "main.py",
-            "add-target",
-            "https://dic.nicovideo.jp/a/12345",
-            "targets.txt",
-        ],
+        ["main.py", "add-target", "https://dic.nicovideo.jp/a/12345"],
     ):
         main_module.main()
 
-    mock_add_target.assert_called_once_with(
-        "https://dic.nicovideo.jp/a/12345",
-        "targets.txt",
-    )
     out = capsys.readouterr().out
-    assert "Target already exists: https://dic.nicovideo.jp/a/12345" in out
+    assert "Scrape target already registered: a/12345" in out
 
 
-@patch("main.add_target_url", return_value="invalid")
-def test_main_add_target_exits_non_zero_for_invalid_url(mock_add_target, capsys):
+@patch("main.register_scrape_target", return_value="invalid")
+@patch("main.init_db")
+@patch("main.resolve_article_input")
+def test_main_add_target_exits_non_zero_for_invalid_registry_url(
+    mock_resolve,
+    mock_init_db,
+    mock_register,
+    capsys,
+):
+    class _Conn:
+        def close(self):
+            return None
+
+    mock_init_db.return_value = _Conn()
+    mock_resolve.return_value = {
+        "ok": True,
+        "canonical_target": {
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_id": "12345",
+            "article_type": "a",
+        },
+        "title": "T",
+        "matched_by": "article_url",
+        "normalized_input": "x",
+    }
+
     with patch(
         "sys.argv",
-        ["main.py", "add-target", "not-a-url", "targets.txt"],
+        ["main.py", "add-target", "https://dic.nicovideo.jp/a/12345"],
     ):
         with pytest.raises(SystemExit) as exc_info:
             main_module.main()
 
     assert exc_info.value.code == 1
-    mock_add_target.assert_called_once_with("not-a-url", "targets.txt")
     out = capsys.readouterr().out
-    assert "Invalid target URL: not-a-url" in out
+    assert "Invalid canonical URL for registry:" in out
 
 
 @patch("main.export_article", return_value=False)
@@ -193,29 +252,26 @@ def test_main_inspect_mode_with_last_n(mock_inspect):
     mock_inspect.assert_called_once_with("12345", "a", 10)
 
 
-@patch("main.load_target_urls", return_value=[
+@patch("main.list_active_scrape_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/12345",
     "https://dic.nicovideo.jp/a/99999",
 ])
-def test_main_targets_mode_loads_and_prints_targets(mock_load_targets, capsys):
-    with patch("sys.argv", ["main.py", "targets", "targets.txt"]):
+@patch("main.init_db")
+def test_main_targets_mode_loads_and_prints_targets(mock_init_db, mock_list, capsys):
+    class _Conn:
+        def close(self):
+            return None
+
+    mock_init_db.return_value = _Conn()
+
+    with patch("sys.argv", ["main.py", "targets"]):
         main_module.main()
 
-    mock_load_targets.assert_called_once_with("targets.txt")
+    mock_list.assert_called_once_with(mock_init_db.return_value)
     out = capsys.readouterr().out
-    assert "Loaded 2 scrape target(s) from targets.txt" in out
+    assert "Loaded 2 active scrape target(s) from sqlite target registry" in out
     assert "https://dic.nicovideo.jp/a/12345" in out
     assert "https://dic.nicovideo.jp/a/99999" in out
-
-
-def test_main_targets_without_path_exits_with_usage(capsys):
-    with patch("sys.argv", ["main.py", "targets"]):
-        with pytest.raises(SystemExit) as exc_info:
-            main_module.main()
-
-    assert exc_info.value.code == 1
-    out = capsys.readouterr().out
-    assert "Usage: targets <target_list_path>" in out
 
 
 def test_main_export_all_articles_without_required_args_exits_with_usage(capsys):
@@ -229,16 +285,13 @@ def test_main_export_all_articles_without_required_args_exits_with_usage(capsys)
 
 
 def test_main_add_target_without_required_args_exits_with_usage(capsys):
-    with patch(
-        "sys.argv",
-        ["main.py", "add-target", "https://dic.nicovideo.jp/a/1"],
-    ):
+    with patch("sys.argv", ["main.py", "add-target"]):
         with pytest.raises(SystemExit) as exc_info:
             main_module.main()
 
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
-    assert "Usage: add-target <article_url> <target_list_path>" in out
+    assert "Usage: add-target <article_url_or_full_title>" in out
 
 
 def test_main_resolve_article_without_required_args_exits_with_usage(capsys):
@@ -266,35 +319,18 @@ def test_main_web_mode_calls_serve_web_app_with_defaults(mock_serve_web_app):
     with patch("sys.argv", ["main.py", "web"]):
         main_module.main()
 
-    mock_serve_web_app.assert_called_once_with(
-        host="127.0.0.1",
-        port=8000,
-        target_list_path="runtime/targets/targets.txt",
-    )
+    mock_serve_web_app.assert_called_once_with(host="127.0.0.1", port=8000)
 
 
 @patch("main.serve_web_app")
 def test_main_web_mode_allows_host_and_port_override(mock_serve_web_app):
     with patch(
         "sys.argv",
-        [
-            "main.py",
-            "web",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "9001",
-            "--target-list-path",
-            "/runtime/targets/custom.txt",
-        ],
+        ["main.py", "web", "--host", "0.0.0.0", "--port", "9001"],
     ):
         main_module.main()
 
-    mock_serve_web_app.assert_called_once_with(
-        host="0.0.0.0",
-        port=9001,
-        target_list_path="/runtime/targets/custom.txt",
-    )
+    mock_serve_web_app.assert_called_once_with(host="0.0.0.0", port=9001)
 
 
 def test_main_too_few_args_exits_with_usage(capsys):
@@ -309,15 +345,14 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "export <article_id> <article_type> --format md" in out
     assert "list-articles" in out
     assert "export-all-articles --format txt" in out
-    assert "add-target <article_url> <target_list_path>" in out
+    assert "add-target <article_url_or_full_title>" in out
     assert "resolve-article <article_url_or_full_title>" in out
-    assert "targets <target_list_path>" in out
-    assert "batch <target_list_path>" in out
-    assert "periodic-once <target_list_path>" in out
-    assert "web [--host HOST] [--port PORT] [--target-list-path PATH]" in out
-    assert (
-        "periodic <target_list_path> <interval_seconds> [--max-runs N]" in out
-    )
+    assert "targets" in out
+    assert "batch" in out
+    assert "periodic-once" in out
+    assert "import-targets-from-txt <targets_txt_path>" in out
+    assert "web [--host HOST] [--port PORT]" in out
+    assert "periodic <interval_seconds> [--max-runs N]" in out
 
 
 def test_main_inspect_without_id_type_exits_with_usage(capsys):
@@ -329,16 +364,27 @@ def test_main_inspect_without_id_type_exits_with_usage(capsys):
     assert "inspect <article_id> <article_type>" in out
 
 
-@patch("main.load_target_urls", return_value=[
+@patch("main.list_active_scrape_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
 ])
+@patch("main.init_db")
 @patch("main.run_scrape", side_effect=[True, True])
 def test_main_batch_all_success_exits_zero(
-    mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
+    mock_run_scrape,
+    mock_init_db,
+    mock_list,
+    tmp_path,
+    capsys,
+    monkeypatch,
 ):
+    class _Conn:
+        def close(self):
+            return None
+
+    mock_init_db.return_value = _Conn()
     monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
-    with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
+    with patch("sys.argv", ["main.py", "batch"]):
         main_module.main()
 
     assert mock_run_scrape.call_count == 2
@@ -353,22 +399,34 @@ def test_main_batch_all_success_exits_zero(
     text = logs[0].read_text(encoding="utf-8")
     assert "BATCH_RUN_START" in text
     assert "BATCH_RUN_END" in text
+    assert "target_source=sqlite_target_table" in text
     assert "total_targets=2" in text
     assert "failed_targets=0" in text
     assert "final_status=success" in text
     assert "\nFAIL\n" not in text
 
 
-@patch("main.load_target_urls", return_value=[
+@patch("main.list_active_scrape_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
 ])
+@patch("main.init_db")
 @patch("main.run_scrape", side_effect=[False, True])
 def test_main_batch_failure_sets_nonzero_exit_and_continues(
-    mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
+    mock_run_scrape,
+    mock_init_db,
+    mock_list,
+    tmp_path,
+    capsys,
+    monkeypatch,
 ):
+    class _Conn:
+        def close(self):
+            return None
+
+    mock_init_db.return_value = _Conn()
     monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
-    with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
+    with patch("sys.argv", ["main.py", "batch"]):
         with pytest.raises(SystemExit) as exc_info:
             main_module.main()
 
@@ -390,16 +448,27 @@ def test_main_batch_failure_sets_nonzero_exit_and_continues(
     assert "target=https://dic.nicovideo.jp/a/2" not in text
 
 
-@patch("main.load_target_urls", return_value=[
+@patch("main.list_active_scrape_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
 ])
+@patch("main.init_db")
 @patch("main.run_scrape", side_effect=[RuntimeError("boom"), True])
 def test_main_batch_exception_sets_nonzero_exit_and_continues(
-    mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
+    mock_run_scrape,
+    mock_init_db,
+    mock_list,
+    tmp_path,
+    capsys,
+    monkeypatch,
 ):
+    class _Conn:
+        def close(self):
+            return None
+
+    mock_init_db.return_value = _Conn()
     monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
-    with patch("sys.argv", ["main.py", "batch", "targets.txt"]):
+    with patch("sys.argv", ["main.py", "batch"]):
         with pytest.raises(SystemExit) as exc_info:
             main_module.main()
 
@@ -420,45 +489,43 @@ def test_main_batch_exception_sets_nonzero_exit_and_continues(
     assert "target=https://dic.nicovideo.jp/a/2" not in text
 
 
-def test_main_batch_without_path_exits_with_usage(capsys):
-    with patch("sys.argv", ["main.py", "batch"]):
-        with pytest.raises(SystemExit) as exc_info:
-            main_module.main()
+@patch("main.list_active_scrape_target_urls", return_value=[])
+@patch("main.init_db")
+def test_main_batch_empty_registry_exits_zero(
+    mock_init_db,
+    mock_list,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    class _Conn:
+        def close(self):
+            return None
 
-    assert exc_info.value.code == 1
+    mock_init_db.return_value = _Conn()
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    with patch("sys.argv", ["main.py", "batch"]):
+        main_module.main()
+
     out = capsys.readouterr().out
-    assert "Usage: batch <target_list_path>" in out
+    assert "Loaded 0 active scrape target(s)" in out
 
 
 @patch("main.run_periodic_once")
 def test_main_periodic_once_calls_run_periodic_once(mock_run_periodic_once):
-    with patch("sys.argv", ["main.py", "periodic-once", "targets.txt"]):
+    with patch("sys.argv", ["main.py", "periodic-once"]):
         main_module.main()
 
-    mock_run_periodic_once.assert_called_once_with("targets.txt")
-
-
-def test_main_periodic_once_without_path_exits_with_usage(capsys):
-    with patch("sys.argv", ["main.py", "periodic-once"]):
-        with pytest.raises(SystemExit) as exc_info:
-            main_module.main()
-
-    assert exc_info.value.code == 1
-    out = capsys.readouterr().out
-    assert "Usage: periodic-once <target_list_path>" in out
+    mock_run_periodic_once.assert_called_once_with()
 
 
 @patch("main.run_periodic_scrape")
 def test_run_periodic_once_delegates_to_single_periodic_cycle(
     mock_run_periodic_scrape,
 ):
-    main_module.run_periodic_once("targets.txt")
+    main_module.run_periodic_once()
 
-    mock_run_periodic_scrape.assert_called_once_with(
-        "targets.txt",
-        0.0,
-        max_runs=1,
-    )
+    mock_run_periodic_scrape.assert_called_once_with(0.0, max_runs=1)
 
 
 @patch(
@@ -471,14 +538,11 @@ def test_main_periodic_runs_full_batch_per_cycle_and_honors_max_runs(
 ):
     with patch(
         "sys.argv",
-        ["main.py", "periodic", "targets.txt", "30", "--max-runs", "2"],
+        ["main.py", "periodic", "30", "--max-runs", "2"],
     ):
         main_module.main()
 
-    assert mock_run_batch.call_args_list == [
-        call("targets.txt"),
-        call("targets.txt"),
-    ]
+    assert mock_run_batch.call_args_list == [call(), call()]
     mock_sleep.assert_called_once_with(30.0)
 
     out = capsys.readouterr().out
@@ -502,14 +566,11 @@ def test_main_periodic_continues_after_failure_statuses(
 ):
     with patch(
         "sys.argv",
-        ["main.py", "periodic", "targets.txt", "5", "--max-runs", "2"],
+        ["main.py", "periodic", "5", "--max-runs", "2"],
     ):
         main_module.main()
 
-    assert mock_run_batch.call_args_list == [
-        call("targets.txt"),
-        call("targets.txt"),
-    ]
+    assert mock_run_batch.call_args_list == [call(), call()]
     mock_sleep.assert_called_once_with(5.0)
 
     out = capsys.readouterr().out
@@ -522,10 +583,10 @@ def test_main_periodic_continues_after_failure_statuses(
 def test_main_periodic_exits_safely_on_ctrl_c_during_sleep(
     mock_sleep, mock_run_batch, capsys
 ):
-    with patch("sys.argv", ["main.py", "periodic", "targets.txt", "5"]):
+    with patch("sys.argv", ["main.py", "periodic", "5"]):
         main_module.main()
 
-    mock_run_batch.assert_called_once_with("targets.txt")
+    mock_run_batch.assert_called_once_with()
     mock_sleep.assert_called_once_with(5.0)
     out = capsys.readouterr().out
     assert "Periodic execution interrupted. Exiting safely." in out
@@ -533,22 +594,45 @@ def test_main_periodic_exits_safely_on_ctrl_c_during_sleep(
 
 @patch("main.run_batch_scrape", side_effect=KeyboardInterrupt)
 def test_main_periodic_exits_safely_on_ctrl_c_during_run(mock_run_batch, capsys):
-    with patch("sys.argv", ["main.py", "periodic", "targets.txt", "5"]):
+    with patch("sys.argv", ["main.py", "periodic", "5"]):
         main_module.main()
 
-    mock_run_batch.assert_called_once_with("targets.txt")
+    mock_run_batch.assert_called_once_with()
     out = capsys.readouterr().out
     assert "Periodic execution interrupted. Exiting safely." in out
 
 
 def test_main_periodic_without_required_args_exits_with_usage(capsys):
-    with patch("sys.argv", ["main.py", "periodic", "targets.txt"]):
+    with patch("sys.argv", ["main.py", "periodic"]):
         with pytest.raises(SystemExit) as exc_info:
             main_module.main()
 
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
-    assert (
-        "Usage: periodic <target_list_path> <interval_seconds> [--max-runs N]"
-        in out
-    )
+    assert "Usage: periodic <interval_seconds> [--max-runs N]" in out
+
+
+@patch("main.admin_import_targets_from_txt")
+@patch("main.init_db")
+def test_main_import_targets_from_txt_admin_path(
+    mock_init_db,
+    mock_import,
+    capsys,
+    tmp_path,
+):
+    class _Conn:
+        def close(self):
+            return None
+
+    mock_init_db.return_value = _Conn()
+    mock_import.return_value = {"added": 2, "duplicate": 1, "invalid": 0}
+
+    p = tmp_path / "t.txt"
+    p.write_text("https://dic.nicovideo.jp/a/1\n", encoding="utf-8")
+
+    with patch("sys.argv", ["main.py", "import-targets-from-txt", str(p)]):
+        main_module.main()
+
+    mock_import.assert_called_once_with(mock_init_db.return_value, str(p))
+    out = capsys.readouterr().out
+    assert "Admin import complete: added=2 duplicate=1 invalid=0" in out

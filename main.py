@@ -8,7 +8,12 @@ from pathlib import Path
 from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
 from orchestrator import run_scrape
-from target_list import add_target_url, load_target_urls
+from storage import (
+    admin_import_targets_from_txt,
+    init_db,
+    list_active_scrape_target_urls,
+    register_scrape_target,
+)
 from web_app import serve_web_app
 
 
@@ -17,12 +22,16 @@ from web_app import serve_web_app
 # ============================================================
 
 
-def run_batch_scrape(target_list_path: str) -> tuple[str, int]:
+def run_batch_scrape() -> tuple[str, int]:
     """Run one full batch pass and return (final_status, failed_targets)."""
 
-    targets = load_target_urls(target_list_path)
+    conn = init_db()
+    try:
+        targets = list_active_scrape_target_urls(conn)
+    finally:
+        conn.close()
 
-    print(f"Loaded {len(targets)} scrape target(s) from {target_list_path}")
+    print(f"Loaded {len(targets)} active scrape target(s) from sqlite target registry")
 
     run_id = uuid.uuid4().hex[:12]
     started_at = datetime.now(timezone.utc).isoformat()
@@ -34,7 +43,7 @@ def run_batch_scrape(target_list_path: str) -> tuple[str, int]:
         f.write("BATCH_RUN_START\n")
         f.write(f"run_id={run_id}\n")
         f.write(f"started_at={started_at}\n")
-        f.write(f"target_list_path={target_list_path}\n")
+        f.write("target_source=sqlite_target_table\n")
         f.write(f"total_targets={len(targets)}\n")
 
     failed_targets = 0
@@ -84,7 +93,6 @@ def run_batch_scrape(target_list_path: str) -> tuple[str, int]:
 
 
 def run_periodic_scrape(
-    target_list_path: str,
     interval_seconds: float,
     max_runs: int | None = None,
 ) -> None:
@@ -97,7 +105,7 @@ def run_periodic_scrape(
         print(f"[periodic] Run {run_number} starting")
 
         try:
-            final_status, failed_targets = run_batch_scrape(target_list_path)
+            final_status, failed_targets = run_batch_scrape()
         except KeyboardInterrupt:
             print("Periodic execution interrupted. Exiting safely.")
             return
@@ -119,10 +127,10 @@ def run_periodic_scrape(
             return
 
 
-def run_periodic_once(target_list_path: str) -> None:
+def run_periodic_once() -> None:
     """Run one periodic cycle without requiring a sleep interval argument."""
 
-    run_periodic_scrape(target_list_path, 0.0, max_runs=1)
+    run_periodic_scrape(0.0, max_runs=1)
 
 
 def main():
@@ -140,18 +148,15 @@ def main():
         print("  python main.py export <article_id> <article_type> --format md")
         print("  python main.py list-articles")
         print("  python main.py export-all-articles --format txt")
-        print("  python main.py add-target <article_url> <target_list_path>")
+        print("  python main.py add-target <article_url_or_full_title>")
         print("  python main.py resolve-article <article_url_or_full_title>")
-        print("  python main.py targets <target_list_path>")
-        print("  python main.py batch <target_list_path>")
-        print("  python main.py periodic-once <target_list_path>")
+        print("  python main.py targets")
+        print("  python main.py batch")
+        print("  python main.py periodic-once")
+        print("  python main.py import-targets-from-txt <targets_txt_path>")
+        print("  python main.py web [--host HOST] [--port PORT]")
         print(
-            "  python main.py web [--host HOST] [--port PORT] "
-            "[--target-list-path PATH]"
-        )
-        print(
-            "  python main.py periodic <target_list_path> <interval_seconds> "
-            "[--max-runs N]"
+            "  python main.py periodic <interval_seconds> [--max-runs N]"
         )
         sys.exit(1)
 
@@ -203,19 +208,39 @@ def main():
 
     if sys.argv[1] == "add-target":
 
-        if len(sys.argv) < 4:
-            print("Usage: add-target <article_url> <target_list_path>")
+        if len(sys.argv) < 3:
+            print("Usage: add-target <article_url_or_full_title>")
             sys.exit(1)
 
-        result = add_target_url(sys.argv[2], sys.argv[3])
+        resolution = resolve_article_input(sys.argv[2])
+        if not resolution["ok"]:
+            print(f"Article resolution failed: {resolution['failure_kind']}")
+            print(f"Input: {resolution['normalized_input']}")
+            sys.exit(1)
+
+        canonical = resolution["canonical_target"]
+        conn = init_db()
+        try:
+            result = register_scrape_target(
+                conn,
+                canonical["article_id"],
+                canonical["article_type"],
+                canonical["article_url"],
+            )
+        finally:
+            conn.close()
+
         if result == "added":
-            print(f"Added target: {sys.argv[2]}")
+            print(f"Registered scrape target: {canonical['article_url']}")
             return
         if result == "duplicate":
-            print(f"Target already exists: {sys.argv[2]}")
+            print(
+                "Scrape target already registered: "
+                f"{canonical['article_type']}/{canonical['article_id']}"
+            )
             return
 
-        print(f"Invalid target URL: {sys.argv[2]}")
+        print(f"Invalid canonical URL for registry: {canonical['article_url']}")
         sys.exit(1)
 
     if sys.argv[1] == "resolve-article":
@@ -240,67 +265,74 @@ def main():
         return
 
     if sys.argv[1] == "targets":
+        conn = init_db()
+        try:
+            targets = list_active_scrape_target_urls(conn)
+        finally:
+            conn.close()
 
-        if len(sys.argv) < 3:
-            print("Usage: targets <target_list_path>")
-            sys.exit(1)
-
-        target_list_path = sys.argv[2]
-        targets = load_target_urls(target_list_path)
-
-        print(f"Loaded {len(targets)} scrape target(s) from {target_list_path}")
+        print(
+            f"Loaded {len(targets)} active scrape target(s) from "
+            "sqlite target registry"
+        )
         for target in targets:
             print(target)
         return
 
     if sys.argv[1] == "batch":
-
-        if len(sys.argv) < 3:
-            print("Usage: batch <target_list_path>")
-            sys.exit(1)
-
-        _, failed_targets = run_batch_scrape(sys.argv[2])
+        _, failed_targets = run_batch_scrape()
 
         if failed_targets:
             sys.exit(1)
         return
 
     if sys.argv[1] == "periodic-once":
-
-        if len(sys.argv) < 3:
-            print("Usage: periodic-once <target_list_path>")
-            sys.exit(1)
-
-        run_periodic_once(sys.argv[2])
+        run_periodic_once()
         return
 
     if sys.argv[1] == "periodic":
 
-        if len(sys.argv) < 4:
-            print(
-                "Usage: periodic <target_list_path> <interval_seconds> "
-                "[--max-runs N]"
-            )
+        if len(sys.argv) < 3:
+            print("Usage: periodic <interval_seconds> [--max-runs N]")
             sys.exit(1)
 
-        target_list_path = sys.argv[2]
-        interval_seconds = float(sys.argv[3])
+        interval_seconds = float(sys.argv[2])
 
         max_runs = None
         if "--max-runs" in sys.argv:
             idx = sys.argv.index("--max-runs")
             max_runs = int(sys.argv[idx + 1])
 
-        run_periodic_scrape(target_list_path, interval_seconds, max_runs=max_runs)
+        run_periodic_scrape(interval_seconds, max_runs=max_runs)
+        return
+
+    if sys.argv[1] == "import-targets-from-txt":
+
+        if len(sys.argv) < 3:
+            print("Usage: import-targets-from-txt <targets_txt_path>")
+            sys.exit(1)
+
+        txt_path = sys.argv[2]
+        conn = init_db()
+        try:
+            summary = admin_import_targets_from_txt(conn, txt_path)
+        finally:
+            conn.close()
+
+        if summary.get("error") == "file_not_found":
+            print(f"Target file not found: {txt_path}")
+            sys.exit(1)
+
+        print(
+            "Admin import complete: "
+            f"added={summary['added']} duplicate={summary['duplicate']} "
+            f"invalid={summary['invalid']}"
+        )
         return
 
     if sys.argv[1] == "web":
         host = "127.0.0.1"
         port = 8000
-        target_list_path = os.environ.get(
-            "TARGET_LIST_PATH",
-            "runtime/targets/targets.txt",
-        )
 
         if "--host" in sys.argv:
             idx = sys.argv.index("--host")
@@ -310,15 +342,7 @@ def main():
             idx = sys.argv.index("--port")
             port = int(sys.argv[idx + 1])
 
-        if "--target-list-path" in sys.argv:
-            idx = sys.argv.index("--target-list-path")
-            target_list_path = sys.argv[idx + 1]
-
-        serve_web_app(
-            host=host,
-            port=port,
-            target_list_path=target_list_path,
-        )
+        serve_web_app(host=host, port=port)
         return
 
     # 通常スクレイプモード

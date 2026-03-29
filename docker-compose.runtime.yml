@@ -7,7 +7,6 @@ services:
     working_dir: /app
     environment:
       BATCH_LOG_DIR: /runtime/logs/batch_runs
-      TARGET_LIST_PATH: /runtime/targets/targets.txt
     volumes:
       - ./runtime/targets:/runtime/targets
       - ./runtime/data:/app/data
@@ -16,16 +15,5 @@ services:
       - "${WEB_BIND_HOST:-127.0.0.1}:${WEB_PORT:-8000}:8000"
     stdin_open: true
     tty: true
-    command:
-      [
-        "python",
-        "main.py",
-        "web",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8000",
-        "--target-list-path",
-        "/runtime/targets/targets.txt",
-      ]
+    command: ["python", "main.py", "web", "--host", "0.0.0.0", "--port", "8000"]
 

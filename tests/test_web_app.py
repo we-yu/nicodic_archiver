@@ -1,7 +1,7 @@
 from io import BytesIO
 from unittest.mock import patch
 
-from web_app import application, check_article_status, create_app
+from web_app import application, check_article_status
 
 
 def _run_wsgi_request(method, path="/", body="", app=None):
@@ -304,12 +304,19 @@ def test_application_post_renders_unsaved_result_with_target_action_only():
     assert "Enqueue Request" not in response["body"]
 
 
-@patch("web_app.add_target_url", return_value="added")
+@patch("web_app.register_scrape_target", return_value="added")
+@patch("web_app.init_db")
 @patch("web_app.check_article_status")
-def test_application_action_add_target_uses_canonical_url(
+def test_application_action_add_target_registers_in_sqlite(
     mock_check_status,
-    mock_add_target_url,
+    mock_init_db,
+    mock_register,
 ):
+    class _Conn:
+        def close(self):
+            return None
+
+    mock_init_db.return_value = _Conn()
     mock_check_status.return_value = {
         "status": "unsaved",
         "input": "Foo",
@@ -328,50 +335,31 @@ def test_application_action_add_target_uses_canonical_url(
     )
 
     assert response["status"] == "200 OK"
-    assert "Canonical article URL was added to the target list." in response["body"]
-    mock_add_target_url.assert_called_once_with(
+    assert (
+        "Canonical article URL was registered in the scrape target registry."
+        in response["body"]
+    )
+    mock_register.assert_called_once_with(
+        mock_init_db.return_value,
+        "12345",
+        "a",
         "https://dic.nicovideo.jp/a/12345",
-        "runtime/targets/targets.txt",
     )
 
 
-@patch("web_app.add_target_url", return_value="added")
-@patch("web_app.check_article_status")
-def test_application_action_add_target_uses_custom_runtime_target_path(
-    mock_check_status,
-    mock_add_target_url,
-):
-    mock_check_status.return_value = {
-        "status": "unsaved",
-        "input": "Foo",
-        "title": "Foo",
-        "matched_by": "exact_title",
-        "article_url": "https://dic.nicovideo.jp/a/12345",
-        "article_id": "12345",
-        "article_type": "a",
-        "message": "Resolved article, but no saved archive was found yet.",
-    }
-
-    response = _run_wsgi_request(
-        "POST",
-        path="/action",
-        body="article_input=Foo&action=add_target",
-        app=create_app(target_list_path="/runtime/targets/custom.txt"),
-    )
-
-    assert response["status"] == "200 OK"
-    mock_add_target_url.assert_called_once_with(
-        "https://dic.nicovideo.jp/a/12345",
-        "/runtime/targets/custom.txt",
-    )
-
-
-@patch("web_app.add_target_url", return_value="duplicate")
+@patch("web_app.register_scrape_target", return_value="duplicate")
+@patch("web_app.init_db")
 @patch("web_app.check_article_status")
 def test_application_action_add_target_duplicate_is_bounded(
     mock_check_status,
-    mock_add_target_url,
+    mock_init_db,
+    mock_register,
 ):
+    class _Conn:
+        def close(self):
+            return None
+
+    mock_init_db.return_value = _Conn()
     mock_check_status.return_value = {
         "status": "saved",
         "input": "Foo",
@@ -392,12 +380,14 @@ def test_application_action_add_target_duplicate_is_bounded(
 
     assert response["status"] == "200 OK"
     assert (
-        "Canonical article URL is already present in the target list."
+        "Canonical article identity is already in the scrape target registry."
         in response["body"]
     )
-    mock_add_target_url.assert_called_once_with(
+    mock_register.assert_called_once_with(
+        mock_init_db.return_value,
+        "12345",
+        "a",
         "https://dic.nicovideo.jp/a/12345",
-        "runtime/targets/targets.txt",
     )
 
 
@@ -412,7 +402,7 @@ def test_application_action_add_target_skips_write_for_unresolved_input(
         "message": "Could not resolve the input (not_found).",
     }
 
-    with patch("web_app.add_target_url") as mock_add_target_url:
+    with patch("web_app.register_scrape_target") as mock_register:
         response = _run_wsgi_request(
             "POST",
             path="/action",
@@ -421,7 +411,7 @@ def test_application_action_add_target_skips_write_for_unresolved_input(
 
     assert response["status"] == "200 OK"
     assert "Action requires a saved or unsaved resolved article." in response["body"]
-    mock_add_target_url.assert_not_called()
+    mock_register.assert_not_called()
 
 
 @patch("web_app.get_saved_article_txt")
@@ -478,7 +468,7 @@ def test_application_action_enqueue_request_is_not_supported_from_web(
         "message": "Resolved article, but no saved archive was found yet.",
     }
 
-    with patch("web_app.add_target_url") as mock_add_target_url:
+    with patch("web_app.register_scrape_target") as mock_register:
         response = _run_wsgi_request(
             "POST",
             path="/action",
@@ -487,7 +477,7 @@ def test_application_action_enqueue_request_is_not_supported_from_web(
 
     assert response["status"] == "200 OK"
     assert "Unsupported action." in response["body"]
-    mock_add_target_url.assert_not_called()
+    mock_register.assert_not_called()
 
 
 def test_application_returns_not_found_for_unknown_path():

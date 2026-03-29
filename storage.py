@@ -59,6 +59,18 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS target (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        article_id TEXT NOT NULL,
+        article_type TEXT NOT NULL,
+        canonical_url TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(article_id, article_type)
+    )
+    """)
+
     conn.commit()
     return conn
 
@@ -225,3 +237,93 @@ def dequeue_canonical_target(conn, article_id, article_type):
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def register_scrape_target(
+    conn,
+    article_id,
+    article_type,
+    canonical_url,
+):
+    """
+    IN: register one scrape target by canonical identity (Web / CLI).
+
+    Does not read the registry for scraping; write-only bounded insert.
+    """
+
+    from target_list import validate_target_url
+
+    url = canonical_url.strip()
+    if not validate_target_url(url):
+        return "invalid"
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO target
+        (article_id, article_type, canonical_url, is_active)
+        VALUES (?, ?, ?, 1)
+        """,
+        (article_id, article_type, url),
+    )
+    inserted = cur.rowcount == 1
+    conn.commit()
+    return "added" if inserted else "duplicate"
+
+
+def list_active_scrape_target_urls(conn):
+    """
+    OUT: URLs for active scrape targets, stable insert order.
+
+    Read-only; does not register or mutate targets.
+    """
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT canonical_url FROM target
+        WHERE is_active = 1
+        ORDER BY id ASC
+        """
+    )
+    return [row[0] for row in cur.fetchall()]
+
+
+def admin_import_targets_from_txt(conn, file_path):
+    """
+    Admin-only, one-shot: import lines from targets.txt into the target table.
+
+    Not used by Web or periodic batch paths.
+    """
+
+    from pathlib import Path
+
+    from target_list import (
+        load_target_urls,
+        parse_article_identity_from_url,
+        validate_target_url,
+    )
+
+    path = Path(file_path)
+    if not path.is_file():
+        return {"error": "file_not_found", "added": 0, "duplicate": 0, "invalid": 0}
+
+    counts = {"added": 0, "duplicate": 0, "invalid": 0}
+    for url in load_target_urls(str(path)):
+        if not validate_target_url(url):
+            counts["invalid"] += 1
+            continue
+        parsed = parse_article_identity_from_url(url)
+        if parsed is None:
+            counts["invalid"] += 1
+            continue
+        article_type, article_id = parsed
+        outcome = register_scrape_target(
+            conn,
+            article_id,
+            article_type,
+            url,
+        )
+        counts[outcome] += 1
+
+    return counts

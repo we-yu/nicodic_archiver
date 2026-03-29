@@ -1,4 +1,3 @@
-import os
 from html import escape
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
@@ -10,13 +9,7 @@ from archive_read import (
     get_saved_article_summary_by_exact_title,
 )
 from article_resolver import resolve_article_input
-from target_list import add_target_url
-
-
-DEFAULT_TARGET_LIST_PATH = os.environ.get(
-    "TARGET_LIST_PATH",
-    "runtime/targets/targets.txt",
-)
+from storage import init_db, register_scrape_target
 
 
 def _normalize_web_input(article_input: str) -> str:
@@ -115,19 +108,17 @@ def _build_action_result_message(action_result: dict) -> str:
     if status == "download_ready":
         return "Saved article TXT download is ready."
     if status == "target_added":
-        return "Canonical article URL was added to the target list."
+        return "Canonical article URL was registered in the scrape target registry."
     if status == "target_duplicate":
-        return "Canonical article URL is already present in the target list."
+        return (
+            "Canonical article identity is already in the scrape target registry."
+        )
     if status == "action_error":
         return action_result["message"]
     return "Action completed."
 
 
-def _followup_action(
-    article_input: str,
-    action: str,
-    target_list_path: str,
-) -> dict:
+def _followup_action(article_input: str, action: str) -> dict:
     status_result = check_article_status(article_input)
     if status_result["status"] not in {"saved", "unsaved"}:
         return {
@@ -149,10 +140,16 @@ def _followup_action(
         }
 
     if action == "add_target":
-        add_result = add_target_url(
-            status_result["article_url"],
-            target_list_path,
-        )
+        conn = init_db()
+        try:
+            add_result = register_scrape_target(
+                conn,
+                status_result["article_id"],
+                status_result["article_type"],
+                status_result["article_url"],
+            )
+        finally:
+            conn.close()
         if add_result == "added":
             return {
                 "status": "target_added",
@@ -398,7 +395,7 @@ def _render_page(
     return html.encode("utf-8")
 
 
-def create_app(target_list_path: str = DEFAULT_TARGET_LIST_PATH):
+def create_app():
     def app(environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET").upper()
         path = environ.get("PATH_INFO", "/")
@@ -432,11 +429,7 @@ def create_app(target_list_path: str = DEFAULT_TARGET_LIST_PATH):
             article_input = form.get("article_input", "")
             action = form.get("action", "")
 
-            action_result = _followup_action(
-                article_input,
-                action,
-                target_list_path,
-            )
+            action_result = _followup_action(article_input, action)
             check_result = action_result["check_result"]
 
             if action_result["status"] == "download_ready":
@@ -516,12 +509,8 @@ def create_app(target_list_path: str = DEFAULT_TARGET_LIST_PATH):
 application = create_app()
 
 
-def serve_web_app(
-    host: str = "127.0.0.1",
-    port: int = 8000,
-    target_list_path: str = DEFAULT_TARGET_LIST_PATH,
-) -> None:
-    app = create_app(target_list_path=target_list_path)
+def serve_web_app(host: str = "127.0.0.1", port: int = 8000) -> None:
+    app = create_app()
     with make_server(host, port, app) as server:
         print(f"Serving web app at http://{host}:{port}")
         server.serve_forever()

@@ -1,4 +1,9 @@
-from target_list import add_target_url, load_target_urls, validate_target_url
+from target_list import (
+    add_target_url,
+    load_target_urls,
+    parse_article_identity_from_url,
+    validate_target_url,
+)
 
 
 def test_load_target_urls_reads_plain_text_targets_stably(tmp_path):
@@ -47,6 +52,16 @@ def test_load_target_urls_trims_whitespace_and_ignores_comment_lines(tmp_path):
         "https://dic.nicovideo.jp/a/12345",
         "https://dic.nicovideo.jp/a/77777",
     ]
+
+
+def test_parse_article_identity_from_url_returns_type_and_id():
+    assert parse_article_identity_from_url(
+        "https://dic.nicovideo.jp/a/12345",
+    ) == ("a", "12345")
+
+
+def test_parse_article_identity_from_url_returns_none_for_bad_shape():
+    assert parse_article_identity_from_url("https://example.com/x") is None
 
 
 def test_validate_target_url_accepts_minimally_valid_nicopedia_article_url():
