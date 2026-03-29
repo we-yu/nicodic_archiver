@@ -320,6 +320,131 @@ def test_main_web_mode_allows_host_and_port_override(mock_serve_web_app):
     )
 
 
+@patch("main.list_targets_for_operator")
+def test_main_operator_target_list_calls_operator_helper(mock_list_targets):
+    mock_list_targets.return_value = True
+
+    with patch("sys.argv", ["main.py", "operator", "target", "list"]):
+        main_module.main()
+
+    mock_list_targets.assert_called_once_with(
+        "data/nicodic.db",
+        active_only=False,
+    )
+
+
+@patch("main.inspect_target_for_operator")
+def test_main_operator_target_inspect_calls_operator_helper(mock_inspect_target):
+    mock_inspect_target.return_value = True
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "operator",
+            "target",
+            "inspect",
+            "12345",
+            "a",
+            "--db",
+            "targets.db",
+        ],
+    ):
+        main_module.main()
+
+    mock_inspect_target.assert_called_once_with("12345", "a", "targets.db")
+
+
+@patch("main.deactivate_target_for_operator")
+def test_main_operator_target_deactivate_exits_non_zero_on_failure(
+    mock_deactivate_target,
+):
+    mock_deactivate_target.return_value = False
+
+    with patch(
+        "sys.argv",
+        ["main.py", "operator", "target", "deactivate", "12345", "a"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_deactivate_target.assert_called_once_with("12345", "a", "data/nicodic.db")
+
+
+@patch("main.list_archives_for_operator")
+def test_main_operator_archive_list_calls_operator_helper(mock_list_archives):
+    mock_list_archives.return_value = True
+
+    with patch("sys.argv", ["main.py", "operator", "archive", "list"]):
+        main_module.main()
+
+    mock_list_archives.assert_called_once_with()
+
+
+@patch("main.inspect_archive_for_operator")
+def test_main_operator_archive_inspect_calls_operator_helper(mock_inspect_archive):
+    mock_inspect_archive.return_value = True
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "operator",
+            "archive",
+            "inspect",
+            "12345",
+            "a",
+            "--last",
+            "5",
+        ],
+    ):
+        main_module.main()
+
+    mock_inspect_archive.assert_called_once_with("12345", "a", last_n=5)
+
+
+@patch("main.export_archive_for_operator")
+def test_main_operator_archive_export_calls_operator_helper(mock_export_archive):
+    mock_export_archive.return_value = True
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "operator",
+            "archive",
+            "export",
+            "12345",
+            "a",
+            "--format",
+            "md",
+            "--output",
+            "out.md",
+        ],
+    ):
+        main_module.main()
+
+    mock_export_archive.assert_called_once_with(
+        "12345",
+        "a",
+        "md",
+        output_path="out.md",
+    )
+
+
+def test_main_operator_without_required_args_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "operator"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Operator usage:" in out
+    assert "operator target list" in out
+    assert "operator archive export" in out
+
+
 def test_main_too_few_args_exits_with_usage(capsys):
     with patch("sys.argv", ["main.py"]):
         with pytest.raises(SystemExit) as exc_info:
@@ -327,6 +452,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "python main.py <article_url>" in out
+    assert "python main.py operator <target|archive> ..." in out
     assert "inspect" in out
     assert "export <article_id> <article_type> --format txt" in out
     assert "export <article_id> <article_type> --format md" in out

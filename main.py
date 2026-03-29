@@ -7,6 +7,13 @@ from pathlib import Path
 
 from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
+from operator_cli import add_target_for_operator
+from operator_cli import deactivate_target_for_operator
+from operator_cli import export_archive_for_operator
+from operator_cli import inspect_archive_for_operator
+from operator_cli import inspect_target_for_operator
+from operator_cli import list_archives_for_operator, list_targets_for_operator
+from operator_cli import reactivate_target_for_operator
 from orchestrator import run_scrape
 from storage import (
     DEFAULT_DB_PATH,
@@ -212,6 +219,182 @@ def run_periodic_once(target_db_path: str) -> None:
     run_periodic_scrape(target_db_path, 0.0, max_runs=1)
 
 
+def _read_optional_flag(args, flag_name, default=None):
+    if flag_name not in args:
+        return default
+
+    idx = args.index(flag_name)
+    if idx + 1 >= len(args):
+        raise ValueError(f"Missing value for {flag_name}")
+    return args[idx + 1]
+
+
+def _print_operator_usage():
+    print("Operator usage:")
+    print("  python main.py operator target list [--db PATH] [--active-only]")
+    print(
+        "  python main.py operator target inspect <article_id> "
+        "<article_type> [--db PATH]"
+    )
+    print("  python main.py operator target add <canonical_article_url> [--db PATH]")
+    print(
+        "  python main.py operator target deactivate <article_id> "
+        "<article_type> [--db PATH]"
+    )
+    print(
+        "  python main.py operator target reactivate <article_id> "
+        "<article_type> [--db PATH]"
+    )
+    print("  python main.py operator archive list")
+    print(
+        "  python main.py operator archive inspect <article_id> "
+        "<article_type> [--last N]"
+    )
+    print(
+        "  python main.py operator archive export <article_id> "
+        "<article_type> --format txt|md [--output PATH]"
+    )
+
+
+def _handle_operator_target(args):
+    if not args:
+        _print_operator_usage()
+        sys.exit(1)
+
+    action = args[0]
+    target_db_path = _read_optional_flag(args, "--db", DEFAULT_TARGET_DB_PATH)
+
+    if action == "list":
+        active_only = "--active-only" in args[1:]
+        if not list_targets_for_operator(target_db_path, active_only=active_only):
+            sys.exit(1)
+        return
+
+    if action == "inspect":
+        if len(args) < 3:
+            print(
+                "Usage: operator target inspect <article_id> "
+                "<article_type> [--db PATH]"
+            )
+            sys.exit(1)
+        if not inspect_target_for_operator(args[1], args[2], target_db_path):
+            sys.exit(1)
+        return
+
+    if action == "add":
+        if len(args) < 2:
+            print("Usage: operator target add <canonical_article_url> [--db PATH]")
+            sys.exit(1)
+        if not add_target_for_operator(args[1], target_db_path):
+            sys.exit(1)
+        return
+
+    if action == "deactivate":
+        if len(args) < 3:
+            print(
+                "Usage: operator target deactivate <article_id> "
+                "<article_type> [--db PATH]"
+            )
+            sys.exit(1)
+        if not deactivate_target_for_operator(args[1], args[2], target_db_path):
+            sys.exit(1)
+        return
+
+    if action == "reactivate":
+        if len(args) < 3:
+            print(
+                "Usage: operator target reactivate <article_id> "
+                "<article_type> [--db PATH]"
+            )
+            sys.exit(1)
+        if not reactivate_target_for_operator(args[1], args[2], target_db_path):
+            sys.exit(1)
+        return
+
+    _print_operator_usage()
+    sys.exit(1)
+
+
+def _handle_operator_archive(args):
+    if not args:
+        _print_operator_usage()
+        sys.exit(1)
+
+    action = args[0]
+
+    if action == "list":
+        if not list_archives_for_operator():
+            sys.exit(1)
+        return
+
+    if action == "inspect":
+        if len(args) < 3:
+            print(
+                "Usage: operator archive inspect <article_id> "
+                "<article_type> [--last N]"
+            )
+            sys.exit(1)
+        last_n = None
+        if "--last" in args:
+            try:
+                last_n = int(_read_optional_flag(args, "--last"))
+            except ValueError:
+                print(
+                    "Usage: operator archive inspect <article_id> "
+                    "<article_type> [--last N]"
+                )
+                sys.exit(1)
+        if not inspect_archive_for_operator(args[1], args[2], last_n=last_n):
+            sys.exit(1)
+        return
+
+    if action == "export":
+        if len(args) < 5 or "--format" not in args:
+            print(
+                "Usage: operator archive export <article_id> <article_type> "
+                "--format txt|md [--output PATH]"
+            )
+            sys.exit(1)
+        try:
+            output_format = _read_optional_flag(args, "--format")
+            output_path = _read_optional_flag(args, "--output", None)
+        except ValueError:
+            print(
+                "Usage: operator archive export <article_id> <article_type> "
+                "--format txt|md [--output PATH]"
+            )
+            sys.exit(1)
+
+        if not export_archive_for_operator(
+            args[1],
+            args[2],
+            output_format,
+            output_path=output_path,
+        ):
+            sys.exit(1)
+        return
+
+    _print_operator_usage()
+    sys.exit(1)
+
+
+def _handle_operator_cli(args):
+    if len(args) < 2:
+        _print_operator_usage()
+        sys.exit(1)
+
+    area = args[0]
+    if area == "target":
+        _handle_operator_target(args[1:])
+        return
+    if area == "archive":
+        _handle_operator_archive(args[1:])
+        return
+
+    _print_operator_usage()
+    sys.exit(1)
+
+
 def main():
     """
     CLIエントリポイント。
@@ -222,6 +405,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage:")
         print("  python main.py <article_url>")
+        print("  python main.py operator <target|archive> ...")
         print("  python main.py inspect <article_id> <article_type> [--last N]")
         print("  python main.py export <article_id> <article_type> --format txt")
         print("  python main.py export <article_id> <article_type> --format md")
@@ -249,6 +433,10 @@ def main():
             "[--db PATH] [--output PATH]"
         )
         sys.exit(1)
+
+    if sys.argv[1] == "operator":
+        _handle_operator_cli(sys.argv[2:])
+        return
 
     # inspectモード
     if sys.argv[1] == "inspect":

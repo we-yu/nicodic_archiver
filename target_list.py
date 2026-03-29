@@ -1,7 +1,8 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
-from storage import init_db, list_targets, register_target
+from storage import get_target, init_db, list_targets, register_target
+from storage import set_target_active_state
 
 
 def _parse_target_line(raw_line: str) -> str | None:
@@ -57,6 +58,20 @@ def list_active_target_urls(target_db_path: str) -> list[str]:
         conn.close()
 
 
+def list_registered_targets(
+    target_db_path: str,
+    *,
+    active_only: bool = False,
+) -> list[dict]:
+    """Load registry entries for operator-facing list views."""
+
+    conn = init_db(target_db_path)
+    try:
+        return list_targets(conn, active_only=active_only)
+    finally:
+        conn.close()
+
+
 def validate_target_url(article_url: str) -> bool:
     return parse_target_identity(article_url) is not None
 
@@ -78,6 +93,48 @@ def register_target_url(article_url: str, target_db_path: str) -> str:
         conn.close()
 
     return result["status"]
+
+
+def inspect_registered_target(
+    article_id: str,
+    article_type: str,
+    target_db_path: str,
+) -> dict | None:
+    """Load one target registry entry for operator-facing inspection."""
+
+    conn = init_db(target_db_path)
+    try:
+        return get_target(conn, article_id, article_type)
+    finally:
+        conn.close()
+
+
+def deactivate_target(
+    article_id: str,
+    article_type: str,
+    target_db_path: str,
+) -> dict:
+    """Deactivate one target without removing it from the registry."""
+
+    conn = init_db(target_db_path)
+    try:
+        return set_target_active_state(conn, article_id, article_type, False)
+    finally:
+        conn.close()
+
+
+def reactivate_target(
+    article_id: str,
+    article_type: str,
+    target_db_path: str,
+) -> dict:
+    """Reactivate one target already present in the registry."""
+
+    conn = init_db(target_db_path)
+    try:
+        return set_target_active_state(conn, article_id, article_type, True)
+    finally:
+        conn.close()
 
 
 def import_targets_from_text_file(

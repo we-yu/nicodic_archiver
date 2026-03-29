@@ -353,6 +353,68 @@ def list_targets(conn, active_only=True):
     return [_target_row_to_entry(row) for row in cur.fetchall()]
 
 
+def get_target(conn, article_id, article_type):
+    """Load one registered target by canonical identity."""
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, article_id, article_type, canonical_url, is_active, created_at
+        FROM target
+        WHERE article_id=? AND article_type=?
+        """,
+        (article_id, article_type),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return _target_row_to_entry(row)
+
+
+def set_target_active_state(conn, article_id, article_type, is_active):
+    """Activate or deactivate one registered target without deleting it."""
+
+    current_entry = get_target(conn, article_id, article_type)
+    if current_entry is None:
+        return {
+            "found": False,
+            "status": "not_found",
+            "entry": None,
+            "target_identity": {
+                "article_id": article_id,
+                "article_type": article_type,
+            },
+        }
+
+    desired_state = 1 if is_active else 0
+    current_state = 1 if current_entry["is_active"] else 0
+
+    if current_state == desired_state:
+        status = "unchanged"
+    else:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE target
+            SET is_active=?
+            WHERE article_id=? AND article_type=?
+            """,
+            (desired_state, article_id, article_type),
+        )
+        conn.commit()
+        status = "activated" if is_active else "deactivated"
+
+    return {
+        "found": True,
+        "status": status,
+        "entry": get_target(conn, article_id, article_type),
+        "target_identity": {
+            "article_id": article_id,
+            "article_type": article_type,
+        },
+    }
+
+
 _RUN_KINDS = frozenset({"batch", "periodic_batch"})
 _OUTCOMES = frozenset(
     {

@@ -1,6 +1,10 @@
 from target_list import (
+    deactivate_target,
     import_targets_from_text_file,
+    inspect_registered_target,
+    list_registered_targets,
     list_active_target_urls,
+    reactivate_target,
     register_target_url,
     validate_target_url,
 )
@@ -97,3 +101,42 @@ def test_import_targets_from_text_file_is_one_shot_and_non_automatic(tmp_path):
         "https://dic.nicovideo.jp/a/12345",
         "https://dic.nicovideo.jp/id/777",
     ]
+
+
+def test_list_registered_targets_includes_inactive_entries_when_requested(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+
+    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+    deactivate_target("12345", "a", str(target_db_path))
+
+    all_entries = list_registered_targets(str(target_db_path), active_only=False)
+    active_entries = list_registered_targets(str(target_db_path), active_only=True)
+
+    assert len(all_entries) == 1
+    assert all_entries[0]["is_active"] is False
+    assert active_entries == []
+
+
+def test_inspect_registered_target_returns_entry_by_identity(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+
+    entry = inspect_registered_target("12345", "a", str(target_db_path))
+
+    assert entry is not None
+    assert entry["article_id"] == "12345"
+    assert entry["article_type"] == "a"
+    assert entry["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
+
+
+def test_deactivate_and_reactivate_target_return_operator_facing_result(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+
+    deactivated = deactivate_target("12345", "a", str(target_db_path))
+    reactivated = reactivate_target("12345", "a", str(target_db_path))
+
+    assert deactivated["status"] == "deactivated"
+    assert deactivated["entry"]["is_active"] is False
+    assert reactivated["status"] == "activated"
+    assert reactivated["entry"]["is_active"] is True

@@ -42,22 +42,64 @@ def _render_md_archive(archive):
     return "\n".join(lines)
 
 
-def export_article(article_id, article_type, output_format):
+def build_archive_export(article_id, article_type, output_format):
+    """Return one saved archive in the requested export format."""
+
     if output_format == "txt":
         txt_result = get_saved_article_txt(article_id, article_type)
         if not txt_result["found"]:
-            print("Article not found in DB")
-            return False
-        print(txt_result["content"])
-        return True
+            return {
+                "found": False,
+                "content": None,
+                "article_id": article_id,
+                "article_type": article_type,
+                "format": output_format,
+            }
+
+        return {
+            "found": True,
+            "content": txt_result["content"],
+            "article_id": article_id,
+            "article_type": article_type,
+            "format": output_format,
+        }
 
     archive = read_article_archive(article_id, article_type)
     if not archive:
+        return {
+            "found": False,
+            "content": None,
+            "article_id": article_id,
+            "article_type": article_type,
+            "format": output_format,
+        }
+
+    if output_format == "md":
+        return {
+            "found": True,
+            "content": _render_md_archive(archive),
+            "article_id": article_id,
+            "article_type": article_type,
+            "format": output_format,
+        }
+
+    return {
+        "found": True,
+        "content": None,
+        "article_id": article_id,
+        "article_type": article_type,
+        "format": output_format,
+    }
+
+
+def export_article(article_id, article_type, output_format):
+    export_result = build_archive_export(article_id, article_type, output_format)
+    if not export_result["found"]:
         print("Article not found in DB")
         return False
 
-    if output_format == "md":
-        print(_render_md_archive(archive))
+    if export_result["content"] is not None:
+        print(export_result["content"])
         return True
 
     print(f"Unsupported export format: {output_format}")
