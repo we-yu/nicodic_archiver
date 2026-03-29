@@ -13,7 +13,7 @@ What this profile does:
 
 What this profile does not do yet:
 - cron or repeated scheduling inside the container
-- rich target-management tooling
+- Web admin expansion beyond the existing bounded archive-check flow
 
 What this profile now adds for periodic operation:
 - a host-side one-shot wrapper that calls the existing periodic path
@@ -147,6 +147,9 @@ docker compose -f docker-compose.runtime.yml exec personal_runtime \
 
 ## Common Commands
 
+For bounded registry/archive management inside the runtime container, prefer the
+operator CLI documented in docs/OPERATOR_TOOLING.md.
+
 Follow the published web runtime logs:
 
 `docker compose -f docker-compose.runtime.yml logs -f personal_runtime`
@@ -155,7 +158,28 @@ Show the active targets currently stored in the registry:
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py targets /app/data/nicodic.db
+	sh tools/operator.sh target list --active-only --db /app/data/nicodic.db
+```
+
+Inspect one registered target:
+
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	sh tools/operator.sh target inspect 12345 a --db /app/data/nicodic.db
+```
+
+Add one canonical target:
+
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	sh tools/operator.sh target add https://dic.nicovideo.jp/a/12345 --db /app/data/nicodic.db
+```
+
+Deactivate one target without deleting it:
+
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	sh tools/operator.sh target deactivate 12345 a --db /app/data/nicodic.db
 ```
 
 Run one batch pass:
@@ -202,7 +226,14 @@ List saved articles:
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py list-articles
+	sh tools/operator.sh archive list
+```
+
+Inspect one saved archive:
+
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	sh tools/operator.sh archive inspect 12345 a --last 20
 ```
 
 Export all saved articles:
@@ -210,6 +241,14 @@ Export all saved articles:
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
 	python main.py export-all-articles --format txt
+```
+
+Export one saved archive to a file:
+
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	sh tools/operator.sh archive export 12345 a --format md \
+	--output /runtime/data/exports/12345a.md
 ```
 
 ## Cleanup After A Smoke Test

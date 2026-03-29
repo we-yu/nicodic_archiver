@@ -12,12 +12,14 @@ from storage import (
     dequeue_canonical_target,
     enqueue_canonical_target,
     format_run_telemetry_csv_wide,
+    get_target,
     init_db,
     list_queue_requests,
     list_targets,
     register_target,
     save_json,
     save_to_db,
+    set_target_active_state,
 )
 
 
@@ -425,6 +427,78 @@ def test_list_targets_filters_out_inactive_rows_by_default(tmp_path, monkeypatch
 
         assert [item["article_id"] for item in active_targets] == ["1"]
         assert [item["article_id"] for item in all_targets] == ["1", "2"]
+    finally:
+        conn.close()
+
+
+def test_get_target_returns_single_registry_entry(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
+
+        entry = get_target(conn, "12345", "a")
+
+        assert entry is not None
+        assert entry["article_id"] == "12345"
+        assert entry["article_type"] == "a"
+        assert entry["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
+        assert entry["is_active"] is True
+    finally:
+        conn.close()
+
+
+def test_set_target_active_state_deactivates_and_reactivates_non_destructively(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
+
+        deactivated = set_target_active_state(conn, "12345", "a", False)
+        reactivated = set_target_active_state(conn, "12345", "a", True)
+
+        assert deactivated["found"] is True
+        assert deactivated["status"] == "deactivated"
+        assert deactivated["entry"]["is_active"] is False
+
+        assert reactivated["found"] is True
+        assert reactivated["status"] == "activated"
+        assert reactivated["entry"]["is_active"] is True
+    finally:
+        conn.close()
+
+
+def test_set_target_active_state_reports_not_found_without_writing(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        result = set_target_active_state(conn, "404", "a", False)
+
+        assert result == {
+            "found": False,
+            "status": "not_found",
+            "entry": None,
+            "target_identity": {
+                "article_id": "404",
+                "article_type": "a",
+            },
+        }
     finally:
         conn.close()
 
