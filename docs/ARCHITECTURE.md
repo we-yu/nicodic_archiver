@@ -45,9 +45,12 @@ Current architecture
 
 main.py
     CLI and bounded app/runtime entry point
+    batch / periodic telemetry append trigger
+    read-only telemetry CSV export entry
 
 orchestrator.py
     Coordinates scraping flow and persistence order
+    returns bounded scrape outcome semantics compatible with telemetry insertion
 
 archive_read.py
     Archive-facing read / export seam
@@ -62,10 +65,14 @@ parser.py
     Extracts response data from HTML
 
 storage.py
-    Handles SQLite and JSON persistence, including target-registry persistence
+    Handles SQLite and JSON persistence, including:
+    - target-registry persistence
+    - append-only scrape-run telemetry persistence
+    - read-only telemetry CSV derivation
 
 target_list.py
-    Handles target registration, active-target reads, and legacy target import
+    Handles target registration, active-target reads, legacy target import,
+    and bounded target identity parsing
 
 web_app.py
     Provides the bounded Web-facing archive-check / follow-up interface
@@ -83,7 +90,7 @@ tests/test_orchestrator.py
     Covers orchestration helper behavior
 
 tests/test_storage.py
-    Covers storage-layer persistence behavior including target-registry behavior
+    Covers storage-layer persistence behavior including telemetry behavior
 
 tests/test_target_list.py
     Covers target-registry seam behavior
@@ -99,12 +106,15 @@ main.py
     CLI argument parsing
     bounded batch / periodic / web dispatch
     target-registry-backed target flow entrypoints
+    telemetry append trigger wiring
+    read-only telemetry CSV export wiring
 
 orchestrator.py
     article metadata fetching
     BBS base URL generation
     paginated response collection
     JSON save + SQLite save flow
+    bounded scrape outcome semantics
 
 archive_read.py
     archive-facing read and export seam
@@ -123,12 +133,15 @@ storage.py
     archive persistence
     queue persistence
     target-registry persistence
+    append-only scrape-run telemetry persistence
+    telemetry CSV derivation
 
 target_list.py
     target-source handling layer
     target registration
     active target listing
     bounded legacy `targets.txt` import
+    bounded target identity parsing
 
 web_app.py
     bounded Web-facing archive-check and follow-up actions
@@ -208,14 +221,16 @@ For adoption history, refer to:
 Future note
 
 Unless a later task explicitly changes architecture,
-this document should be treated as the post-TASK031 baseline.
+this document should be treated as the post-TASK031B baseline.
 
 Important current interpretation:
 
 - the bounded Web/runtime publication baseline exists
-- the target source of truth is now DB-backed in bounded form
-- the next likely bounded step is not another source-of-truth migration,
-  but an operator-facing target / archive management seam
+- the target source of truth is DB-backed in bounded form
+- append-only scrape-run telemetry now exists in bounded form
+- telemetry CSV export exists as a read-only derived artifact
+- the next likely bounded mainline step is still an operator-facing target /
+  archive management seam
 - broader observability, GUI admin expansion, PostgreSQL migration,
   DB containerization, and wider dashboard/platform work remain deferred
   unless a later task explicitly brings them into scope
