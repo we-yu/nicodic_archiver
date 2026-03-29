@@ -13,6 +13,12 @@ def _parse_target_line(raw_line: str) -> str | None:
     return line
 
 
+def parse_target_identity(article_url: str) -> dict | None:
+    """Return article_id, article_type, canonical_url for a valid target URL."""
+
+    return _parse_target_identity(article_url)
+
+
 def _parse_target_identity(article_url: str) -> dict | None:
     candidate = article_url.strip()
     if not candidate:
@@ -52,11 +58,11 @@ def list_active_target_urls(target_db_path: str) -> list[str]:
 
 
 def validate_target_url(article_url: str) -> bool:
-    return _parse_target_identity(article_url) is not None
+    return parse_target_identity(article_url) is not None
 
 
 def register_target_url(article_url: str, target_db_path: str) -> str:
-    target_identity = _parse_target_identity(article_url)
+    target_identity = parse_target_identity(article_url)
     if target_identity is None:
         return "invalid"
 

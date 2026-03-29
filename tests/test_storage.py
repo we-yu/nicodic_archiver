@@ -8,8 +8,10 @@ import sqlite3
 
 import storage
 from storage import (
+    append_scrape_run_observation,
     dequeue_canonical_target,
     enqueue_canonical_target,
+    format_run_telemetry_csv_wide,
     init_db,
     list_queue_requests,
     list_targets,
@@ -39,6 +41,7 @@ def test_init_db_creates_data_dir_db_and_tables(tmp_path, monkeypatch):
         assert "responses" in tables
         assert "queue_requests" in tables
         assert "target" in tables
+        assert "scrape_run_observation" in tables
     finally:
         conn.close()
 
@@ -424,3 +427,47 @@ def test_list_targets_filters_out_inactive_rows_by_default(tmp_path, monkeypatch
         assert [item["article_id"] for item in all_targets] == ["1", "2"]
     finally:
         conn.close()
+
+
+def test_append_scrape_run_observation_csv_wide_has_run_columns(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        append_scrape_run_observation(
+            conn,
+            run_id="r1",
+            run_started_at="2026-01-01T00:00:00+00:00",
+            run_kind="batch",
+            article_id="1",
+            article_type="a",
+            canonical_article_url="https://dic.nicovideo.jp/a/1",
+            scrape_outcome="ok",
+        )
+        append_scrape_run_observation(
+            conn,
+            run_id="r2",
+            run_started_at="2026-01-02T00:00:00+00:00",
+            run_kind="batch",
+            article_id="1",
+            article_type="a",
+            canonical_article_url="https://dic.nicovideo.jp/a/1",
+            scrape_outcome="skip_denylist",
+        )
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM scrape_run_observation")
+        assert cur.fetchone()[0] == 2
+    finally:
+        conn.close()
+
+    conn = init_db()
+    try:
+        csv_text = format_run_telemetry_csv_wide(conn)
+    finally:
+        conn.close()
+
+    assert "run0_saved_response_count_after_run" in csv_text
+    assert "run1_skipped" in csv_text
+    assert "skip_denylist" in csv_text

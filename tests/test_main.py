@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 import main as main_module
+from orchestrator import ScrapeResult
+from storage import init_db
 
 
 @patch("main.run_scrape")
@@ -340,6 +342,44 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert (
         "periodic <target_db_path> <interval_seconds> [--max-runs N]" in out
     )
+    assert "export-run-telemetry-csv" in out
+
+
+@patch("main._record_scrape_run_observation")
+@patch("main.list_active_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+])
+@patch("main.run_scrape", return_value=ScrapeResult(True, "ok"))
+def test_main_batch_records_telemetry_once_per_target(
+    mock_scrape,
+    mock_list,
+    mock_record,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    with patch("sys.argv", ["main.py", "batch", "targets.db"]):
+        main_module.main()
+
+    assert mock_record.call_count == 1
+
+
+def test_main_export_run_telemetry_csv_prints_header(capsys, tmp_path, monkeypatch):
+    dbp = str(tmp_path / "tel.db")
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db(dbp)
+    conn.close()
+
+    with patch(
+        "sys.argv",
+        ["main.py", "export-run-telemetry-csv", "--db", dbp],
+    ):
+        main_module.main()
+
+    out = capsys.readouterr().out
+    assert "article_id" in out
+    assert "canonical_article_url" in out
 
 
 @patch("main.import_targets_from_text_file")
@@ -397,7 +437,13 @@ def test_main_inspect_without_id_type_exits_with_usage(capsys):
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
 ])
-@patch("main.run_scrape", side_effect=[True, True])
+@patch(
+    "main.run_scrape",
+    side_effect=[
+        ScrapeResult(True, "ok"),
+        ScrapeResult(True, "ok"),
+    ],
+)
 def test_main_batch_all_success_exits_zero(
     mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
 ):
@@ -429,7 +475,13 @@ def test_main_batch_all_success_exits_zero(
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
 ])
-@patch("main.run_scrape", side_effect=[False, True])
+@patch(
+    "main.run_scrape",
+    side_effect=[
+        ScrapeResult(False, "fail_article_not_found"),
+        ScrapeResult(True, "ok"),
+    ],
+)
 def test_main_batch_failure_sets_nonzero_exit_and_continues(
     mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
 ):
@@ -460,7 +512,10 @@ def test_main_batch_failure_sets_nonzero_exit_and_continues(
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
 ])
-@patch("main.run_scrape", side_effect=[RuntimeError("boom"), True])
+@patch(
+    "main.run_scrape",
+    side_effect=[RuntimeError("boom"), ScrapeResult(True, "ok")],
+)
 def test_main_batch_exception_sets_nonzero_exit_and_continues(
     mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
 ):
