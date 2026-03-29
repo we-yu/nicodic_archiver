@@ -1,7 +1,9 @@
+import csv
 import json
 import os
 import sqlite3
 import time
+from io import StringIO
 from pathlib import Path
 
 
@@ -84,6 +86,24 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
         is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(article_id, article_type)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS scrape_run_observation (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        run_started_at TEXT NOT NULL,
+        run_kind TEXT NOT NULL,
+        skipped INTEGER NOT NULL CHECK (skipped IN (0, 1)),
+        article_id TEXT NOT NULL,
+        article_type TEXT NOT NULL,
+        canonical_article_url TEXT,
+        saved_response_count_after_run INTEGER NOT NULL,
+        latest_total_response_count_ref INTEGER,
+        scrape_ok INTEGER NOT NULL CHECK (scrape_ok IN (0, 1)),
+        scrape_outcome TEXT NOT NULL,
+        observed_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
     """)
 
@@ -331,3 +351,213 @@ def list_targets(conn, active_only=True):
 
     cur.execute(query, params)
     return [_target_row_to_entry(row) for row in cur.fetchall()]
+
+
+_RUN_KINDS = frozenset({"batch", "periodic_batch"})
+_OUTCOMES = frozenset(
+    {
+        "ok",
+        "skip_denylist",
+        "fail_article_not_found",
+        "fail_false",
+        "fail_exception",
+    }
+)
+
+
+def read_saved_response_observation_stats(conn, article_id, article_type):
+    """Read-only counts for telemetry (OUT path; no writes)."""
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(*), MAX(res_no)
+        FROM responses
+        WHERE article_id=? AND article_type=?
+        """,
+        (article_id, article_type),
+    )
+    row = cur.fetchone()
+    return int(row[0]), row[1]
+
+
+def append_scrape_run_observation(
+    conn,
+    *,
+    run_id,
+    run_started_at,
+    run_kind,
+    article_id,
+    article_type,
+    canonical_article_url,
+    scrape_outcome,
+):
+    """
+    IN: append one per-run per-article observation (append-only row).
+
+    Reads current response stats from ``responses``; does not mutate them.
+    """
+
+    if run_kind not in _RUN_KINDS:
+        raise ValueError(f"invalid run_kind: {run_kind!r}")
+    if scrape_outcome not in _OUTCOMES:
+        raise ValueError(f"invalid scrape_outcome: {scrape_outcome!r}")
+
+    skipped = 1 if scrape_outcome == "skip_denylist" else 0
+    scrape_ok = 1 if scrape_outcome == "ok" else 0
+    saved_n, max_res = read_saved_response_observation_stats(
+        conn,
+        article_id,
+        article_type,
+    )
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO scrape_run_observation (
+            run_id,
+            run_started_at,
+            run_kind,
+            skipped,
+            article_id,
+            article_type,
+            canonical_article_url,
+            saved_response_count_after_run,
+            latest_total_response_count_ref,
+            scrape_ok,
+            scrape_outcome
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            run_started_at,
+            run_kind,
+            skipped,
+            article_id,
+            article_type,
+            canonical_article_url,
+            saved_n,
+            max_res,
+            scrape_ok,
+            scrape_outcome,
+        ),
+    )
+    conn.commit()
+
+
+def list_scrape_run_observations(conn):
+    """OUT: all observations in stable chronological order (read-only)."""
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT run_id, run_started_at, run_kind, skipped, article_id,
+               article_type, canonical_article_url,
+               saved_response_count_after_run,
+               latest_total_response_count_ref, scrape_ok, scrape_outcome,
+               observed_at
+        FROM scrape_run_observation
+        ORDER BY run_started_at ASC, id ASC
+        """
+    )
+    rows = []
+    for row in cur.fetchall():
+        rows.append(
+            {
+                "run_id": row[0],
+                "run_started_at": row[1],
+                "run_kind": row[2],
+                "skipped": row[3],
+                "article_id": row[4],
+                "article_type": row[5],
+                "canonical_article_url": row[6],
+                "saved_response_count_after_run": row[7],
+                "latest_total_response_count_ref": row[8],
+                "scrape_ok": row[9],
+                "scrape_outcome": row[10],
+                "observed_at": row[11],
+            }
+        )
+    return rows
+
+
+def format_run_telemetry_csv_wide(conn):
+    """
+    Read-only derived CSV: one row per article, repeated columns per run.
+
+    Not a source of truth; for human inspection only.
+    """
+
+    observations = list_scrape_run_observations(conn)
+    buf = StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+
+    if not observations:
+        writer.writerow(
+            ["article_id", "article_type", "canonical_article_url"],
+        )
+        return buf.getvalue()
+
+    run_order = []
+    seen_runs = set()
+    for obs in observations:
+        rid = obs["run_id"]
+        if rid not in seen_runs:
+            seen_runs.add(rid)
+            run_order.append(rid)
+
+    articles = {}
+    for obs in observations:
+        key = (obs["article_id"], obs["article_type"])
+        if key not in articles:
+            articles[key] = {
+                "canonical_article_url": obs["canonical_article_url"] or "",
+                "by_run": {},
+            }
+        articles[key]["by_run"][obs["run_id"]] = obs
+
+    header = ["article_id", "article_type", "canonical_article_url"]
+    for i in range(len(run_order)):
+        prefix = f"run{i}"
+        header.extend(
+            [
+                f"{prefix}_run_id",
+                f"{prefix}_run_started_at",
+                f"{prefix}_run_kind",
+                f"{prefix}_saved_response_count_after_run",
+                f"{prefix}_latest_total_response_count_ref",
+                f"{prefix}_skipped",
+                f"{prefix}_scrape_ok",
+                f"{prefix}_scrape_outcome",
+            ],
+        )
+    writer.writerow(header)
+
+    for (article_id, article_type) in sorted(articles.keys()):
+        entry = articles[(article_id, article_type)]
+        row = [article_id, article_type, entry["canonical_article_url"]]
+        for rid in run_order:
+            obs = entry["by_run"].get(rid)
+            if obs is None:
+                row.extend(["", "", "", "", "", "", "", ""])
+                continue
+            row.extend(
+                [
+                    obs["run_id"],
+                    obs["run_started_at"],
+                    obs["run_kind"],
+                    obs["saved_response_count_after_run"],
+                    (
+                        ""
+                        if obs["latest_total_response_count_ref"] is None
+                        else obs["latest_total_response_count_ref"]
+                    ),
+                    obs["skipped"],
+                    obs["scrape_ok"],
+                    obs["scrape_outcome"],
+                ],
+            )
+        writer.writerow(row)
+
+    return buf.getvalue()

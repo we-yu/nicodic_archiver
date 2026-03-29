@@ -8,15 +8,53 @@ from pathlib import Path
 from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
 from orchestrator import run_scrape
+from storage import (
+    DEFAULT_DB_PATH,
+    append_scrape_run_observation,
+    format_run_telemetry_csv_wide,
+    init_db,
+)
 from target_list import (
     import_targets_from_text_file,
     list_active_target_urls,
+    parse_target_identity,
     register_target_url,
 )
 from web_app import serve_web_app
 
 
 DEFAULT_TARGET_DB_PATH = os.environ.get("TARGET_DB_PATH", "data/nicodic.db")
+
+# Telemetry only: set True around run_batch_scrape from run_periodic_scrape.
+_inside_periodic_batch: bool = False
+
+
+def _telemetry_archive_db_path() -> str:
+    return os.environ.get("NICODIC_DB_PATH", DEFAULT_DB_PATH)
+
+
+def _record_scrape_run_observation(
+    archive_db_path: str,
+    run_id: str,
+    run_started_at: str,
+    run_kind: str,
+    identity: dict,
+    scrape_outcome: str,
+) -> None:
+    conn = init_db(archive_db_path)
+    try:
+        append_scrape_run_observation(
+            conn,
+            run_id=run_id,
+            run_started_at=run_started_at,
+            run_kind=run_kind,
+            article_id=identity["article_id"],
+            article_type=identity["article_type"],
+            canonical_article_url=identity["canonical_url"],
+            scrape_outcome=scrape_outcome,
+        )
+    finally:
+        conn.close()
 
 
 # ============================================================
@@ -27,6 +65,8 @@ DEFAULT_TARGET_DB_PATH = os.environ.get("TARGET_DB_PATH", "data/nicodic.db")
 def run_batch_scrape(target_db_path: str) -> tuple[str, int]:
     """Run one full batch pass and return (final_status, failed_targets)."""
 
+    run_kind = "periodic_batch" if _inside_periodic_batch else "batch"
+
     targets = list_active_target_urls(target_db_path)
 
     print(
@@ -36,6 +76,7 @@ def run_batch_scrape(target_db_path: str) -> tuple[str, int]:
 
     run_id = uuid.uuid4().hex[:12]
     started_at = datetime.now(timezone.utc).isoformat()
+    archive_db_path = _telemetry_archive_db_path()
     log_dir = Path(os.environ.get("BATCH_LOG_DIR", "data/batch_runs"))
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"batch_{run_id}.log"
@@ -51,8 +92,20 @@ def run_batch_scrape(target_db_path: str) -> tuple[str, int]:
     failed_targets = 0
     for idx, target in enumerate(targets, start=1):
         print(f"[{idx}/{len(targets)}] Scraping: {target}")
+        identity = parse_target_identity(target)
+        if identity is None:
+            failed_targets += 1
+            print(f"[FAIL] {target} (invalid target URL shape)")
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write("FAIL\n")
+                f.write(f"target={target}\n")
+                f.write("short_reason=invalid_target_url_shape\n")
+            continue
+
+        scrape_outcome = "fail_exception"
         try:
-            ok = run_scrape(target)
+            scrape_result = run_scrape(target)
+            scrape_outcome = scrape_result.outcome
         except Exception as exc:
             failed_targets += 1
             print(f"[FAIL] {target} ({type(exc).__name__}: {exc})")
@@ -60,18 +113,35 @@ def run_batch_scrape(target_db_path: str) -> tuple[str, int]:
                 f.write("FAIL\n")
                 f.write(f"target={target}\n")
                 f.write(f"short_reason={type(exc).__name__}: {exc}\n")
+            _record_scrape_run_observation(
+                archive_db_path,
+                run_id,
+                started_at,
+                run_kind,
+                identity,
+                scrape_outcome,
+            )
             continue
 
-        if ok is False:
+        ok = bool(scrape_result)
+        if not ok:
             failed_targets += 1
             print(f"[FAIL] {target}")
             with log_path.open("a", encoding="utf-8") as f:
                 f.write("FAIL\n")
                 f.write(f"target={target}\n")
                 f.write("short_reason=run_scrape_returned_false\n")
-            continue
+        else:
+            print(f"[OK] {target}")
 
-        print(f"[OK] {target}")
+        _record_scrape_run_observation(
+            archive_db_path,
+            run_id,
+            started_at,
+            run_kind,
+            identity,
+            scrape_outcome,
+        )
 
     ended_at = datetime.now(timezone.utc).isoformat()
     total_targets = len(targets)
@@ -101,17 +171,23 @@ def run_periodic_scrape(
 ) -> None:
     """Run full batch passes repeatedly with a fixed sleep interval."""
 
+    global _inside_periodic_batch
+
     completed_runs = 0
 
     while max_runs is None or completed_runs < max_runs:
         run_number = completed_runs + 1
         print(f"[periodic] Run {run_number} starting")
 
+        _inside_periodic_batch = True
         try:
-            final_status, failed_targets = run_batch_scrape(target_db_path)
-        except KeyboardInterrupt:
-            print("Periodic execution interrupted. Exiting safely.")
-            return
+            try:
+                final_status, failed_targets = run_batch_scrape(target_db_path)
+            except KeyboardInterrupt:
+                print("Periodic execution interrupted. Exiting safely.")
+                return
+        finally:
+            _inside_periodic_batch = False
 
         print(
             f"[periodic] Run {run_number} finished "
@@ -168,6 +244,10 @@ def main():
             "  python main.py periodic <target_db_path> <interval_seconds> "
             "[--max-runs N]"
         )
+        print(
+            "  python main.py export-run-telemetry-csv "
+            "[--db PATH] [--output PATH]"
+        )
         sys.exit(1)
 
     # inspectモード
@@ -214,6 +294,36 @@ def main():
 
         if not export_all_articles(sys.argv[3]):
             sys.exit(1)
+        return
+
+    if sys.argv[1] == "export-run-telemetry-csv":
+        db_path = _telemetry_archive_db_path()
+        out_path = None
+        idx = 2
+        while idx < len(sys.argv):
+            if sys.argv[idx] == "--db" and idx + 1 < len(sys.argv):
+                db_path = sys.argv[idx + 1]
+                idx += 2
+                continue
+            if sys.argv[idx] == "--output" and idx + 1 < len(sys.argv):
+                out_path = sys.argv[idx + 1]
+                idx += 2
+                continue
+            print(
+                "Usage: export-run-telemetry-csv [--db PATH] [--output PATH]"
+            )
+            sys.exit(1)
+
+        conn = init_db(db_path)
+        try:
+            csv_text = format_run_telemetry_csv_wide(conn)
+        finally:
+            conn.close()
+
+        if out_path is not None:
+            Path(out_path).write_text(csv_text, encoding="utf-8")
+        else:
+            print(csv_text, end="")
         return
 
     if sys.argv[1] == "add-target":

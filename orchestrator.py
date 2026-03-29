@@ -21,6 +21,19 @@ DENYLIST_ARTICLE_IDS = frozenset({"480340", "237789"})
 BBS_PAGE_SIZE = 30
 
 
+class ScrapeResult:
+    """Truthiness matches legacy bool return; ``outcome`` supports telemetry."""
+
+    __slots__ = ("ok", "outcome")
+
+    def __init__(self, ok: bool, outcome: str = "ok") -> None:
+        self.ok = ok
+        self.outcome = outcome
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
 def get_containing_page_start(res_no: int) -> int:
     """Return the BBS page start that contains the given response number."""
     return ((res_no - 1) // BBS_PAGE_SIZE) * BBS_PAGE_SIZE + 1
@@ -218,17 +231,20 @@ def fetch_article_metadata(article_url: str):
     return article_id, article_type, title
 
 
-def run_scrape(article_url: str, response_cap: int | None = None) -> bool:
+def run_scrape(
+    article_url: str,
+    response_cap: int | None = None,
+) -> ScrapeResult:
     try:
         article_id, article_type, title = fetch_article_metadata(article_url)
 
     except ArticleNotFoundError:
         print(f"Article not found: {article_url}")
-        return False
+        return ScrapeResult(False, "fail_article_not_found")
 
     if article_id in DENYLIST_ARTICLE_IDS:
         print("Skipping article (high-volume).")
-        return False
+        return ScrapeResult(False, "skip_denylist")
 
     max_saved_res_no = get_max_saved_res_no(article_id, article_type)
     bbs_base_url = build_bbs_base_url(article_url)
@@ -253,7 +269,7 @@ def run_scrape(article_url: str, response_cap: int | None = None) -> bool:
 
     if max_saved_res_no is not None and not responses and not interrupted:
         print("No new BBS responses found; article already up to date")
-        return True
+        return ScrapeResult(True, "ok")
 
     json_responses = responses
     if max_saved_res_no is not None:
@@ -288,7 +304,7 @@ def run_scrape(article_url: str, response_cap: int | None = None) -> bool:
     conn.close()
 
     print("Saved to SQLite")
-    return True
+    return ScrapeResult(True, "ok")
 
 
 def drain_queue_requests(max_requests: int | None = None) -> dict:
