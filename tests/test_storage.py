@@ -11,6 +11,7 @@ from storage import (
     append_scrape_run_observation,
     dequeue_canonical_target,
     enqueue_canonical_target,
+    fetch_target,
     format_run_telemetry_csv_wide,
     init_db,
     list_queue_requests,
@@ -18,6 +19,7 @@ from storage import (
     register_target,
     save_json,
     save_to_db,
+    set_target_active,
 )
 
 
@@ -425,6 +427,48 @@ def test_list_targets_filters_out_inactive_rows_by_default(tmp_path, monkeypatch
 
         assert [item["article_id"] for item in active_targets] == ["1"]
         assert [item["article_id"] for item in all_targets] == ["1", "2"]
+    finally:
+        conn.close()
+
+
+def test_fetch_target_returns_row_or_none(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "9",
+            "a",
+            "https://dic.nicovideo.jp/a/9",
+        )
+        row = fetch_target(conn, "9", "a")
+        assert row is not None
+        assert row["article_id"] == "9"
+        assert row["article_type"] == "a"
+        assert fetch_target(conn, "missing", "a") is None
+    finally:
+        conn.close()
+
+
+def test_set_target_active_updates_or_not_found(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "1",
+            "a",
+            "https://dic.nicovideo.jp/a/1",
+        )
+        assert set_target_active(conn, "1", "a", is_active=False) == "updated"
+        row = fetch_target(conn, "1", "a")
+        assert row is not None
+        assert row["is_active"] is False
+
+        assert set_target_active(conn, "x", "a", is_active=True) == "not_found"
+
+        assert set_target_active(conn, "1", "a", is_active=True) == "updated"
+        assert fetch_target(conn, "1", "a")["is_active"] is True
     finally:
         conn.close()
 

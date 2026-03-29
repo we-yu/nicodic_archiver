@@ -17,6 +17,18 @@ def test_main_scrape_mode_calls_run_scrape(mock_run_scrape):
     mock_run_scrape.assert_called_once_with("https://dic.nicovideo.jp/a/12345")
 
 
+@patch("tools.operator.dispatch_operator", return_value=0)
+def test_main_operator_delegates_to_operator_cli(mock_dispatch):
+    with patch(
+        "sys.argv",
+        ["main.py", "operator", "target", "list", "t.db"],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+    assert exc_info.value.code == 0
+    mock_dispatch.assert_called_once_with(["target", "list", "t.db"])
+
+
 @patch("main.inspect_article")
 def test_main_inspect_mode_calls_inspect_article(mock_inspect):
     with patch("sys.argv", ["main.py", "inspect", "12345", "a"]):

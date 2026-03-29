@@ -248,7 +248,16 @@ def main():
             "  python main.py export-run-telemetry-csv "
             "[--db PATH] [--output PATH]"
         )
+        print(
+            "  python main.py operator ...  "
+            "(target registry / archive; see docs/OPERATOR.md)"
+        )
         sys.exit(1)
+
+    if sys.argv[1] == "operator":
+        from tools import operator as operator_cli
+
+        sys.exit(operator_cli.dispatch_operator(sys.argv[2:]))
 
     # inspectモード
     if sys.argv[1] == "inspect":

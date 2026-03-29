@@ -353,6 +353,46 @@ def list_targets(conn, active_only=True):
     return [_target_row_to_entry(row) for row in cur.fetchall()]
 
 
+def fetch_target(conn, article_id, article_type):
+    """Return one target row dict or None (read-only)."""
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, article_id, article_type, canonical_url, is_active, created_at
+        FROM target
+        WHERE article_id=? AND article_type=?
+        """,
+        (article_id, article_type),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return _target_row_to_entry(row)
+
+
+def set_target_active(conn, article_id, article_type, *, is_active: bool) -> str:
+    """
+    Set is_active for an existing target row (no delete).
+
+    Returns ``updated`` or ``not_found``.
+    """
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE target
+        SET is_active=?
+        WHERE article_id=? AND article_type=?
+        """,
+        (1 if is_active else 0, article_id, article_type),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        return "not_found"
+    return "updated"
+
+
 _RUN_KINDS = frozenset({"batch", "periodic_batch"})
 _OUTCOMES = frozenset(
     {
