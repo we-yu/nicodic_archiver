@@ -12,6 +12,8 @@ from storage import (
     enqueue_canonical_target,
     init_db,
     list_queue_requests,
+    list_targets,
+    register_target,
     save_json,
     save_to_db,
 )
@@ -36,6 +38,7 @@ def test_init_db_creates_data_dir_db_and_tables(tmp_path, monkeypatch):
         assert "articles" in tables
         assert "responses" in tables
         assert "queue_requests" in tables
+        assert "target" in tables
     finally:
         conn.close()
 
@@ -314,5 +317,110 @@ def test_dequeue_canonical_target_removes_only_requested_item(tmp_path, monkeypa
 
         queued = list_queue_requests(conn)
         assert [item["article_id"] for item in queued] == ["2"]
+    finally:
+        conn.close()
+
+
+def test_register_target_persists_canonical_identity_once(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        first = register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
+        second = register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
+
+        assert first["status"] == "added"
+        assert second["status"] == "duplicate"
+        assert second["target_identity"] == {
+            "article_id": "12345",
+            "article_type": "a",
+        }
+
+        targets = list_targets(conn)
+        assert len(targets) == 1
+        assert targets[0]["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
+        assert targets[0]["is_active"] is True
+    finally:
+        conn.close()
+
+
+def test_register_target_reactivates_inactive_target(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
+
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE target SET is_active=0 WHERE article_id=? AND article_type=?",
+            ("12345", "a"),
+        )
+        conn.commit()
+
+        result = register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
+
+        assert result["status"] == "reactivated"
+        assert list_targets(conn) == [
+            {
+                "id": 1,
+                "article_id": "12345",
+                "article_type": "a",
+                "canonical_url": "https://dic.nicovideo.jp/a/12345",
+                "is_active": True,
+                "created_at": result["entry"]["created_at"],
+            }
+        ]
+    finally:
+        conn.close()
+
+
+def test_list_targets_filters_out_inactive_rows_by_default(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "1",
+            "a",
+            "https://dic.nicovideo.jp/a/1",
+        )
+        register_target(
+            conn,
+            "2",
+            "a",
+            "https://dic.nicovideo.jp/a/2",
+        )
+
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE target SET is_active=0 WHERE article_id=? AND article_type=?",
+            ("2", "a"),
+        )
+        conn.commit()
+
+        active_targets = list_targets(conn)
+        all_targets = list_targets(conn, active_only=False)
+
+        assert [item["article_id"] for item in active_targets] == ["1"]
+        assert [item["article_id"] for item in all_targets] == ["1", "2"]
     finally:
         conn.close()

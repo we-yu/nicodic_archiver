@@ -9,11 +9,11 @@ intended to keep a long-lived container available for manual CLI use.
 What this profile does:
 - builds a runtime image from Dockerfile.runtime
 - keeps one single-operator web runtime running on a host IP:port
-- preserves targets, SQLite data, archives, and batch logs through mounts
+- preserves the target registry, SQLite data, archives, and batch logs through mounts
 
 What this profile does not do yet:
 - cron or repeated scheduling inside the container
-- target storage migration away from the text file
+- rich target-management tooling
 
 What this profile now adds for periodic operation:
 - a host-side one-shot wrapper that calls the existing periodic path
@@ -23,12 +23,12 @@ What this profile now adds for periodic operation:
 What this profile now adds for web operation:
 - starts the existing web app inside the runtime container
 - publishes the web app on a host-visible IP:port mapping
-- keeps target intake bounded to canonical article URLs in the text target list
+- keeps target intake bounded to canonical article URLs in SQLite
 
 ## Mounted Paths
 
 The runtime profile uses these child-repo-local paths:
-- target list: runtime/targets
+- legacy import source: runtime/targets
 - SQLite and saved JSON archives: runtime/data
 - batch and periodic logs: runtime/logs
 
@@ -41,8 +41,8 @@ Because the application already reads and writes under data/ and uses the
 BATCH_LOG_DIR environment variable for batch logs, no product behavior needs
 to change.
 
-The runtime profile also sets TARGET_LIST_PATH to /runtime/targets/targets.txt
-for the web process.
+The runtime profile sets TARGET_DB_PATH to /app/data/nicodic.db for the web
+process and periodic wrapper.
 
 ## Host UID/GID Handling
 
@@ -85,12 +85,13 @@ LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) \
 ```
 
 The web app remains a thin entrypoint. A web-side registration adds only the
-canonical article URL to runtime/targets/targets.txt. It does not enqueue or
-scrape immediately; the next periodic or batch pass performs the actual scrape.
+canonical article URL to the target table in /app/data/nicodic.db. It does not
+enqueue or scrape immediately; the next periodic or batch pass performs the
+actual scrape.
 
 The web UI is intentionally separated from immediate execution. It performs
-bounded validation / existence checks, target-list registration, and saved
-article TXT download only.
+bounded validation / existence checks, target registration, and saved article
+TXT download only.
 
 ## Stop
 
@@ -98,16 +99,27 @@ Stop and remove the provisional runtime container:
 
 `docker compose -f docker-compose.runtime.yml down`
 
-## Target List Location
+## Target Registry Location
 
-Create or edit the target list at:
+The authoritative scrape target registry now lives in:
+
+`runtime/data/nicodic.db`
+
+The active scrape target source-of-truth is the SQLite `target` table.
+
+The web UI writes only to that table when a resolved article is added through
+the Add To Target Registry action.
+
+The legacy plain-text file remains available only as an admin import source:
 
 `runtime/targets/targets.txt`
 
-That file remains a human-editable plain text target source.
+Manual one-shot import example:
 
-The web UI writes the same file when a resolved article is added through the
-Add To Target List action.
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py import-targets /runtime/targets/targets.txt /app/data/nicodic.db
+```
 
 ## Initial Smoke Test
 
@@ -123,7 +135,7 @@ Recommended first-pass smoke test:
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py batch /runtime/targets/targets.txt
+	python main.py batch /app/data/nicodic.db
 ```
 
 After that, this command should work as expected:
@@ -139,33 +151,33 @@ Follow the published web runtime logs:
 
 `docker compose -f docker-compose.runtime.yml logs -f personal_runtime`
 
-Show the target list currently mounted into the runtime:
+Show the active targets currently stored in the registry:
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py targets /runtime/targets/targets.txt
+	python main.py targets /app/data/nicodic.db
 ```
 
 Run one batch pass:
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py batch /runtime/targets/targets.txt
+	python main.py batch /app/data/nicodic.db
 ```
 
 Run the current periodic CLI entrypoint manually:
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	python main.py periodic /runtime/targets/targets.txt 300
+	python main.py periodic /app/data/nicodic.db 300
 ```
 
-Run the web app manually with an explicit target list path if needed:
+Run the web app manually with an explicit target DB path if needed:
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
 	python main.py web --host 0.0.0.0 --port 8000 \
-	--target-list-path /runtime/targets/targets.txt
+	--target-db-path /app/data/nicodic.db
 ```
 
 Run one scheduler-friendly periodic cycle through the wrapper:
@@ -177,14 +189,14 @@ run is already active, it prints a skip message and exits without starting a
 second overlapping periodic pass.
 
 Useful environment overrides for external schedulers:
-- `TARGET_LIST_PATH` defaults to `/runtime/targets/targets.txt`
+- `TARGET_DB_PATH` defaults to `/app/data/nicodic.db`
 - `COMPOSE_FILE_PATH` defaults to `docker-compose.runtime.yml`
 - `COMPOSE_SERVICE_NAME` defaults to `personal_runtime`
 - `LOCK_DIR_PATH` defaults to `runtime/logs/periodic_once.lock`
 
 Example scheduler-facing invocation shape:
 
-`TARGET_LIST_PATH=/runtime/targets/targets.txt ./runtime/periodic_once.sh`
+`TARGET_DB_PATH=/app/data/nicodic.db ./runtime/periodic_once.sh`
 
 List saved articles:
 
@@ -219,7 +231,7 @@ normally work without requiring `sudo chown`.
 
 The following repository-local directories act as persistence anchors for the
 runtime profile:
-- runtime/targets: the target list file you maintain
+- runtime/targets: optional legacy import source files
 - runtime/data: SQLite database plus saved article archives
 - runtime/logs: batch and periodic run logs
 

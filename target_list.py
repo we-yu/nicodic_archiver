@@ -1,6 +1,8 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
+from storage import init_db, list_targets, register_target
+
 
 def _parse_target_line(raw_line: str) -> str | None:
     line = raw_line.strip()
@@ -11,71 +13,106 @@ def _parse_target_line(raw_line: str) -> str | None:
     return line
 
 
-# Temporary plain-text input source until a more structured target registry exists.
-def load_target_urls(file_path: str) -> list[str]:
-    """Load a stable URL list from a human-editable plain text file."""
-
-    seen_urls = set()
-    targets = []
-
-    for raw_line in Path(file_path).read_text(encoding="utf-8").splitlines():
-        line = _parse_target_line(raw_line)
-        if line is None:
-            continue
-
-        if line in seen_urls:
-            continue
-
-        seen_urls.add(line)
-        targets.append(line)
-
-    return targets
-
-
-def validate_target_url(article_url: str) -> bool:
+def _parse_target_identity(article_url: str) -> dict | None:
     candidate = article_url.strip()
     if not candidate:
-        return False
+        return None
 
     parsed = urlparse(candidate)
     if parsed.scheme not in {"http", "https"}:
-        return False
+        return None
     if parsed.netloc != "dic.nicovideo.jp":
-        return False
+        return None
 
     path_parts = [part for part in parsed.path.split("/") if part]
     if len(path_parts) != 2:
-        return False
+        return None
 
     article_type, article_id = path_parts
     if not article_type or not article_id:
-        return False
+        return None
 
-    return True
+    return {
+        "article_id": article_id,
+        "article_type": article_type,
+        "canonical_url": (
+            f"https://dic.nicovideo.jp/{article_type}/{article_id}"
+        ),
+    }
 
 
-def add_target_url(article_url: str, target_list_path: str) -> str:
-    candidate = article_url.strip()
-    if not validate_target_url(candidate):
+def list_active_target_urls(target_db_path: str) -> list[str]:
+    """Load active target URLs from the SQLite-backed target registry."""
+
+    conn = init_db(target_db_path)
+    try:
+        return [entry["canonical_url"] for entry in list_targets(conn)]
+    finally:
+        conn.close()
+
+
+def validate_target_url(article_url: str) -> bool:
+    return _parse_target_identity(article_url) is not None
+
+
+def register_target_url(article_url: str, target_db_path: str) -> str:
+    target_identity = _parse_target_identity(article_url)
+    if target_identity is None:
         return "invalid"
 
-    target_path = Path(target_list_path)
-    existing_targets = []
-    if target_path.exists():
-        existing_targets = load_target_urls(target_list_path)
+    conn = init_db(target_db_path)
+    try:
+        result = register_target(
+            conn,
+            target_identity["article_id"],
+            target_identity["article_type"],
+            target_identity["canonical_url"],
+        )
+    finally:
+        conn.close()
 
-    if candidate in existing_targets:
-        return "duplicate"
+    return result["status"]
 
-    target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    prefix = ""
-    if target_path.exists():
-        existing_text = target_path.read_text(encoding="utf-8")
-        if existing_text and not existing_text.endswith("\n"):
-            prefix = "\n"
+def import_targets_from_text_file(
+    source_path: str,
+    target_db_path: str,
+) -> dict:
+    """Import legacy plain-text targets into the SQLite registry once."""
 
-    with target_path.open("a", encoding="utf-8") as target_file:
-        target_file.write(f"{prefix}{candidate}\n")
+    counts = {
+        "source_path": source_path,
+        "target_db_path": target_db_path,
+        "processed": 0,
+        "added": 0,
+        "duplicate": 0,
+        "reactivated": 0,
+        "invalid": 0,
+    }
 
-    return "added"
+    lines = Path(source_path).read_text(encoding="utf-8").splitlines()
+
+    conn = init_db(target_db_path)
+    try:
+        for raw_line in lines:
+            line = _parse_target_line(raw_line)
+            if line is None:
+                continue
+
+            counts["processed"] += 1
+            target_identity = _parse_target_identity(line)
+            if target_identity is None:
+                counts["invalid"] += 1
+                continue
+
+            result = register_target(
+                conn,
+                target_identity["article_id"],
+                target_identity["article_type"],
+                target_identity["canonical_url"],
+            )
+            counts[result["status"]] += 1
+    finally:
+        conn.close()
+
+    return counts
