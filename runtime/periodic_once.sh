@@ -3,7 +3,7 @@ set -eu
 
 COMPOSE_FILE_PATH=${COMPOSE_FILE_PATH:-docker-compose.runtime.yml}
 COMPOSE_SERVICE_NAME=${COMPOSE_SERVICE_NAME:-personal_runtime}
-TARGET_LIST_PATH=${TARGET_LIST_PATH:-/runtime/targets/targets.txt}
+TARGET_DB_PATH=${TARGET_DB_PATH:-/app/data/nicodic.db}
 LOCK_DIR_PATH=${LOCK_DIR_PATH:-runtime/logs/periodic_once.lock}
 
 mkdir -p "$(dirname "$LOCK_DIR_PATH")"
@@ -17,10 +17,10 @@ else
 fi
 
 echo "[periodic-once] Starting one periodic cycle"
-echo "[periodic-once] target_list_path=$TARGET_LIST_PATH"
+echo "[periodic-once] target_db_path=$TARGET_DB_PATH"
 
 docker compose -f "$COMPOSE_FILE_PATH" exec -T "$COMPOSE_SERVICE_NAME" \
-  python main.py periodic-once "$TARGET_LIST_PATH"
+  python main.py periodic-once "$TARGET_DB_PATH"
 
 echo "[periodic-once] Finished one periodic cycle"
 

@@ -7,7 +7,7 @@ services:
     working_dir: /app
     environment:
       BATCH_LOG_DIR: /runtime/logs/batch_runs
-      TARGET_LIST_PATH: /runtime/targets/targets.txt
+      TARGET_DB_PATH: /app/data/nicodic.db
     volumes:
       - ./runtime/targets:/runtime/targets
       - ./runtime/data:/app/data
@@ -25,7 +25,7 @@ services:
         "0.0.0.0",
         "--port",
         "8000",
-        "--target-list-path",
-        "/runtime/targets/targets.txt",
+        "--target-db-path",
+        "/app/data/nicodic.db",
       ]
 

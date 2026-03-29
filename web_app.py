@@ -10,13 +10,10 @@ from archive_read import (
     get_saved_article_summary_by_exact_title,
 )
 from article_resolver import resolve_article_input
-from target_list import add_target_url
+from target_list import register_target_url
 
 
-DEFAULT_TARGET_LIST_PATH = os.environ.get(
-    "TARGET_LIST_PATH",
-    "runtime/targets/targets.txt",
-)
+DEFAULT_TARGET_DB_PATH = os.environ.get("TARGET_DB_PATH", "data/nicodic.db")
 
 
 def _normalize_web_input(article_input: str) -> str:
@@ -115,9 +112,11 @@ def _build_action_result_message(action_result: dict) -> str:
     if status == "download_ready":
         return "Saved article TXT download is ready."
     if status == "target_added":
-        return "Canonical article URL was added to the target list."
+        return "Canonical article URL was added to the target registry."
+    if status == "target_reactivated":
+        return "Canonical article URL was reactivated in the target registry."
     if status == "target_duplicate":
-        return "Canonical article URL is already present in the target list."
+        return "Canonical article URL is already active in the target registry."
     if status == "action_error":
         return action_result["message"]
     return "Action completed."
@@ -126,7 +125,7 @@ def _build_action_result_message(action_result: dict) -> str:
 def _followup_action(
     article_input: str,
     action: str,
-    target_list_path: str,
+    target_db_path: str,
 ) -> dict:
     status_result = check_article_status(article_input)
     if status_result["status"] not in {"saved", "unsaved"}:
@@ -149,13 +148,18 @@ def _followup_action(
         }
 
     if action == "add_target":
-        add_result = add_target_url(
+        add_result = register_target_url(
             status_result["article_url"],
-            target_list_path,
+            target_db_path,
         )
         if add_result == "added":
             return {
                 "status": "target_added",
+                "check_result": status_result,
+            }
+        if add_result == "reactivated":
+            return {
+                "status": "target_reactivated",
                 "check_result": status_result,
             }
         if add_result == "duplicate":
@@ -254,7 +258,7 @@ def _render_message_area(
                 f"<input type=\"hidden\" name=\"article_input\" "
                 f"value=\"{escape(result['input'])}\">"
                 "<input type=\"hidden\" name=\"action\" value=\"add_target\">"
-                "<button type=\"submit\">Add To Target List</button>"
+                "<button type=\"submit\">Add To Target Registry</button>"
                 "</form>"
             )
         )
@@ -266,7 +270,7 @@ def _render_message_area(
                 f"<input type=\"hidden\" name=\"article_input\" "
                 f"value=\"{escape(result['input'])}\">"
                 "<input type=\"hidden\" name=\"action\" value=\"add_target\">"
-                "<button type=\"submit\">Add To Target List</button>"
+                "<button type=\"submit\">Add To Target Registry</button>"
                 "</form>"
             )
         )
@@ -398,7 +402,7 @@ def _render_page(
     return html.encode("utf-8")
 
 
-def create_app(target_list_path: str = DEFAULT_TARGET_LIST_PATH):
+def create_app(target_db_path: str = DEFAULT_TARGET_DB_PATH):
     def app(environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET").upper()
         path = environ.get("PATH_INFO", "/")
@@ -435,7 +439,7 @@ def create_app(target_list_path: str = DEFAULT_TARGET_LIST_PATH):
             action_result = _followup_action(
                 article_input,
                 action,
-                target_list_path,
+                target_db_path,
             )
             check_result = action_result["check_result"]
 
@@ -519,9 +523,9 @@ application = create_app()
 def serve_web_app(
     host: str = "127.0.0.1",
     port: int = 8000,
-    target_list_path: str = DEFAULT_TARGET_LIST_PATH,
+    target_db_path: str = DEFAULT_TARGET_DB_PATH,
 ) -> None:
-    app = create_app(target_list_path=target_list_path)
+    app = create_app(target_db_path=target_db_path)
     with make_server(host, port, app) as server:
         print(f"Serving web app at http://{host}:{port}")
         server.serve_forever()

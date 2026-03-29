@@ -2,17 +2,33 @@ import json
 import os
 import sqlite3
 import time
+from pathlib import Path
 
 
-def init_db():
+DEFAULT_DB_PATH = "data/nicodic.db"
+
+
+def _target_row_to_entry(row):
+    return {
+        "id": row[0],
+        "article_id": row[1],
+        "article_type": row[2],
+        "canonical_url": row[3],
+        "is_active": bool(row[4]),
+        "created_at": row[5],
+    }
+
+
+def init_db(db_path: str = DEFAULT_DB_PATH):
     """
     SQLite初期化（テーブル作成）。
     既存の場合は何もしない。
     """
 
-    os.makedirs("data", exist_ok=True)
+    db_dir = Path(db_path).parent
+    db_dir.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect("data/nicodic.db")
+    conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
     cur.execute("""
@@ -55,6 +71,18 @@ def init_db():
         article_url TEXT NOT NULL,
         title TEXT,
         enqueued_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(article_id, article_type)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS target (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        article_id TEXT NOT NULL,
+        article_type TEXT NOT NULL,
+        canonical_url TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(article_id, article_type)
     )
     """)
@@ -225,3 +253,81 @@ def dequeue_canonical_target(conn, article_id, article_type):
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def register_target(conn, article_id, article_type, canonical_url):
+    """Register or reactivate one canonical scrape target."""
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, article_id, article_type, canonical_url, is_active, created_at
+        FROM target
+        WHERE article_id=? AND article_type=?
+        """,
+        (article_id, article_type),
+    )
+    existing_row = cur.fetchone()
+
+    if existing_row is None:
+        cur.execute(
+            """
+            INSERT INTO target
+            (article_id, article_type, canonical_url, is_active)
+            VALUES (?, ?, ?, 1)
+            """,
+            (article_id, article_type, canonical_url),
+        )
+        status = "added"
+    else:
+        existing_entry = _target_row_to_entry(existing_row)
+        status = "duplicate"
+        if not existing_entry["is_active"]:
+            status = "reactivated"
+
+        cur.execute(
+            """
+            UPDATE target
+            SET canonical_url=?, is_active=1
+            WHERE article_id=? AND article_type=?
+            """,
+            (canonical_url, article_id, article_type),
+        )
+
+    conn.commit()
+
+    cur.execute(
+        """
+        SELECT id, article_id, article_type, canonical_url, is_active, created_at
+        FROM target
+        WHERE article_id=? AND article_type=?
+        """,
+        (article_id, article_type),
+    )
+    entry = _target_row_to_entry(cur.fetchone())
+
+    return {
+        "status": status,
+        "entry": entry,
+        "target_identity": {
+            "article_id": article_id,
+            "article_type": article_type,
+        },
+    }
+
+
+def list_targets(conn, active_only=True):
+    """Load registered scrape targets in insertion order."""
+
+    cur = conn.cursor()
+    query = (
+        "SELECT id, article_id, article_type, canonical_url, is_active, "
+        "created_at FROM target"
+    )
+    params = ()
+    if active_only:
+        query += " WHERE is_active=1"
+    query += " ORDER BY id ASC"
+
+    cur.execute(query, params)
+    return [_target_row_to_entry(row) for row in cur.fetchall()]

@@ -265,7 +265,7 @@ def test_application_post_renders_saved_result_message():
     assert "Canonical target: a/12345" in response["body"]
     assert "Saved response count: 42" in response["body"]
     assert "Download TXT" in response["body"]
-    assert "Add To Target List" in response["body"]
+    assert "Add To Target Registry" in response["body"]
 
 
 def test_application_post_renders_title_resolution_failure_message():
@@ -300,11 +300,11 @@ def test_application_post_renders_unsaved_result_with_target_action_only():
         response = _run_wsgi_request("POST", body="article_input=Foo")
 
     assert response["status"] == "200 OK"
-    assert "Add To Target List" in response["body"]
+    assert "Add To Target Registry" in response["body"]
     assert "Enqueue Request" not in response["body"]
 
 
-@patch("web_app.add_target_url", return_value="added")
+@patch("web_app.register_target_url", return_value="added")
 @patch("web_app.check_article_status")
 def test_application_action_add_target_uses_canonical_url(
     mock_check_status,
@@ -328,14 +328,17 @@ def test_application_action_add_target_uses_canonical_url(
     )
 
     assert response["status"] == "200 OK"
-    assert "Canonical article URL was added to the target list." in response["body"]
+    assert (
+        "Canonical article URL was added to the target registry."
+        in response["body"]
+    )
     mock_add_target_url.assert_called_once_with(
         "https://dic.nicovideo.jp/a/12345",
-        "runtime/targets/targets.txt",
+        "data/nicodic.db",
     )
 
 
-@patch("web_app.add_target_url", return_value="added")
+@patch("web_app.register_target_url", return_value="added")
 @patch("web_app.check_article_status")
 def test_application_action_add_target_uses_custom_runtime_target_path(
     mock_check_status,
@@ -356,17 +359,17 @@ def test_application_action_add_target_uses_custom_runtime_target_path(
         "POST",
         path="/action",
         body="article_input=Foo&action=add_target",
-        app=create_app(target_list_path="/runtime/targets/custom.txt"),
+        app=create_app(target_db_path="/runtime/data/custom.db"),
     )
 
     assert response["status"] == "200 OK"
     mock_add_target_url.assert_called_once_with(
         "https://dic.nicovideo.jp/a/12345",
-        "/runtime/targets/custom.txt",
+        "/runtime/data/custom.db",
     )
 
 
-@patch("web_app.add_target_url", return_value="duplicate")
+@patch("web_app.register_target_url", return_value="duplicate")
 @patch("web_app.check_article_status")
 def test_application_action_add_target_duplicate_is_bounded(
     mock_check_status,
@@ -392,12 +395,46 @@ def test_application_action_add_target_duplicate_is_bounded(
 
     assert response["status"] == "200 OK"
     assert (
-        "Canonical article URL is already present in the target list."
+        "Canonical article URL is already active in the target registry."
         in response["body"]
     )
     mock_add_target_url.assert_called_once_with(
         "https://dic.nicovideo.jp/a/12345",
-        "runtime/targets/targets.txt",
+        "data/nicodic.db",
+    )
+
+
+@patch("web_app.register_target_url", return_value="reactivated")
+@patch("web_app.check_article_status")
+def test_application_action_add_target_reactivated_is_bounded(
+    mock_check_status,
+    mock_add_target_url,
+):
+    mock_check_status.return_value = {
+        "status": "unsaved",
+        "input": "Foo",
+        "title": "Foo",
+        "matched_by": "exact_title",
+        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_id": "12345",
+        "article_type": "a",
+        "message": "Resolved article, but no saved archive was found yet.",
+    }
+
+    response = _run_wsgi_request(
+        "POST",
+        path="/action",
+        body="article_input=Foo&action=add_target",
+    )
+
+    assert response["status"] == "200 OK"
+    assert (
+        "Canonical article URL was reactivated in the target registry."
+        in response["body"]
+    )
+    mock_add_target_url.assert_called_once_with(
+        "https://dic.nicovideo.jp/a/12345",
+        "data/nicodic.db",
     )
 
 
@@ -412,7 +449,7 @@ def test_application_action_add_target_skips_write_for_unresolved_input(
         "message": "Could not resolve the input (not_found).",
     }
 
-    with patch("web_app.add_target_url") as mock_add_target_url:
+    with patch("web_app.register_target_url") as mock_add_target_url:
         response = _run_wsgi_request(
             "POST",
             path="/action",
@@ -478,7 +515,7 @@ def test_application_action_enqueue_request_is_not_supported_from_web(
         "message": "Resolved article, but no saved archive was found yet.",
     }
 
-    with patch("web_app.add_target_url") as mock_add_target_url:
+    with patch("web_app.register_target_url") as mock_add_target_url:
         response = _run_wsgi_request(
             "POST",
             path="/action",
