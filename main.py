@@ -31,6 +31,8 @@ from verification_cli import verify_one_shot_batch
 from verification_cli import verify_one_shot_fetch
 from verification_cli import verify_registry_inspect, verify_registry_list
 from verification_cli import verify_telemetry_export
+from verification_cli import DEFAULT_KGS_STATE_DIR
+from verification_cli import verify_kgs_batch, verify_kgs_fetch
 from web_app import serve_web_app
 
 
@@ -264,6 +266,14 @@ def _print_verification_usage():
     print("Verification usage:")
     print("  python main.py verify fetch <canonical_article_url>")
     print(
+        "  python main.py verify kgs fetch <canonical_article_url> "
+        "[--state-dir PATH] [--followup-drop-last N]"
+    )
+    print(
+        "  python main.py verify kgs batch <canonical_article_url> "
+        "[--state-dir PATH]"
+    )
+    print(
         "  python main.py verify registry list "
         "[--db PATH] [--active-only]"
     )
@@ -476,6 +486,46 @@ def _handle_verification_telemetry(args):
         sys.exit(1)
 
 
+def _handle_verification_kgs(args):
+    if len(args) < 2:
+        _print_verification_usage()
+        sys.exit(1)
+
+    action = args[0]
+    article_url = args[1]
+    state_dir = _read_optional_flag(args, "--state-dir", DEFAULT_KGS_STATE_DIR)
+
+    if action == "fetch":
+        followup_drop_last = 0
+        if "--followup-drop-last" in args:
+            try:
+                followup_drop_last = int(
+                    _read_optional_flag(args, "--followup-drop-last"),
+                )
+            except ValueError:
+                print(
+                    "Usage: verify kgs fetch <canonical_article_url> "
+                    "[--state-dir PATH] [--followup-drop-last N]"
+                )
+                sys.exit(1)
+
+        if not verify_kgs_fetch(
+            article_url,
+            state_dir,
+            followup_drop_last=followup_drop_last,
+        ):
+            sys.exit(1)
+        return
+
+    if action == "batch":
+        if not verify_kgs_batch(article_url, state_dir, run_batch_scrape):
+            sys.exit(1)
+        return
+
+    _print_verification_usage()
+    sys.exit(1)
+
+
 def _handle_verification_cli(args):
     if not args:
         _print_verification_usage()
@@ -488,6 +538,10 @@ def _handle_verification_cli(args):
             sys.exit(1)
         if not verify_one_shot_fetch(args[1]):
             sys.exit(1)
+        return
+
+    if area == "kgs":
+        _handle_verification_kgs(args[1:])
         return
 
     if area == "registry":
@@ -517,7 +571,9 @@ def main():
         print("Usage:")
         print("  python main.py <article_url>")
         print("  python main.py operator <target|archive> ...")
-        print("  python main.py verify <fetch|registry|batch|telemetry> ...")
+        print(
+            "  python main.py verify <fetch|kgs|registry|batch|telemetry> ..."
+        )
         print("  python main.py inspect <article_id> <article_type> [--last N]")
         print("  python main.py export <article_id> <article_type> --format txt")
         print("  python main.py export <article_id> <article_type> --format md")

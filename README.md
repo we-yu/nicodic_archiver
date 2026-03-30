@@ -9,7 +9,8 @@ This repository centers on three bounded seams:
 
 - scrape and save Nicopedia BBS threads
 - keep a DB-backed target registry for periodic operation
-- inspect and export saved archives without turning the product into a full admin console
+- inspect and export saved archives without turning the product into a full
+	admin console
 
 The operator interface for target registry and saved archive management is CLI-first.
 Web admin expansion is intentionally out of scope.
@@ -65,6 +66,7 @@ Two repo-local entry points expose that verification tooling:
 Supported verification actions:
 
 - fetch one canonical article
+- run manual known-good smoke on isolated state
 - check current target registry state
 - run one one-shot batch verification pass
 - export telemetry CSV for verification review
@@ -73,9 +75,12 @@ Read-first verification flow:
 
 1. check current registry state
 2. run one light one-shot fetch when needed
-3. inspect the saved archive through the existing operator tooling
-4. run one one-shot batch verification only when needed
-5. export telemetry CSV only when needed for review
+3. run manual KGS on isolated state only when live smoke is needed
+4. inspect the saved archive through the existing operator tooling
+5. run one one-shot batch verification only when needed
+6. export telemetry CSV only when needed for review
+
+KGS remains manual, opt-in, isolated, and non-gating.
 
 ## Existing Flow Commands
 

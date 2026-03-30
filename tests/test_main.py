@@ -460,6 +460,55 @@ def test_main_verify_fetch_calls_verification_helper(mock_verify_fetch):
     )
 
 
+@patch("main.verify_kgs_fetch")
+def test_main_verify_kgs_fetch_calls_verification_helper(mock_verify_kgs_fetch):
+    mock_verify_kgs_fetch.return_value = True
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "verify",
+            "kgs",
+            "fetch",
+            "https://dic.nicovideo.jp/a/12345",
+            "--state-dir",
+            "runtime/smoke/custom",
+            "--followup-drop-last",
+            "2",
+        ],
+    ):
+        main_module.main()
+
+    mock_verify_kgs_fetch.assert_called_once_with(
+        "https://dic.nicovideo.jp/a/12345",
+        "runtime/smoke/custom",
+        followup_drop_last=2,
+    )
+
+
+@patch("main.verify_kgs_batch")
+def test_main_verify_kgs_batch_calls_verification_helper(mock_verify_kgs_batch):
+    mock_verify_kgs_batch.return_value = True
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "verify",
+            "kgs",
+            "batch",
+            "https://dic.nicovideo.jp/a/12345",
+        ],
+    ):
+        main_module.main()
+
+    args = mock_verify_kgs_batch.call_args.args
+    assert args[0] == "https://dic.nicovideo.jp/a/12345"
+    assert args[1] == "runtime/smoke/kgs"
+    assert args[2] is main_module.run_batch_scrape
+
+
 @patch("main.verify_registry_list")
 def test_main_verify_registry_list_calls_verification_helper(
     mock_verify_registry_list,
@@ -523,6 +572,7 @@ def test_main_verify_without_required_args_exits_with_usage(capsys):
     out = capsys.readouterr().out
     assert "Verification usage:" in out
     assert "verify fetch" in out
+    assert "verify kgs fetch" in out
     assert "verify telemetry export" in out
 
 
@@ -534,7 +584,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     out = capsys.readouterr().out
     assert "python main.py <article_url>" in out
     assert "python main.py operator <target|archive> ..." in out
-    assert "python main.py verify <fetch|registry|batch|telemetry> ..." in out
+    assert "python main.py verify <fetch|kgs|registry|batch|telemetry> ..." in out
     assert "inspect" in out
     assert "export <article_id> <article_type> --format txt" in out
     assert "export <article_id> <article_type> --format md" in out
