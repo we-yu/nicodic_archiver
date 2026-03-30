@@ -445,6 +445,87 @@ def test_main_operator_without_required_args_exits_with_usage(capsys):
     assert "operator archive export" in out
 
 
+@patch("main.verify_one_shot_fetch")
+def test_main_verify_fetch_calls_verification_helper(mock_verify_fetch):
+    mock_verify_fetch.return_value = True
+
+    with patch(
+        "sys.argv",
+        ["main.py", "verify", "fetch", "https://dic.nicovideo.jp/a/12345"],
+    ):
+        main_module.main()
+
+    mock_verify_fetch.assert_called_once_with(
+        "https://dic.nicovideo.jp/a/12345"
+    )
+
+
+@patch("main.verify_registry_list")
+def test_main_verify_registry_list_calls_verification_helper(
+    mock_verify_registry_list,
+):
+    mock_verify_registry_list.return_value = True
+
+    with patch("sys.argv", ["main.py", "verify", "registry", "list"]):
+        main_module.main()
+
+    mock_verify_registry_list.assert_called_once_with(
+        "data/nicodic.db",
+        active_only=False,
+    )
+
+
+@patch("main.verify_one_shot_batch")
+def test_main_verify_batch_calls_verification_helper(mock_verify_batch):
+    mock_verify_batch.return_value = True
+
+    with patch("sys.argv", ["main.py", "verify", "batch", "run"]):
+        main_module.main()
+
+    args = mock_verify_batch.call_args.args
+    assert args[0] == "data/nicodic.db"
+    assert args[1] is main_module.run_batch_scrape
+
+
+@patch("main.verify_telemetry_export")
+def test_main_verify_telemetry_export_calls_verification_helper(
+    mock_verify_telemetry_export,
+):
+    mock_verify_telemetry_export.return_value = True
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "verify",
+            "telemetry",
+            "export",
+            "--db",
+            "telemetry.db",
+            "--output",
+            "out.csv",
+        ],
+    ):
+        main_module.main()
+
+    mock_verify_telemetry_export.assert_called_once_with(
+        "telemetry.db",
+        output_path="out.csv",
+    )
+
+
+def test_main_verify_without_required_args_exits_with_usage(capsys):
+    with patch("sys.argv", ["main.py", "verify"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Verification usage:" in out
+    assert "verify fetch" in out
+    assert "verify telemetry export" in out
+
+
 def test_main_too_few_args_exits_with_usage(capsys):
     with patch("sys.argv", ["main.py"]):
         with pytest.raises(SystemExit) as exc_info:
@@ -453,6 +534,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     out = capsys.readouterr().out
     assert "python main.py <article_url>" in out
     assert "python main.py operator <target|archive> ..." in out
+    assert "python main.py verify <fetch|registry|batch|telemetry> ..." in out
     assert "inspect" in out
     assert "export <article_id> <article_type> --format txt" in out
     assert "export <article_id> <article_type> --format md" in out

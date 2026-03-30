@@ -27,6 +27,10 @@ from target_list import (
     parse_target_identity,
     register_target_url,
 )
+from verification_cli import verify_one_shot_batch
+from verification_cli import verify_one_shot_fetch
+from verification_cli import verify_registry_inspect, verify_registry_list
+from verification_cli import verify_telemetry_export
 from web_app import serve_web_app
 
 
@@ -256,6 +260,24 @@ def _print_operator_usage():
     )
 
 
+def _print_verification_usage():
+    print("Verification usage:")
+    print("  python main.py verify fetch <canonical_article_url>")
+    print(
+        "  python main.py verify registry list "
+        "[--db PATH] [--active-only]"
+    )
+    print(
+        "  python main.py verify registry inspect <article_id> "
+        "<article_type> [--db PATH]"
+    )
+    print("  python main.py verify batch run [--db PATH]")
+    print(
+        "  python main.py verify telemetry export "
+        "[--db PATH] [--output PATH]"
+    )
+
+
 def _handle_operator_target(args):
     if not args:
         _print_operator_usage()
@@ -395,6 +417,95 @@ def _handle_operator_cli(args):
     sys.exit(1)
 
 
+def _handle_verification_registry(args):
+    if not args:
+        _print_verification_usage()
+        sys.exit(1)
+
+    action = args[0]
+    target_db_path = _read_optional_flag(args, "--db", DEFAULT_TARGET_DB_PATH)
+
+    if action == "list":
+        active_only = "--active-only" in args[1:]
+        if not verify_registry_list(target_db_path, active_only=active_only):
+            sys.exit(1)
+        return
+
+    if action == "inspect":
+        if len(args) < 3:
+            print(
+                "Usage: verify registry inspect <article_id> "
+                "<article_type> [--db PATH]"
+            )
+            sys.exit(1)
+        if not verify_registry_inspect(args[1], args[2], target_db_path):
+            sys.exit(1)
+        return
+
+    _print_verification_usage()
+    sys.exit(1)
+
+
+def _handle_verification_batch(args):
+    if not args or args[0] != "run":
+        print("Usage: verify batch run [--db PATH]")
+        sys.exit(1)
+
+    target_db_path = _read_optional_flag(args, "--db", DEFAULT_TARGET_DB_PATH)
+    if not verify_one_shot_batch(target_db_path, run_batch_scrape):
+        sys.exit(1)
+
+
+def _handle_verification_telemetry(args):
+    if not args or args[0] != "export":
+        print("Usage: verify telemetry export [--db PATH] [--output PATH]")
+        sys.exit(1)
+
+    try:
+        db_path = _read_optional_flag(
+            args,
+            "--db",
+            _telemetry_archive_db_path(),
+        )
+        output_path = _read_optional_flag(args, "--output", None)
+    except ValueError:
+        print("Usage: verify telemetry export [--db PATH] [--output PATH]")
+        sys.exit(1)
+
+    if not verify_telemetry_export(db_path, output_path=output_path):
+        sys.exit(1)
+
+
+def _handle_verification_cli(args):
+    if not args:
+        _print_verification_usage()
+        sys.exit(1)
+
+    area = args[0]
+    if area == "fetch":
+        if len(args) < 2:
+            print("Usage: verify fetch <canonical_article_url>")
+            sys.exit(1)
+        if not verify_one_shot_fetch(args[1]):
+            sys.exit(1)
+        return
+
+    if area == "registry":
+        _handle_verification_registry(args[1:])
+        return
+
+    if area == "batch":
+        _handle_verification_batch(args[1:])
+        return
+
+    if area == "telemetry":
+        _handle_verification_telemetry(args[1:])
+        return
+
+    _print_verification_usage()
+    sys.exit(1)
+
+
 def main():
     """
     CLIエントリポイント。
@@ -406,6 +517,7 @@ def main():
         print("Usage:")
         print("  python main.py <article_url>")
         print("  python main.py operator <target|archive> ...")
+        print("  python main.py verify <fetch|registry|batch|telemetry> ...")
         print("  python main.py inspect <article_id> <article_type> [--last N]")
         print("  python main.py export <article_id> <article_type> --format txt")
         print("  python main.py export <article_id> <article_type> --format md")
@@ -436,6 +548,10 @@ def main():
 
     if sys.argv[1] == "operator":
         _handle_operator_cli(sys.argv[2:])
+        return
+
+    if sys.argv[1] == "verify":
+        _handle_verification_cli(sys.argv[2:])
         return
 
     # inspectモード
