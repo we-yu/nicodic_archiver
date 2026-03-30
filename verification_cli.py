@@ -1,10 +1,114 @@
+import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from archive_read import get_saved_article_summary
 from operator_cli import inspect_target_for_operator, list_targets_for_operator
 from orchestrator import run_scrape
 from storage import format_run_telemetry_csv_wide, init_db
-from target_list import parse_target_identity
+from target_list import parse_target_identity, register_target_url
+
+
+DEFAULT_KGS_STATE_DIR = "runtime/smoke/kgs"
+
+
+def _kgs_db_path(state_dir):
+    return str(Path(state_dir) / "data" / "nicodic.db")
+
+
+def _kgs_log_dir(state_dir):
+    return str(Path(state_dir) / "logs")
+
+
+@contextmanager
+def _isolated_smoke_environment(state_dir):
+    state_path = Path(state_dir)
+    data_dir = state_path / "data"
+    log_dir = state_path / "logs"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    previous_cwd = Path.cwd()
+    old_nicodic_db_path = os.environ.get("NICODIC_DB_PATH")
+    old_batch_log_dir = os.environ.get("BATCH_LOG_DIR")
+
+    os.environ["NICODIC_DB_PATH"] = str(data_dir / "nicodic.db")
+    os.environ["BATCH_LOG_DIR"] = str(log_dir)
+    os.chdir(state_path)
+
+    try:
+        yield {
+            "state_dir": str(state_path),
+            "db_path": str(data_dir / "nicodic.db"),
+            "log_dir": str(log_dir),
+        }
+    finally:
+        os.chdir(previous_cwd)
+
+        if old_nicodic_db_path is None:
+            os.environ.pop("NICODIC_DB_PATH", None)
+        else:
+            os.environ["NICODIC_DB_PATH"] = old_nicodic_db_path
+
+        if old_batch_log_dir is None:
+            os.environ.pop("BATCH_LOG_DIR", None)
+        else:
+            os.environ["BATCH_LOG_DIR"] = old_batch_log_dir
+
+
+def _print_kgs_header(action, article_url, state):
+    print("=== KGS LIVE SMOKE ===")
+    print("Mode: manual opt-in non-gating helper")
+    print(f"Action: {action}")
+    print(f"Known-Good Target: {article_url}")
+    print(f"Isolated State Dir: {state['state_dir']}")
+    print(f"Isolated DB: {state['db_path']}")
+    print(f"Existing Batch Logs: {state['log_dir']}")
+
+
+def _print_kgs_saved_summary(article_id, article_type):
+    summary = get_saved_article_summary(article_id, article_type)
+    if not summary["found"]:
+        print("Archive Summary: not found in isolated state")
+        return
+
+    print("Archive Summary: saved in isolated state")
+    print(f"Article ID: {summary['article_id']}")
+    print(f"Article Type: {summary['article_type']}")
+    print(f"Title: {summary['title']}")
+    print(f"Saved Responses: {summary['response_count']}")
+    print(f"Archive URL: {summary['url']}")
+
+
+def _drop_latest_saved_responses(article_id, article_type, db_path, count):
+    conn = init_db(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT res_no
+            FROM responses
+            WHERE article_id=? AND article_type=?
+            ORDER BY res_no DESC
+            LIMIT ?
+            """,
+            (article_id, article_type, count),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return 0
+
+        res_numbers = [row[0] for row in rows]
+        placeholders = ", ".join(["?"] * len(res_numbers))
+        cur.execute(
+            f"DELETE FROM responses WHERE article_id=? AND article_type=? "
+            f"AND res_no IN ({placeholders})",
+            (article_id, article_type, *res_numbers),
+        )
+        conn.commit()
+        return len(res_numbers)
+    finally:
+        conn.close()
 
 
 def verify_one_shot_fetch(article_url):
@@ -79,3 +183,80 @@ def verify_telemetry_export(db_path, output_path=None):
     print(f"DB: {db_path}")
     print(f"Output: {output_path}")
     return True
+
+
+def verify_kgs_fetch(article_url, state_dir, followup_drop_last=0):
+    identity = parse_target_identity(article_url)
+    if identity is None:
+        print("KGS smoke rejected")
+        print("Reason: input must be a canonical Nicopedia article URL")
+        print(f"Input: {article_url}")
+        return False
+
+    with _isolated_smoke_environment(state_dir) as state:
+        _print_kgs_header("fetch", identity["canonical_url"], state)
+        print("KGS messages are stdout-only for this helper")
+        print("Phase: initial-fetch")
+
+        result = run_scrape(identity["canonical_url"])
+        if not result:
+            print("Result: initial-fetch failed")
+            print(f"Outcome: {result.outcome}")
+            return False
+
+        print("Result: initial-fetch passed")
+        print(f"Outcome: {result.outcome}")
+        _print_kgs_saved_summary(identity["article_id"], identity["article_type"])
+
+        if followup_drop_last > 0:
+            print("Phase: bounded-follow-up")
+            removed = _drop_latest_saved_responses(
+                identity["article_id"],
+                identity["article_type"],
+                state["db_path"],
+                followup_drop_last,
+            )
+            print(f"Follow-Up Trimmed Responses: {removed}")
+            result = run_scrape(identity["canonical_url"])
+            if not result:
+                print("Result: bounded-follow-up failed")
+                print(f"Outcome: {result.outcome}")
+                return False
+
+            print("Result: bounded-follow-up passed")
+            print(f"Outcome: {result.outcome}")
+            _print_kgs_saved_summary(
+                identity["article_id"],
+                identity["article_type"],
+            )
+
+        print("KGS Summary: pass")
+        print(f"Telemetry DB: {state['db_path']}")
+        return True
+
+
+def verify_kgs_batch(article_url, state_dir, run_batch_scrape_func):
+    identity = parse_target_identity(article_url)
+    if identity is None:
+        print("KGS smoke rejected")
+        print("Reason: input must be a canonical Nicopedia article URL")
+        print(f"Input: {article_url}")
+        return False
+
+    with _isolated_smoke_environment(state_dir) as state:
+        _print_kgs_header("batch", identity["canonical_url"], state)
+        print("KGS messages are stdout-only for this helper")
+        register_result = register_target_url(
+            identity["canonical_url"],
+            state["db_path"],
+        )
+        print(f"Phase: target-registration ({register_result})")
+        print("Phase: batch-run")
+
+        final_status, failed_targets = run_batch_scrape_func(state["db_path"])
+        print("=== KGS BATCH SUMMARY ===")
+        print(f"Final Status: {final_status}")
+        print(f"Failed Targets: {failed_targets}")
+        _print_kgs_saved_summary(identity["article_id"], identity["article_type"])
+        print(f"Telemetry DB: {state['db_path']}")
+        return failed_targets == 0
