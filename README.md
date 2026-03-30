@@ -52,6 +52,31 @@ The target add action accepts canonical Nicopedia article URLs only. This keeps
 operator intent non-ambiguous and avoids mixing registry management with article
 resolution flow.
 
+## Verification Entry Points
+
+This repository also includes bounded verification / smoke helpers for a single
+operator.
+
+Two repo-local entry points expose that verification tooling:
+
+- python main.py verify ...
+- sh tools/verify.sh ...
+
+Supported verification actions:
+
+- fetch one canonical article
+- check current target registry state
+- run one one-shot batch verification pass
+- export telemetry CSV for verification review
+
+Read-first verification flow:
+
+1. check current registry state
+2. run one light one-shot fetch when needed
+3. inspect the saved archive through the existing operator tooling
+4. run one one-shot batch verification only when needed
+5. export telemetry CSV only when needed for review
+
 ## Existing Flow Commands
 
 The original bounded entry points remain available:
@@ -69,5 +94,8 @@ interface for registry or archive management.
 
 See the operator guide in docs/OPERATOR_TOOLING.md for daily and periodic
 registry/archive management.
+
+See docs/VERIFICATION_TOOLING.md for bounded verification / smoke tooling and
+the read-first verification flow.
 
 See docs/PERSONAL_RUNTIME.md for runtime-container-specific notes.
