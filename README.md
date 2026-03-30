@@ -67,7 +67,16 @@ interface for registry or archive management.
 
 ## Docs
 
-See the operator guide in docs/OPERATOR_TOOLING.md for daily and periodic
-registry/archive management.
+See `docs/OPERATOR_TOOLING.md` for daily and periodic registry/archive
+management.
 
 See docs/PERSONAL_RUNTIME.md for runtime-container-specific notes.
+
+## Verification / Smoke Helpers (TASK033)
+
+For single-operator read-first verification that reuses existing seams:
+`python main.py verify ...`
+
+Optional wrapper (run from repo root): `sh tools/nico-verify.sh ...`
+
+Full bounded verification guidance: `docs/VERIFICATION.md`

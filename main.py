@@ -432,11 +432,17 @@ def main():
             "  python main.py export-run-telemetry-csv "
             "[--db PATH] [--output PATH]"
         )
+        print("  python main.py verify ...  (bounded verification helpers)")
         sys.exit(1)
 
     if sys.argv[1] == "operator":
         _handle_operator_cli(sys.argv[2:])
         return
+
+    if sys.argv[1] == "verify":
+        from tools import verify as verify_cli
+
+        sys.exit(verify_cli.dispatch_verify(sys.argv[2:]))
 
     # inspectモード
     if sys.argv[1] == "inspect":
