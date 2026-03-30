@@ -231,3 +231,27 @@ Its boundaries are strict:
 - non-gating only
 - stdout-only KGS helper guidance
 - no broad redesign of runtime, batch, or telemetry behavior
+
+## Host-side convenience helper for KGS smoke (Known good smoke)
+
+For practical local verification, a host-side wrapper may be used:
+
+- `bash tools/kgs_smoke.sh <canonical_article_url>`
+
+This helper is intended to provide a more explicit end-to-end KGS flow than
+manual repeated command entry.
+
+Expected flow:
+- start or reuse the runtime container
+- perform an initial isolated KGS fetch
+- trim the last few saved responses inside isolated state
+- run a follow-up KGS fetch against the same isolated state
+- export telemetry CSV
+- clean up isolated smoke state on success
+
+Important:
+- this helper is still manual / opt-in
+- it is still non-gating
+- it must operate only on isolated smoke state
+- it must not modify the main working DB / archive
+
