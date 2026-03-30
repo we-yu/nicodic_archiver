@@ -60,7 +60,7 @@ operator.
 Two repo-local entry points expose that verification tooling:
 
 - python main.py verify ...
-- sh tools/verify.sh ...
+- sh tools/nico-verify.sh ...
 
 Supported verification actions:
 
@@ -76,6 +76,10 @@ Read-first verification flow:
 3. inspect the saved archive through the existing operator tooling
 4. run one one-shot batch verification only when needed
 5. export telemetry CSV only when needed for review
+
+Known-good smoke (KGS) is available as a manual, opt-in, non-gating helper:
+
+- python main.py verify kgs ...
 
 ## Existing Flow Commands
 
@@ -95,7 +99,7 @@ interface for registry or archive management.
 See the operator guide in docs/OPERATOR_TOOLING.md for daily and periodic
 registry/archive management.
 
-See docs/VERIFICATION_TOOLING.md for bounded verification / smoke tooling and
+See docs/VERIFICATION.md for bounded verification / smoke tooling and
 the read-first verification flow.
 
 See docs/PERSONAL_RUNTIME.md for runtime-container-specific notes.

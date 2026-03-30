@@ -1,0 +1,8 @@
+# Known-good smoke (KGS) example
+#
+# Put one canonical Nicopedia article URL per file.
+# Lines starting with # are comments.
+#
+# Example:
+# https://dic.nicovideo.jp/a/12345
+
