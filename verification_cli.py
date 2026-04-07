@@ -80,10 +80,51 @@ def _print_kgs_saved_summary(article_id, article_type):
     print(f"Archive URL: {summary['url']}")
 
 
+def _resolve_saved_article_id(db_path, canonical_url, article_type):
+    conn = init_db(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT article_id
+            FROM articles
+            WHERE canonical_url=? AND article_type=?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (canonical_url, article_type),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return row[0]
+    finally:
+        conn.close()
+
+
 def _drop_latest_saved_responses(article_id, article_type, db_path, count):
     conn = init_db(db_path)
     try:
         cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT COUNT(*), COALESCE(MAX(res_no), 0)
+            FROM responses
+            WHERE article_id=? AND article_type=?
+            """,
+            (article_id, article_type),
+        )
+        before_count, before_max = cur.fetchone()
+
+        print("KGS Trim Debug: begin")
+        print(f"KGS Trim Debug: article_id={article_id}")
+        print(f"KGS Trim Debug: article_type={article_type}")
+        print(f"KGS Trim Debug: db_path={db_path}")
+        print(f"KGS Trim Debug: requested_drop_last={count}")
+        print(f"KGS Trim Debug: saved_response_count_before={before_count}")
+        print(f"KGS Trim Debug: max_res_no_before={before_max}")
+
         cur.execute(
             """
             SELECT res_no
@@ -96,9 +137,14 @@ def _drop_latest_saved_responses(article_id, article_type, db_path, count):
         )
         rows = cur.fetchall()
         if not rows:
+            print("KGS Trim Debug: selected_res_nos=[]")
+            print("KGS Trim Debug: actual_removed=0")
+            print("KGS Trim Debug: end")
             return 0
 
         res_numbers = [row[0] for row in rows]
+        print(f"KGS Trim Debug: selected_res_nos={res_numbers}")
+
         placeholders = ", ".join(["?"] * len(res_numbers))
         cur.execute(
             f"DELETE FROM responses WHERE article_id=? AND article_type=? "
@@ -106,6 +152,22 @@ def _drop_latest_saved_responses(article_id, article_type, db_path, count):
             (article_id, article_type, *res_numbers),
         )
         conn.commit()
+
+        cur.execute(
+            """
+            SELECT COUNT(*), COALESCE(MAX(res_no), 0)
+            FROM responses
+            WHERE article_id=? AND article_type=?
+            """,
+            (article_id, article_type),
+        )
+        after_count, after_max = cur.fetchone()
+
+        print(f"KGS Trim Debug: actual_removed={len(res_numbers)}")
+        print(f"KGS Trim Debug: saved_response_count_after={after_count}")
+        print(f"KGS Trim Debug: max_res_no_after={after_max}")
+        print("KGS Trim Debug: end")
+
         return len(res_numbers)
     finally:
         conn.close()
@@ -206,17 +268,36 @@ def verify_kgs_fetch(article_url, state_dir, followup_drop_last=0):
 
         print("Result: initial-fetch passed")
         print(f"Outcome: {result.outcome}")
-        _print_kgs_saved_summary(identity["article_id"], identity["article_type"])
+        _print_kgs_saved_summary(
+            identity["article_id"],
+            identity["article_type"],
+        )
 
         if followup_drop_last > 0:
+            canonical_id = _resolve_saved_article_id(
+                state["db_path"],
+                identity["canonical_url"],
+                identity["article_type"],
+            )
+
             print("Phase: bounded-follow-up")
+            print(f"KGS Debug: identity_article_id={identity['article_id']}")
+            print(f"KGS Debug: canonical_article_id={canonical_id}")
+            print(f"KGS Debug: identity_type={identity['article_type']}")
+
+            if canonical_id is None:
+                print("Result: bounded-follow-up failed")
+                print("Outcome: could not resolve canonical article id")
+                return False
+
             removed = _drop_latest_saved_responses(
-                identity["article_id"],
+                canonical_id,
                 identity["article_type"],
                 state["db_path"],
                 followup_drop_last,
             )
             print(f"Follow-Up Trimmed Responses: {removed}")
+
             result = run_scrape(identity["canonical_url"])
             if not result:
                 print("Result: bounded-follow-up failed")
@@ -226,7 +307,7 @@ def verify_kgs_fetch(article_url, state_dir, followup_drop_last=0):
             print("Result: bounded-follow-up passed")
             print(f"Outcome: {result.outcome}")
             _print_kgs_saved_summary(
-                identity["article_id"],
+                canonical_id,
                 identity["article_type"],
             )
 
@@ -257,6 +338,9 @@ def verify_kgs_batch(article_url, state_dir, run_batch_scrape_func):
         print("=== KGS BATCH SUMMARY ===")
         print(f"Final Status: {final_status}")
         print(f"Failed Targets: {failed_targets}")
-        _print_kgs_saved_summary(identity["article_id"], identity["article_type"])
+        _print_kgs_saved_summary(
+            identity["article_id"],
+            identity["article_type"],
+        )
         print(f"Telemetry DB: {state['db_path']}")
         return failed_targets == 0
