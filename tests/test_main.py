@@ -384,7 +384,6 @@ def test_main_operator_archive_list_calls_operator_helper(mock_list_archives):
 
     mock_list_archives.assert_called_once_with()
 
-
 @patch("main.inspect_archive_for_operator")
 def test_main_operator_archive_inspect_calls_operator_helper(mock_inspect_archive):
     mock_inspect_archive.return_value = True
@@ -510,7 +509,6 @@ def test_main_verify_kgs_batch_calls_verification_helper(mock_verify_kgs_batch):
     assert args[0] == "https://dic.nicovideo.jp/a/12345"
     assert args[1] == "runtime/smoke/kgs"
     assert args[2] is main_module.run_batch_scrape
-
 
 @patch("main.verify_registry_list")
 def test_main_verify_registry_list_calls_verification_helper(
