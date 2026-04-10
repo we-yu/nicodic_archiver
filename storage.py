@@ -147,7 +147,14 @@ def save_to_db(conn, article_id, article_type, title, article_url, responses):
     conn.commit()
 
 
-def save_json(article_id, article_type, title, article_url, responses):
+def save_json(
+    article_id,
+    article_type,
+    title,
+    article_url,
+    responses,
+    announce=True,
+):
     """
     取得結果をJSONとして保存（保険用途）。
     """
@@ -171,7 +178,8 @@ def save_json(article_id, article_type, title, article_url, responses):
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    print("Saved JSON:", output_path)
+    if announce:
+        print("Saved JSON:", output_path)
 
 
 def enqueue_canonical_target(conn, canonical_target, title=None):

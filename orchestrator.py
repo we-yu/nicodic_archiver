@@ -24,11 +24,17 @@ BBS_PAGE_SIZE = 30
 class ScrapeResult:
     """Truthiness matches legacy bool return; ``outcome`` supports telemetry."""
 
-    __slots__ = ("ok", "outcome")
+    __slots__ = ("ok", "outcome", "display_status")
 
-    def __init__(self, ok: bool, outcome: str = "ok") -> None:
+    def __init__(
+        self,
+        ok: bool,
+        outcome: str = "ok",
+        display_status: str | None = None,
+    ) -> None:
         self.ok = ok
         self.outcome = outcome
+        self.display_status = display_status or ("success" if ok else "fail")
 
     def __bool__(self) -> bool:
         return self.ok
@@ -119,11 +125,30 @@ def build_bbs_base_url(article_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}/b/{article_type}/{article_id}/"
 
 
+def _display_target_label(title: str, article_id: str, article_url: str) -> str:
+    if title and title != "unknown":
+        return title
+    if article_id:
+        return article_id
+    return article_url
+
+
+def _error_status_text(error_text: str) -> str:
+    marker = "status="
+    if marker not in error_text:
+        return "interrupted"
+
+    status_part = error_text.split(marker, maxsplit=1)[1]
+    status = status_part.split(")", maxsplit=1)[0].split()[0]
+    return status
+
+
 def collect_all_responses(
     bbs_base_url: str,
     start: int = 1,
     max_saved_res_no: int | None = None,
     response_cap: int | None = None,
+    progress_reporter=None,
 ) -> tuple[list, bool, bool]:
     """
     ページネーションを辿り全レス収集。
@@ -145,7 +170,8 @@ def collect_all_responses(
     while True:
 
         page_url = f"{bbs_base_url}{next_start}-"
-        print("Fetching:", page_url)
+        if progress_reporter is None:
+            print("Fetching:", page_url)
 
         try:
             soup = fetch_page(page_url)
@@ -153,7 +179,8 @@ def collect_all_responses(
             # 1ページ目の404は「掲示板が存在しない」ケースとして扱い、
             # empty-result として返す（中断フラグは立てない）。
             if first_request and "status=404" in str(e):
-                print("No BBS found:", bbs_base_url)
+                if progress_reporter is None:
+                    print("No BBS found:", bbs_base_url)
                 return [], False, False
 
             # 1ページ目のその他エラーは従来どおり上位へ伝播させる。
@@ -161,8 +188,15 @@ def collect_all_responses(
                 raise
 
             # 2ページ目以降のエラーは「later-page interruption」として扱う。
-            print("Later-page fetch interrupted:", page_url)
-            print(e)
+            if progress_reporter is None:
+                print("Later-page fetch interrupted:", page_url)
+                print(e)
+            else:
+                progress_reporter.later_page_interrupted(
+                    page_url,
+                    _error_status_text(str(e)),
+                    len(all_responses),
+                )
             interrupted = True
             break
 
@@ -178,7 +212,8 @@ def collect_all_responses(
 
         if not raw_page_responses:
             if first_request:
-                print("No responses found:", bbs_base_url)
+                if progress_reporter is None:
+                    print("No responses found:", bbs_base_url)
             break
 
         all_responses.extend(page_responses)
@@ -186,11 +221,21 @@ def collect_all_responses(
         if len(all_responses) >= effective_cap:
             all_responses = all_responses[:effective_cap]
             cap_reached = True
-            print("Total collected:", len(all_responses))
+            if progress_reporter is None:
+                print("Total collected:", len(all_responses))
+            else:
+                progress_reporter.response_cap_reached(len(all_responses))
             break
 
-        print("Page collected:", len(page_responses))
-        print("Total collected:", len(all_responses))
+        if progress_reporter is None:
+            print("Page collected:", len(page_responses))
+            print("Total collected:", len(all_responses))
+        else:
+            progress_reporter.page_progress(
+                page_url,
+                len(page_responses),
+                len(all_responses),
+            )
 
         next_start += len(raw_page_responses)
         first_request = False
@@ -234,17 +279,53 @@ def fetch_article_metadata(article_url: str):
 def run_scrape(
     article_url: str,
     response_cap: int | None = None,
+    progress_reporter=None,
+    target_index: int | None = None,
+    target_total: int | None = None,
 ) -> ScrapeResult:
     try:
         article_id, article_type, title = fetch_article_metadata(article_url)
 
     except ArticleNotFoundError:
-        print(f"Article not found: {article_url}")
-        return ScrapeResult(False, "fail_article_not_found")
+        if progress_reporter is None:
+            print(f"Article not found: {article_url}")
+        else:
+            progress_reporter.finish_target(
+                "fail",
+                article_url,
+                0,
+                article_url,
+                reason=f"url={article_url} reason=article_not_found",
+            )
+        return ScrapeResult(False, "fail_article_not_found", "fail")
+
+    display_label = _display_target_label(title, article_id, article_url)
+    target_ref = article_id or article_url
+
+    if (
+        progress_reporter is not None
+        and target_index is not None
+        and target_total is not None
+    ):
+        progress_reporter.start_target(
+            target_index,
+            target_total,
+            display_label,
+            article_url,
+        )
 
     if article_id in DENYLIST_ARTICLE_IDS:
-        print("Skipping article (high-volume).")
-        return ScrapeResult(False, "skip_denylist")
+        if progress_reporter is None:
+            print("Skipping article (high-volume).")
+        else:
+            progress_reporter.finish_target(
+                "fail",
+                display_label,
+                0,
+                target_ref,
+                reason="reason=skip_denylist",
+            )
+        return ScrapeResult(False, "skip_denylist", "fail")
 
     max_saved_res_no = get_max_saved_res_no(article_id, article_type)
     bbs_base_url = build_bbs_base_url(article_url)
@@ -253,23 +334,35 @@ def run_scrape(
         responses, interrupted, cap_reached = collect_all_responses(
             bbs_base_url,
             response_cap=response_cap,
+            progress_reporter=progress_reporter,
         )
     else:
         resume_start = get_containing_page_start(max_saved_res_no)
-        print(
-            f"Saved article detected; resuming from max_saved_res_no="
-            f"{max_saved_res_no}"
-        )
+        if progress_reporter is None:
+            print(
+                f"Saved article detected; resuming from max_saved_res_no="
+                f"{max_saved_res_no}"
+            )
         responses, interrupted, cap_reached = collect_all_responses(
             bbs_base_url,
             start=resume_start,
             max_saved_res_no=max_saved_res_no,
             response_cap=response_cap,
+            progress_reporter=progress_reporter,
         )
 
     if max_saved_res_no is not None and not responses and not interrupted:
-        print("No new BBS responses found; article already up to date")
-        return ScrapeResult(True, "ok")
+        if progress_reporter is None:
+            print("No new BBS responses found; article already up to date")
+        else:
+            progress_reporter.finish_target(
+                "success",
+                display_label,
+                max_saved_res_no,
+                target_ref,
+                reason="reason=already_up_to_date",
+            )
+        return ScrapeResult(True, "ok", "success")
 
     json_responses = responses
     if max_saved_res_no is not None:
@@ -283,28 +376,51 @@ def run_scrape(
         and not cap_reached
     ):
         # 掲示板は存在するがレスが0件、あるいは掲示板自体が存在しないケース。
-        print("No BBS responses found; saving empty result")
+        if progress_reporter is None:
+            print("No BBS responses found; saving empty result")
     elif interrupted and responses:
         # 途中ページでのエラーにより中断したが、一部レスは取得済み。
-        print(
-            f"BBS fetch interrupted; saving partial responses "
-            f"({len(responses)} items) for: {article_url}"
-        )
+        if progress_reporter is None:
+            print(
+                f"BBS fetch interrupted; saving partial responses "
+                f"({len(responses)} items) for: {article_url}"
+            )
     elif cap_reached and responses:
         # 取得上限に到達。その時点までの responses を保存する。
-        print(
-            f"Response cap reached; saving partial responses "
-            f"({len(responses)} items) for: {article_url}"
-        )
+        if progress_reporter is None:
+            print(
+                f"Response cap reached; saving partial responses "
+                f"({len(responses)} items) for: {article_url}"
+            )
 
-    save_json(article_id, article_type, title, article_url, json_responses)
+    save_json(
+        article_id,
+        article_type,
+        title,
+        article_url,
+        json_responses,
+        announce=progress_reporter is None,
+    )
 
     conn = init_db()
     save_to_db(conn, article_id, article_type, title, article_url, responses)
     conn.close()
 
-    print("Saved to SQLite")
-    return ScrapeResult(True, "ok")
+    if progress_reporter is None:
+        print("Saved to SQLite")
+    else:
+        display_status = "partial" if interrupted or cap_reached else "success"
+        progress_reporter.finish_target(
+            display_status,
+            display_label,
+            len(json_responses),
+            target_ref,
+        )
+    return ScrapeResult(
+        True,
+        "ok",
+        "partial" if interrupted or cap_reached else "success",
+    )
 
 
 def drain_queue_requests(max_requests: int | None = None) -> dict:
