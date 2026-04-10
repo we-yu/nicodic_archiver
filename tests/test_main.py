@@ -1,4 +1,4 @@
-"""Unit tests for main.py: CLI dispatch (inspect vs scrape, usage/exit)."""
+"""Unit tests for main.py: CLI dispatch (inspect vs scrape, usage/exit)"""
 from unittest.mock import call, patch
 
 from pathlib import Path

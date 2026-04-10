@@ -2,6 +2,7 @@ from io import BytesIO
 from unittest.mock import patch
 
 from web_app import application, check_article_status, create_app
+import web_app
 
 
 def _run_wsgi_request(method, path="/", body="", app=None):
@@ -334,7 +335,7 @@ def test_application_action_add_target_uses_canonical_url(
     )
     mock_add_target_url.assert_called_once_with(
         "https://dic.nicovideo.jp/a/12345",
-        "data/nicodic.db",
+        web_app.DEFAULT_TARGET_DB_PATH,
     )
 
 
@@ -400,7 +401,7 @@ def test_application_action_add_target_duplicate_is_bounded(
     )
     mock_add_target_url.assert_called_once_with(
         "https://dic.nicovideo.jp/a/12345",
-        "data/nicodic.db",
+        web_app.DEFAULT_TARGET_DB_PATH,
     )
 
 
@@ -434,7 +435,7 @@ def test_application_action_add_target_reactivated_is_bounded(
     )
     mock_add_target_url.assert_called_once_with(
         "https://dic.nicovideo.jp/a/12345",
-        "data/nicodic.db",
+        web_app.DEFAULT_TARGET_DB_PATH,
     )
 
 

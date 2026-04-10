@@ -132,7 +132,10 @@ def test_verify_kgs_fetch_runs_bounded_followup_when_requested(tmp_path, capsys)
     ), patch(
         "verification_cli._drop_latest_saved_responses",
         return_value=3,
-    ) as mock_trim:
+    ) as mock_trim, patch(
+        "verification_cli._resolve_saved_article_id",
+        return_value="12345",
+    ):
         assert verify_kgs_fetch(
             "https://dic.nicovideo.jp/a/12345",
             str(state_dir),
