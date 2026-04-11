@@ -288,6 +288,7 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
     mock_collect.assert_called_once_with(
         "https://dic.nicovideo.jp/b/a/12345/",
         response_cap=None,
+        progress_reporter=None,
     )
 
     mock_save_json.assert_called_once_with(
@@ -296,6 +297,7 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
         "Title",
         article_url,
         [{"res_no": 1}],
+        announce=True,
     )
 
     mock_init.assert_called_once_with()
@@ -384,8 +386,16 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
     mock_collect.assert_called_once_with(
         "https://dic.nicovideo.jp/b/a/12345/",
         response_cap=None,
+        progress_reporter=None,
     )
-    mock_save_json.assert_called_once_with("12345", "a", "Title", article_url, [])
+    mock_save_json.assert_called_once_with(
+        "12345",
+        "a",
+        "Title",
+        article_url,
+        [],
+        announce=True,
+    )
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,
@@ -433,6 +443,7 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
     mock_collect.assert_called_once_with(
         "https://dic.nicovideo.jp/b/a/12345/",
         response_cap=None,
+        progress_reporter=None,
     )
 
     mock_save_json.assert_called_once_with(
@@ -441,6 +452,7 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
         "Title",
         article_url,
         partial,
+        announce=True,
     )
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
@@ -518,6 +530,7 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
     mock_collect.assert_called_once_with(
         "https://dic.nicovideo.jp/b/a/12345/",
         response_cap=None,
+        progress_reporter=None,
     )
     mock_save_json.assert_called_once_with(
         "12345",
@@ -525,6 +538,7 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
         "Title",
         article_url,
         partial,
+        announce=True,
     )
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
@@ -611,6 +625,7 @@ def test_run_scrape_representative_save_path_regression(
     mock_collect.assert_called_once_with(
         "https://dic.nicovideo.jp/b/a/12345/",
         response_cap=None,
+        progress_reporter=None,
     )
     mock_save_json.assert_called_once_with(
         "12345",
@@ -618,6 +633,7 @@ def test_run_scrape_representative_save_path_regression(
         "Title",
         article_url,
         expected_responses,
+        announce=True,
     )
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
@@ -815,6 +831,7 @@ def test_run_scrape_saved_article_resumes_and_saves_only_new_items():
         start=61,
         max_saved_res_no=65,
         response_cap=None,
+        progress_reporter=None,
     )
     mock_saved.assert_called_once_with("12345", "a")
     mock_save_json.assert_called_once_with(
@@ -823,6 +840,7 @@ def test_run_scrape_saved_article_resumes_and_saves_only_new_items():
         "Title",
         article_url,
         saved_responses + new_responses,
+        announce=True,
     )
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
@@ -876,6 +894,7 @@ def test_run_scrape_saved_article_zero_new_is_success_without_writing():
         start=61,
         max_saved_res_no=65,
         response_cap=None,
+        progress_reporter=None,
     )
     mock_saved.assert_not_called()
     mock_save_json.assert_not_called()

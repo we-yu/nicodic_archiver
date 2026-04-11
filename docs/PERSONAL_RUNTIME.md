@@ -19,6 +19,9 @@ What this profile now adds for periodic operation:
 - a host-side one-shot wrapper that calls the existing periodic path
 - simple lock + skip handling to avoid overlap
 - a scheduler-friendly non-interactive invocation shape
+- a structured host cron log at runtime/logs/host_cron.log
+- daily rollover into host_cron.YYYYMMDD.log on the next run start
+- weekly tar.gz compaction for older daily host cron logs
 
 What this profile now adds for web operation:
 - starts the existing web app inside the runtime container
@@ -172,14 +175,16 @@ Add one canonical target:
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	sh tools/operator.sh target add https://dic.nicovideo.jp/a/12345 --db /app/data/nicodic.db
+	sh tools/operator.sh target add \
+		https://dic.nicovideo.jp/a/12345 --db /app/data/nicodic.db
 ```
 
 Deactivate one target without deleting it:
 
 ```sh
 docker compose -f docker-compose.runtime.yml exec personal_runtime \
-	sh tools/operator.sh target deactivate 12345 a --db /app/data/nicodic.db
+	sh tools/operator.sh target deactivate 12345 a \
+		--db /app/data/nicodic.db
 ```
 
 Run one batch pass:
@@ -211,6 +216,39 @@ Run one scheduler-friendly periodic cycle through the wrapper:
 The wrapper acquires a simple host-side lock under `runtime/logs`. If another
 run is already active, it prints a skip message and exits without starting a
 second overlapping periodic pass.
+
+When the wrapper invokes `periodic-once`, it also passes a mounted log path for
+the host cron log. That path is used for bounded host-side log hygiene:
+- active log: `runtime/logs/host_cron.log`
+- daily rollover: `runtime/logs/host_cron.YYYYMMDD.log`
+- weekly archive: `runtime/logs/host_cron.YYYYMMDD-YYYYMMDD.tar.gz`
+
+The active log is rotated only at the start of the next cron run. A long run
+that crosses midnight stays in the log for its start date, and the next run
+performs the rollover before writing a new block.
+
+Daily logs for the most recent 14 days stay uncompressed for readability.
+Older daily logs are compacted by calendar week into `.tar.gz` archives. The
+archive cleanup is conservative: originals are removed only after a successful
+archive write.
+
+Each cron run is written as one readable block with these tags:
+- `[RUN]`
+- `[INFO]`
+- `[STEP]`
+- `[OK]`
+- `[WARN]`
+- `[ERROR]`
+- `[SUMMARY]`
+- `[ERROR SUMMARY]`
+
+Article progress lines are compressed to one line per page, for example:
+
+```text
+	[STEP] 1/3 title=UNIX url=https://dic.nicovideo.jp/a/694740
+		[INFO] page=https://dic.nicovideo.jp/b/a/694740/1- collected=30 total=30
+	[OK] UNIX success total_collected=30
+```
 
 Useful environment overrides for external schedulers:
 - `TARGET_DB_PATH` defaults to `/app/data/nicodic.db`

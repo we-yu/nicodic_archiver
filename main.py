@@ -7,6 +7,8 @@ from pathlib import Path
 
 from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
+from host_cron import HostCronReporter, compress_weekly_archives, local_now
+from host_cron import rotate_active_log
 from operator_cli import add_target_for_operator
 from operator_cli import deactivate_target_for_operator
 from operator_cli import export_archive_for_operator
@@ -75,17 +77,23 @@ def _record_scrape_run_observation(
 # ============================================================
 
 
-def run_batch_scrape(target_db_path: str) -> tuple[str, int]:
+def run_batch_scrape(
+    target_db_path: str,
+    progress_reporter=None,
+) -> tuple[str, int]:
     """Run one full batch pass and return (final_status, failed_targets)."""
 
     run_kind = "periodic_batch" if _inside_periodic_batch else "batch"
 
     targets = list_active_target_urls(target_db_path)
 
-    print(
-        f"Loaded {len(targets)} active scrape target(s) "
-        f"from target registry {target_db_path}"
-    )
+    if progress_reporter is None:
+        print(
+            f"Loaded {len(targets)} active scrape target(s) "
+            f"from target registry {target_db_path}"
+        )
+    else:
+        progress_reporter.note_targets_loaded(len(targets), target_db_path)
 
     run_id = uuid.uuid4().hex[:12]
     started_at = datetime.now(timezone.utc).isoformat()
@@ -104,11 +112,21 @@ def run_batch_scrape(target_db_path: str) -> tuple[str, int]:
 
     failed_targets = 0
     for idx, target in enumerate(targets, start=1):
-        print(f"[{idx}/{len(targets)}] Scraping: {target}")
+        if progress_reporter is None:
+            print(f"[{idx}/{len(targets)}] Scraping: {target}")
         identity = parse_target_identity(target)
         if identity is None:
             failed_targets += 1
-            print(f"[FAIL] {target} (invalid target URL shape)")
+            if progress_reporter is None:
+                print(f"[FAIL] {target} (invalid target URL shape)")
+            else:
+                progress_reporter.finish_target(
+                    "fail",
+                    target,
+                    0,
+                    target,
+                    reason="reason=invalid_target_url_shape",
+                )
             with log_path.open("a", encoding="utf-8") as f:
                 f.write("FAIL\n")
                 f.write(f"target={target}\n")
@@ -117,11 +135,28 @@ def run_batch_scrape(target_db_path: str) -> tuple[str, int]:
 
         scrape_outcome = "fail_exception"
         try:
-            scrape_result = run_scrape(target)
+            if progress_reporter is None:
+                scrape_result = run_scrape(target)
+            else:
+                scrape_result = run_scrape(
+                    target,
+                    progress_reporter=progress_reporter,
+                    target_index=idx,
+                    target_total=len(targets),
+                )
             scrape_outcome = scrape_result.outcome
         except Exception as exc:
             failed_targets += 1
-            print(f"[FAIL] {target} ({type(exc).__name__}: {exc})")
+            if progress_reporter is None:
+                print(f"[FAIL] {target} ({type(exc).__name__}: {exc})")
+            else:
+                progress_reporter.finish_target(
+                    "fail",
+                    identity["article_id"],
+                    0,
+                    identity["article_id"],
+                    reason=f"reason={type(exc).__name__}:{exc}",
+                )
             with log_path.open("a", encoding="utf-8") as f:
                 f.write("FAIL\n")
                 f.write(f"target={target}\n")
@@ -139,13 +174,15 @@ def run_batch_scrape(target_db_path: str) -> tuple[str, int]:
         ok = bool(scrape_result)
         if not ok:
             failed_targets += 1
-            print(f"[FAIL] {target}")
+            if progress_reporter is None:
+                print(f"[FAIL] {target}")
             with log_path.open("a", encoding="utf-8") as f:
                 f.write("FAIL\n")
                 f.write(f"target={target}\n")
                 f.write("short_reason=run_scrape_returned_false\n")
         else:
-            print(f"[OK] {target}")
+            if progress_reporter is None:
+                print(f"[OK] {target}")
 
         _record_scrape_run_observation(
             archive_db_path,
@@ -175,6 +212,72 @@ def run_batch_scrape(target_db_path: str) -> tuple[str, int]:
         f.write(f"final_status={final_status}\n")
 
     return final_status, failed_targets
+
+
+def _run_periodic_once_with_host_cron(
+    target_db_path: str,
+    host_cron_log_path: str,
+) -> None:
+    log_path = Path(host_cron_log_path)
+    run_now = local_now()
+    warnings: list[str] = []
+
+    try:
+        rotation_outcome = rotate_active_log(log_path, run_now.date())
+        if rotation_outcome.warning is not None:
+            warnings.append(rotation_outcome.warning)
+    except OSError as exc:
+        warnings.append(
+            "host_cron_rotation_failed "
+            f"reason={type(exc).__name__}:{exc}"
+        )
+
+    try:
+        warnings.extend(compress_weekly_archives(log_path.parent, run_now.date()))
+    except OSError as exc:
+        warnings.append(
+            "host_cron_weekly_archive_failed "
+            f"reason={type(exc).__name__}:{exc}"
+        )
+
+    try:
+        stream = log_path.open("a", encoding="utf-8")
+    except OSError:
+        run_periodic_scrape(target_db_path, 0.0, max_runs=1)
+        return
+
+    reporter = HostCronReporter(stream)
+
+    try:
+        reporter.begin_run()
+        for warning in warnings:
+            reporter.note_maintenance_warning(warning)
+
+        global _inside_periodic_batch
+        _inside_periodic_batch = True
+        try:
+            final_status, _failed_targets = run_batch_scrape(
+                target_db_path,
+                progress_reporter=reporter,
+            )
+        except KeyboardInterrupt:
+            reporter.note_maintenance_warning("periodic_execution_interrupted")
+            reporter.finish_run("failure")
+            return
+        except Exception as exc:
+            reporter.emit(
+                "ERROR",
+                f"periodic_once_unhandled reason={type(exc).__name__}:{exc}",
+                indent_level=1,
+            )
+            reporter.finish_run("failure")
+            raise
+        finally:
+            _inside_periodic_batch = False
+
+        reporter.finish_run(final_status)
+    finally:
+        stream.close()
 
 
 def run_periodic_scrape(
@@ -221,6 +324,11 @@ def run_periodic_scrape(
 
 def run_periodic_once(target_db_path: str) -> None:
     """Run one periodic cycle without requiring a sleep interval argument."""
+
+    host_cron_log_path = os.environ.get("HOST_CRON_LOG_PATH")
+    if host_cron_log_path:
+        _run_periodic_once_with_host_cron(target_db_path, host_cron_log_path)
+        return
 
     run_periodic_scrape(target_db_path, 0.0, max_runs=1)
 

@@ -1,4 +1,4 @@
-"""Unit tests for main.py: CLI dispatch (inspect vs scrape, usage/exit)."""
+"""Unit tests for main.py: CLI dispatch (inspect vs scrape, usage/exit)"""
 from unittest.mock import call, patch
 
 from pathlib import Path
@@ -292,7 +292,7 @@ def test_main_web_mode_calls_serve_web_app_with_defaults(mock_serve_web_app):
     mock_serve_web_app.assert_called_once_with(
         host="127.0.0.1",
         port=8000,
-        target_db_path="data/nicodic.db",
+        target_db_path=main_module.DEFAULT_TARGET_DB_PATH,
     )
 
 
@@ -328,7 +328,7 @@ def test_main_operator_target_list_calls_operator_helper(mock_list_targets):
         main_module.main()
 
     mock_list_targets.assert_called_once_with(
-        "data/nicodic.db",
+        main_module.DEFAULT_TARGET_DB_PATH,
         active_only=False,
     )
 
@@ -369,7 +369,11 @@ def test_main_operator_target_deactivate_exits_non_zero_on_failure(
             main_module.main()
 
     assert exc_info.value.code == 1
-    mock_deactivate_target.assert_called_once_with("12345", "a", "data/nicodic.db")
+    mock_deactivate_target.assert_called_once_with(
+        "12345",
+        "a",
+        main_module.DEFAULT_TARGET_DB_PATH,
+    )
 
 
 @patch("main.list_archives_for_operator")
@@ -519,7 +523,7 @@ def test_main_verify_registry_list_calls_verification_helper(
         main_module.main()
 
     mock_verify_registry_list.assert_called_once_with(
-        "data/nicodic.db",
+        main_module.DEFAULT_TARGET_DB_PATH,
         active_only=False,
     )
 
@@ -532,7 +536,7 @@ def test_main_verify_batch_calls_verification_helper(mock_verify_batch):
         main_module.main()
 
     args = mock_verify_batch.call_args.args
-    assert args[0] == "data/nicodic.db"
+    assert args[0] == main_module.DEFAULT_TARGET_DB_PATH
     assert args[1] is main_module.run_batch_scrape
 
 
@@ -838,6 +842,24 @@ def test_run_periodic_once_delegates_to_single_periodic_cycle(
         0.0,
         max_runs=1,
     )
+
+
+@patch("main._run_periodic_once_with_host_cron")
+@patch("main.run_periodic_scrape")
+def test_run_periodic_once_uses_host_cron_log_path_when_configured(
+    mock_run_periodic_scrape,
+    mock_host_cron_run,
+    monkeypatch,
+):
+    monkeypatch.setenv("HOST_CRON_LOG_PATH", "/runtime/logs/host_cron.log")
+
+    main_module.run_periodic_once("targets.db")
+
+    mock_host_cron_run.assert_called_once_with(
+        "targets.db",
+        "/runtime/logs/host_cron.log",
+    )
+    mock_run_periodic_scrape.assert_not_called()
 
 
 @patch(
