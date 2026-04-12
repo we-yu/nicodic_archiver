@@ -22,6 +22,8 @@ What this profile now adds for periodic operation:
 - a structured host cron log at runtime/logs/host_cron.log
 - daily rollover into host_cron.YYYYMMDD.log on the next run start
 - weekly tar.gz compaction for older daily host cron logs
+- a local-only runtime env file for host bind/port and UID/GID settings
+- a recreate wrapper with bounded runtime preflight checks
 
 What this profile now adds for web operation:
 - starts the existing web app inside the runtime container
@@ -47,29 +49,44 @@ to change.
 The runtime profile sets TARGET_DB_PATH to /app/data/nicodic.db for the web
 process and periodic wrapper.
 
+## Local Runtime Env
+
+Use `.env.runtime.local` as the local-only runtime config for this repo.
+
+Expected keys:
+- `WEB_BIND_HOST`
+- `WEB_PORT`
+- `LOCAL_UID`
+- `LOCAL_GID`
+
+The file is intentionally local-only and should not be committed. Use the
+tracked template as a starting point:
+
+`cp .env.runtime.local.example .env.runtime.local`
+
+The runtime helper scripts automatically load this file when it exists. If the
+file is missing, the helper falls back to safe defaults and auto-detects the
+host UID/GID to reduce common permission mismatches.
+
 ## Host UID/GID Handling
 
-To keep generated files writable from the host shell, pass the host UID/GID
-only when starting the runtime container.
-
-Recommended start command:
-
-```sh
-LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) \
-	docker compose -f docker-compose.runtime.yml up -d --build
-```
-
-This avoids relying on persistent host-side environment variable setup.
-The values are resolved from the current host at container start time.
+To keep generated files writable from the host shell, the runtime helper loads
+`LOCAL_UID` and `LOCAL_GID` from `.env.runtime.local` when present. If they are
+unset, the helper auto-detects the current host UID/GID before `docker compose`
+starts.
 
 ## Build And Start
 
 Build and start the provisional runtime container:
 
-```sh
-LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) \
-	docker compose -f docker-compose.runtime.yml up -d --build
-```
+`bash tools/runtime_up.sh`
+
+This wrapper performs bounded local preflight work before compose startup:
+- loads `.env.runtime.local` when present
+- auto-detects `LOCAL_UID` / `LOCAL_GID` if missing
+- validates `WEB_PORT`
+- warns when the requested host port already looks busy
+- uses `--build --force-recreate` to reduce stale container code
 
 The container starts the existing web app on port 8000 inside the container.
 By default, docker-compose.runtime.yml publishes that as 127.0.0.1:8000 on
@@ -81,11 +98,9 @@ Open the web UI from the host browser at:
 
 To bind a different host IP or port without editing files:
 
-```sh
-WEB_BIND_HOST=0.0.0.0 WEB_PORT=8010 \
-LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) \
-	docker compose -f docker-compose.runtime.yml up -d --build
-```
+edit `.env.runtime.local`, then run:
+
+`bash tools/runtime_up.sh`
 
 The web app remains a thin entrypoint. A web-side registration adds only the
 canonical article URL to the target table in /app/data/nicodic.db. It does not
@@ -255,6 +270,7 @@ Useful environment overrides for external schedulers:
 - `COMPOSE_FILE_PATH` defaults to `docker-compose.runtime.yml`
 - `COMPOSE_SERVICE_NAME` defaults to `personal_runtime`
 - `LOCK_DIR_PATH` defaults to `runtime/logs/periodic_once.lock`
+- `RUNTIME_LOCAL_ENV_FILE` defaults to `.env.runtime.local`
 
 Example scheduler-facing invocation shape:
 
