@@ -77,6 +77,132 @@ def _record_scrape_run_observation(
 # ============================================================
 
 
+def _batch_log_value(value: object) -> str:
+    if value is None:
+        return "unknown"
+    text = str(value)
+    return text if text else "unknown"
+
+
+def _batch_log_result(scrape_result) -> str:
+    if not scrape_result:
+        return "FAIL"
+    return "SUCCESS"
+
+
+def _append_batch_log_lines(log_path: Path, lines: list[str]) -> None:
+    with log_path.open("a", encoding="utf-8") as f:
+        for line in lines:
+            f.write(f"{line}\n")
+
+
+def _append_batch_run_start(
+    log_path: Path,
+    run_id: str,
+    started_at: str,
+    target_db_path: str,
+    total_targets: int,
+) -> None:
+    _append_batch_log_lines(
+        log_path,
+        [
+            "BATCH_RUN_START",
+            f"  run_id={run_id}",
+            f"  started_at={started_at}",
+            f"  target_db_path={target_db_path}",
+            "  target_source=target_table",
+            f"  total_targets={total_targets}",
+        ],
+    )
+
+
+def _append_batch_progress(
+    log_path: Path,
+    index: int,
+    total: int,
+    result: str,
+    target_url: str,
+    article_title: str,
+    collected_response_count: int,
+    observed_max_res_no: int | None,
+) -> None:
+    _append_batch_log_lines(
+        log_path,
+        [
+            f"[PROGRESS = {index}/{total}]",
+            f"  result={result}",
+            f"  target_url={target_url}",
+            f"  article_title={_batch_log_value(article_title)}",
+            (
+                "  collected_response_count="
+                f"{_batch_log_value(collected_response_count)}"
+            ),
+            f"  observed_max_res_no={_batch_log_value(observed_max_res_no)}",
+        ],
+    )
+
+
+def _append_batch_failure_detail(
+    log_path: Path,
+    index: int,
+    total: int,
+    target_url: str,
+    article_title: str,
+    failure_page: str | None,
+    failure_cause: str | None,
+    collected_response_count: int,
+    observed_max_res_no: int | None,
+    short_reason: str,
+) -> None:
+    _append_batch_log_lines(
+        log_path,
+        [
+            "  FAILURE_DETAIL",
+            f"    progress={index}/{total}",
+            f"    target_url={target_url}",
+            f"    article_title={_batch_log_value(article_title)}",
+            f"    failure_page={_batch_log_value(failure_page)}",
+            f"    failure_cause={_batch_log_value(failure_cause)}",
+            (
+                "    collected_response_count="
+                f"{_batch_log_value(collected_response_count)}"
+            ),
+            (
+                "    observed_max_res_no="
+                f"{_batch_log_value(observed_max_res_no)}"
+            ),
+            f"    short_reason={short_reason}",
+        ],
+    )
+
+
+def _append_batch_run_end(
+    log_path: Path,
+    run_id: str,
+    started_at: str,
+    ended_at: str,
+    duration_seconds: int,
+    total_targets: int,
+    success_targets: int,
+    failed_targets: int,
+    final_status: str,
+) -> None:
+    _append_batch_log_lines(
+        log_path,
+        [
+            "BATCH_RUN_END",
+            f"  run_id={run_id}",
+            f"  started_at={started_at}",
+            f"  ended_at={ended_at}",
+            f"  duration_seconds={duration_seconds}",
+            f"  total_targets={total_targets}",
+            f"  success_targets={success_targets}",
+            f"  failed_targets={failed_targets}",
+            f"  final_status={final_status}",
+        ],
+    )
+
+
 def run_batch_scrape(
     target_db_path: str,
     progress_reporter=None,
@@ -102,13 +228,13 @@ def run_batch_scrape(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"batch_{run_id}.log"
 
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write("BATCH_RUN_START\n")
-        f.write(f"run_id={run_id}\n")
-        f.write(f"started_at={started_at}\n")
-        f.write(f"target_db_path={target_db_path}\n")
-        f.write("target_source=target_table\n")
-        f.write(f"total_targets={len(targets)}\n")
+    _append_batch_run_start(
+        log_path,
+        run_id,
+        started_at,
+        target_db_path,
+        len(targets),
+    )
 
     failed_targets = 0
     for idx, target in enumerate(targets, start=1):
@@ -127,10 +253,28 @@ def run_batch_scrape(
                     target,
                     reason="reason=invalid_target_url_shape",
                 )
-            with log_path.open("a", encoding="utf-8") as f:
-                f.write("FAIL\n")
-                f.write(f"target={target}\n")
-                f.write("short_reason=invalid_target_url_shape\n")
+            _append_batch_progress(
+                log_path,
+                idx,
+                len(targets),
+                "FAIL",
+                target,
+                "unknown",
+                0,
+                None,
+            )
+            _append_batch_failure_detail(
+                log_path,
+                idx,
+                len(targets),
+                target,
+                "unknown",
+                "unknown",
+                "invalid_target_url_shape",
+                0,
+                None,
+                "invalid_target_url_shape",
+            )
             continue
 
         scrape_outcome = "fail_exception"
@@ -157,10 +301,29 @@ def run_batch_scrape(
                     identity["article_id"],
                     reason=f"reason={type(exc).__name__}:{exc}",
                 )
-            with log_path.open("a", encoding="utf-8") as f:
-                f.write("FAIL\n")
-                f.write(f"target={target}\n")
-                f.write(f"short_reason={type(exc).__name__}: {exc}\n")
+            short_reason = f"{type(exc).__name__}: {exc}"
+            _append_batch_progress(
+                log_path,
+                idx,
+                len(targets),
+                "FAIL",
+                target,
+                "unknown",
+                0,
+                None,
+            )
+            _append_batch_failure_detail(
+                log_path,
+                idx,
+                len(targets),
+                target,
+                "unknown",
+                "unknown",
+                type(exc).__name__,
+                0,
+                None,
+                short_reason,
+            )
             _record_scrape_run_observation(
                 archive_db_path,
                 run_id,
@@ -176,13 +339,46 @@ def run_batch_scrape(
             failed_targets += 1
             if progress_reporter is None:
                 print(f"[FAIL] {target}")
-            with log_path.open("a", encoding="utf-8") as f:
-                f.write("FAIL\n")
-                f.write(f"target={target}\n")
-                f.write("short_reason=run_scrape_returned_false\n")
+            short_reason = getattr(
+                scrape_result,
+                "short_reason",
+                None,
+            ) or "run_scrape_returned_false"
+            _append_batch_progress(
+                log_path,
+                idx,
+                len(targets),
+                "FAIL",
+                target,
+                getattr(scrape_result, "article_title", "unknown"),
+                getattr(scrape_result, "collected_response_count", 0),
+                getattr(scrape_result, "observed_max_res_no", None),
+            )
+            _append_batch_failure_detail(
+                log_path,
+                idx,
+                len(targets),
+                target,
+                getattr(scrape_result, "article_title", "unknown"),
+                getattr(scrape_result, "failure_page", None),
+                getattr(scrape_result, "failure_cause", scrape_result.outcome),
+                getattr(scrape_result, "collected_response_count", 0),
+                getattr(scrape_result, "observed_max_res_no", None),
+                short_reason,
+            )
         else:
             if progress_reporter is None:
                 print(f"[OK] {target}")
+            _append_batch_progress(
+                log_path,
+                idx,
+                len(targets),
+                _batch_log_result(scrape_result),
+                target,
+                getattr(scrape_result, "article_title", "unknown"),
+                getattr(scrape_result, "collected_response_count", 0),
+                getattr(scrape_result, "observed_max_res_no", None),
+            )
 
         _record_scrape_run_observation(
             archive_db_path,
@@ -202,14 +398,26 @@ def run_batch_scrape(
     else:
         final_status = "partial_failure"
 
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write("BATCH_RUN_END\n")
-        f.write(f"run_id={run_id}\n")
-        f.write(f"started_at={started_at}\n")
-        f.write(f"ended_at={ended_at}\n")
-        f.write(f"total_targets={total_targets}\n")
-        f.write(f"failed_targets={failed_targets}\n")
-        f.write(f"final_status={final_status}\n")
+    duration_seconds = int(
+        max(
+            (
+                datetime.fromisoformat(ended_at)
+                - datetime.fromisoformat(started_at)
+            ).total_seconds(),
+            0,
+        )
+    )
+    _append_batch_run_end(
+        log_path,
+        run_id,
+        started_at,
+        ended_at,
+        duration_seconds,
+        total_targets,
+        total_targets - failed_targets,
+        failed_targets,
+        final_status,
+    )
 
     return final_status, failed_targets
 
