@@ -1,11 +1,21 @@
 #!/bin/bash
 set -eu
 
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
 COMPOSE_FILE_PATH=${COMPOSE_FILE_PATH:-docker-compose.runtime.yml}
 COMPOSE_SERVICE_NAME=${COMPOSE_SERVICE_NAME:-personal_runtime}
 TARGET_DB_PATH=${TARGET_DB_PATH:-/app/data/nicodic.db}
 LOCK_DIR_PATH=${LOCK_DIR_PATH:-runtime/logs/periodic_once.lock}
 HOST_CRON_LOG_PATH=${HOST_CRON_LOG_PATH:-/runtime/logs/host_cron.log}
+
+cd "$REPO_ROOT"
+
+. "$REPO_ROOT/tools/runtime_env.sh"
+
+runtime_local_load
+runtime_local_validate
 
 mkdir -p "$(dirname "$LOCK_DIR_PATH")"
 
@@ -19,6 +29,8 @@ fi
 
 echo "[periodic-once] Starting one periodic cycle"
 echo "[periodic-once] target_db_path=$TARGET_DB_PATH"
+echo "[periodic-once] If the runtime code looks stale, recreate with"
+echo "[periodic-once] bash tools/runtime_up.sh"
 
 docker compose -f "$COMPOSE_FILE_PATH" exec -T "$COMPOSE_SERVICE_NAME" \
   env HOST_CRON_LOG_PATH="$HOST_CRON_LOG_PATH" \

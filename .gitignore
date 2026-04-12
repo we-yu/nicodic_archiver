@@ -32,6 +32,9 @@ project_summary.txt
 # For cursor setting
 .cursor/
 
+# Local-only runtime configuration
+.env.runtime.local
+
 # Report file (this is temporary utility file) is unnecessary to version-control
 TASK*report.txt
 
