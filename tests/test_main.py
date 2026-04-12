@@ -702,8 +702,21 @@ def test_main_inspect_without_id_type_exits_with_usage(capsys):
 @patch(
     "main.run_scrape",
     side_effect=[
-        ScrapeResult(True, "ok"),
-        ScrapeResult(True, "ok"),
+        ScrapeResult(
+            True,
+            "ok",
+            display_status="partial",
+            article_title="First Title",
+            collected_response_count=12,
+            observed_max_res_no=12,
+        ),
+        ScrapeResult(
+            True,
+            "ok",
+            article_title="Second Title",
+            collected_response_count=7,
+            observed_max_res_no=7,
+        ),
     ],
 )
 def test_main_batch_all_success_exits_zero(
@@ -725,12 +738,26 @@ def test_main_batch_all_success_exits_zero(
     text = logs[0].read_text(encoding="utf-8")
     assert "BATCH_RUN_START" in text
     assert "BATCH_RUN_END" in text
-    assert "target_db_path=targets.db" in text
-    assert "target_source=target_table" in text
-    assert "total_targets=2" in text
-    assert "failed_targets=0" in text
-    assert "final_status=success" in text
-    assert "\nFAIL\n" not in text
+    assert "  target_db_path=targets.db" in text
+    assert "  target_source=target_table" in text
+    assert "  total_targets=2" in text
+    assert "[PROGRESS = 1/2]" in text
+    assert "[PROGRESS = 2/2]" in text
+    assert "  result=SUCCESS" in text
+    assert "SUCCESS_PARTIAL" not in text
+    assert "  target_url=https://dic.nicovideo.jp/a/1" in text
+    assert "  target_url=https://dic.nicovideo.jp/a/2" in text
+    assert "  article_title=First Title" in text
+    assert "  collected_response_count=12" in text
+    assert "  observed_max_res_no=12" in text
+    assert "  article_title=Second Title" in text
+    assert "  collected_response_count=7" in text
+    assert "  observed_max_res_no=7" in text
+    assert "  success_targets=2" in text
+    assert "  failed_targets=0" in text
+    assert "  duration_seconds=" in text
+    assert "  final_status=success" in text
+    assert "FAILURE_DETAIL" not in text
 
 
 @patch("main.list_active_target_urls", return_value=[
@@ -740,8 +767,23 @@ def test_main_batch_all_success_exits_zero(
 @patch(
     "main.run_scrape",
     side_effect=[
-        ScrapeResult(False, "fail_article_not_found"),
-        ScrapeResult(True, "ok"),
+        ScrapeResult(
+            False,
+            "fail_article_not_found",
+            article_title="unknown",
+            collected_response_count=0,
+            observed_max_res_no=None,
+            failure_page="unknown",
+            failure_cause="article_not_found",
+            short_reason="article_not_found",
+        ),
+        ScrapeResult(
+            True,
+            "ok",
+            article_title="Second Title",
+            collected_response_count=7,
+            observed_max_res_no=7,
+        ),
     ],
 )
 def test_main_batch_failure_sets_nonzero_exit_and_continues(
@@ -761,13 +803,23 @@ def test_main_batch_failure_sets_nonzero_exit_and_continues(
     logs = list(Path(tmp_path).glob("batch_*.log"))
     assert len(logs) == 1
     text = logs[0].read_text(encoding="utf-8")
-    assert "failed_targets=1" in text
-    assert "total_targets=2" in text
-    assert "final_status=partial_failure" in text
-    assert "FAIL\n" in text
-    assert "target=https://dic.nicovideo.jp/a/1" in text
-    assert "short_reason=run_scrape_returned_false" in text
-    assert "target=https://dic.nicovideo.jp/a/2" not in text
+    assert "[PROGRESS = 1/2]" in text
+    assert "[PROGRESS = 2/2]" in text
+    assert "  result=FAIL" in text
+    assert "  target_url=https://dic.nicovideo.jp/a/1" in text
+    assert "  article_title=unknown" in text
+    assert "  FAILURE_DETAIL" in text
+    assert "    progress=1/2" in text
+    assert "    failure_page=unknown" in text
+    assert "    failure_cause=article_not_found" in text
+    assert "    short_reason=article_not_found" in text
+    assert "  result=SUCCESS" in text
+    assert "  target_url=https://dic.nicovideo.jp/a/2" in text
+    assert "  article_title=Second Title" in text
+    assert "  total_targets=2" in text
+    assert "  success_targets=1" in text
+    assert "  failed_targets=1" in text
+    assert "  final_status=partial_failure" in text
 
 
 @patch("main.list_active_target_urls", return_value=[
@@ -796,11 +848,18 @@ def test_main_batch_exception_sets_nonzero_exit_and_continues(
     logs = list(Path(tmp_path).glob("batch_*.log"))
     assert len(logs) == 1
     text = logs[0].read_text(encoding="utf-8")
-    assert "failed_targets=1" in text
-    assert "final_status=partial_failure" in text
-    assert "target=https://dic.nicovideo.jp/a/1" in text
-    assert "short_reason=RuntimeError: boom" in text
-    assert "target=https://dic.nicovideo.jp/a/2" not in text
+    assert "[PROGRESS = 1/2]" in text
+    assert "[PROGRESS = 2/2]" in text
+    assert "  result=FAIL" in text
+    assert "  target_url=https://dic.nicovideo.jp/a/1" in text
+    assert "  article_title=unknown" in text
+    assert "    failure_page=unknown" in text
+    assert "    failure_cause=RuntimeError" in text
+    assert "    short_reason=RuntimeError: boom" in text
+    assert "  result=SUCCESS" in text
+    assert "  target_url=https://dic.nicovideo.jp/a/2" in text
+    assert "  failed_targets=1" in text
+    assert "  final_status=partial_failure" in text
 
 
 def test_main_batch_without_path_exits_with_usage(capsys):

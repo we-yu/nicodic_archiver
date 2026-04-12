@@ -24,17 +24,39 @@ BBS_PAGE_SIZE = 30
 class ScrapeResult:
     """Truthiness matches legacy bool return; ``outcome`` supports telemetry."""
 
-    __slots__ = ("ok", "outcome", "display_status")
+    __slots__ = (
+        "ok",
+        "outcome",
+        "display_status",
+        "article_title",
+        "collected_response_count",
+        "observed_max_res_no",
+        "failure_page",
+        "failure_cause",
+        "short_reason",
+    )
 
     def __init__(
         self,
         ok: bool,
         outcome: str = "ok",
         display_status: str | None = None,
+        article_title: str = "unknown",
+        collected_response_count: int = 0,
+        observed_max_res_no: int | None = None,
+        failure_page: str | None = None,
+        failure_cause: str | None = None,
+        short_reason: str | None = None,
     ) -> None:
         self.ok = ok
         self.outcome = outcome
         self.display_status = display_status or ("success" if ok else "fail")
+        self.article_title = article_title
+        self.collected_response_count = collected_response_count
+        self.observed_max_res_no = observed_max_res_no
+        self.failure_page = failure_page
+        self.failure_cause = failure_cause
+        self.short_reason = short_reason
 
     def __bool__(self) -> bool:
         return self.ok
@@ -141,6 +163,12 @@ def _error_status_text(error_text: str) -> str:
     status_part = error_text.split(marker, maxsplit=1)[1]
     status = status_part.split(")", maxsplit=1)[0].split()[0]
     return status
+
+
+def _observed_max_res_no(responses: list[dict]) -> int | None:
+    if not responses:
+        return None
+    return max(response["res_no"] for response in responses)
 
 
 def collect_all_responses(
@@ -297,7 +325,17 @@ def run_scrape(
                 article_url,
                 reason=f"url={article_url} reason=article_not_found",
             )
-        return ScrapeResult(False, "fail_article_not_found", "fail")
+        return ScrapeResult(
+            False,
+            "fail_article_not_found",
+            "fail",
+            article_title="unknown",
+            collected_response_count=0,
+            observed_max_res_no=None,
+            failure_page="unknown",
+            failure_cause="article_not_found",
+            short_reason="article_not_found",
+        )
 
     display_label = _display_target_label(title, article_id, article_url)
     target_ref = article_id or article_url
@@ -325,7 +363,17 @@ def run_scrape(
                 target_ref,
                 reason="reason=skip_denylist",
             )
-        return ScrapeResult(False, "skip_denylist", "fail")
+        return ScrapeResult(
+            False,
+            "skip_denylist",
+            "fail",
+            article_title=title,
+            collected_response_count=0,
+            observed_max_res_no=None,
+            failure_page="unknown",
+            failure_cause="skip_denylist",
+            short_reason="skip_denylist",
+        )
 
     max_saved_res_no = get_max_saved_res_no(article_id, article_type)
     bbs_base_url = build_bbs_base_url(article_url)
@@ -362,7 +410,15 @@ def run_scrape(
                 target_ref,
                 reason="reason=already_up_to_date",
             )
-        return ScrapeResult(True, "ok", "success")
+        return ScrapeResult(
+            True,
+            "ok",
+            "success",
+            article_title=title,
+            collected_response_count=0,
+            observed_max_res_no=max_saved_res_no,
+            short_reason="already_up_to_date",
+        )
 
     json_responses = responses
     if max_saved_res_no is not None:
@@ -420,6 +476,24 @@ def run_scrape(
         True,
         "ok",
         "partial" if interrupted or cap_reached else "success",
+        article_title=title,
+        collected_response_count=len(responses),
+        observed_max_res_no=_observed_max_res_no(json_responses),
+        failure_page="unknown",
+        failure_cause=(
+            "later_page_interrupted"
+            if interrupted
+            else "response_cap_reached"
+            if cap_reached
+            else None
+        ),
+        short_reason=(
+            "later_page_interrupted"
+            if interrupted
+            else "response_cap_reached"
+            if cap_reached
+            else None
+        ),
     )
 
 
