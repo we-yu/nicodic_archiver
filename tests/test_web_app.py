@@ -1,11 +1,18 @@
 from io import BytesIO
 from unittest.mock import patch
 
-from web_app import application, check_article_status, create_app
 import web_app
+from web_app import application, check_article_status, create_app
 
 
-def _run_wsgi_request(method, path="/", body="", app=None):
+def _run_wsgi_request(
+    method,
+    path="/",
+    body="",
+    query_string="",
+    app=None,
+    extra_environ=None,
+):
     encoded_body = body.encode("utf-8")
     captured = {}
 
@@ -13,49 +20,24 @@ def _run_wsgi_request(method, path="/", body="", app=None):
         captured["status"] = status
         captured["headers"] = headers
 
-    response = (app or application)(
-        {
-            "REQUEST_METHOD": method,
-            "PATH_INFO": path,
-            "CONTENT_LENGTH": str(len(encoded_body)),
-            "CONTENT_TYPE": "application/x-www-form-urlencoded",
-            "wsgi.input": BytesIO(encoded_body),
-        },
-        start_response,
-    )
+    environ = {
+        "REQUEST_METHOD": method,
+        "PATH_INFO": path,
+        "QUERY_STRING": query_string,
+        "CONTENT_LENGTH": str(len(encoded_body)),
+        "CONTENT_TYPE": "application/x-www-form-urlencoded",
+        "wsgi.input": BytesIO(encoded_body),
+    }
+    if extra_environ:
+        environ.update(extra_environ)
+
+    response = (app or application)(environ, start_response)
     captured["body"] = b"".join(response).decode("utf-8")
     return captured
 
 
-def test_check_article_status_returns_resolution_failure():
-    with patch(
-        "web_app.get_saved_article_summary_by_exact_title",
-        return_value={
-            "found": False,
-            "article_id": None,
-            "article_type": None,
-            "title": None,
-            "url": None,
-            "created_at": None,
-            "response_count": 0,
-        },
-    ):
-        with patch(
-            "web_app.resolve_article_input",
-            return_value={
-                "ok": False,
-                "failure_kind": "ambiguous",
-                "normalized_input": "Foo",
-            },
-        ):
-            result = check_article_status("Foo")
-
-    assert result == {
-        "status": "resolution_failure",
-        "input": "Foo",
-        "failure_kind": "ambiguous",
-        "message": "Could not resolve the input (ambiguous).",
-    }
+def _header_map(response):
+    return dict(response["headers"])
 
 
 def test_check_article_status_returns_saved_result_for_local_title_lookup():
@@ -88,164 +70,45 @@ def test_check_article_status_returns_saved_result_for_local_title_lookup():
     }
 
 
-def test_check_article_status_returns_saved_result_after_resolution():
-    resolution = {
-        "ok": True,
-        "canonical_target": {
-            "article_url": "https://dic.nicovideo.jp/a/12345",
-            "article_id": "12345",
-            "article_type": "a",
-        },
-        "title": "Foo",
-        "matched_by": "exact_title",
-        "normalized_input": "Foo",
-    }
-    summary = {
-        "found": True,
-        "article_id": "12345",
-        "article_type": "a",
-        "title": "Foo",
-        "url": "https://dic.nicovideo.jp/a/12345",
-        "created_at": "2026-03-25T00:00:00+00:00",
-        "response_count": 42,
-    }
-
-    with patch(
-        "web_app.get_saved_article_summary_by_exact_title",
-        return_value={
-            "found": False,
-            "article_id": None,
-            "article_type": None,
-            "title": None,
-            "url": None,
-            "created_at": None,
-            "response_count": 0,
-        },
-    ):
-        with patch("web_app.resolve_article_input", return_value=resolution):
-            with patch("web_app.get_saved_article_summary", return_value=summary):
-                result = check_article_status("Foo")
-
-    assert result == {
-        "status": "saved",
-        "input": "Foo",
-        "title": "Foo",
-        "matched_by": "exact_title",
-        "article_url": "https://dic.nicovideo.jp/a/12345",
-        "article_id": "12345",
-        "article_type": "a",
-        "response_count": 42,
-        "message": "Saved archive found for the resolved article.",
-    }
-
-
-def test_check_article_status_returns_unsaved_result():
-    resolution = {
-        "ok": True,
-        "canonical_target": {
-            "article_url": "https://dic.nicovideo.jp/a/12345",
-            "article_id": "12345",
-            "article_type": "a",
-        },
-        "title": "Foo",
-        "matched_by": "article_url",
-        "normalized_input": "https://dic.nicovideo.jp/a/Foo",
-    }
-    summary = {
+def test_check_article_status_classifies_temporary_fetch_failure():
+    empty_summary = {
         "found": False,
-        "article_id": "12345",
-        "article_type": "a",
+        "article_id": None,
+        "article_type": None,
         "title": None,
         "url": None,
         "created_at": None,
         "response_count": 0,
     }
 
-    with patch("web_app.resolve_article_input", return_value=resolution):
-        with patch("web_app.get_saved_article_summary", return_value=summary):
-            result = check_article_status("https://dic.nicovideo.jp/a/Foo")
-
-    assert result == {
-        "status": "unsaved",
-        "input": "https://dic.nicovideo.jp/a/Foo",
-        "title": "Foo",
-        "matched_by": "article_url",
-        "article_url": "https://dic.nicovideo.jp/a/12345",
-        "article_id": "12345",
-        "article_type": "a",
-        "message": "Resolved article, but no saved archive was found yet.",
-    }
-
-
-def test_check_article_status_returns_internal_error_on_unexpected_exception():
     with patch(
         "web_app.get_saved_article_summary_by_exact_title",
-        return_value={
-            "found": False,
-            "article_id": None,
-            "article_type": None,
-            "title": None,
-            "url": None,
-            "created_at": None,
-            "response_count": 0,
-        },
+        return_value=empty_summary,
     ):
         with patch(
             "web_app.resolve_article_input",
-            side_effect=RuntimeError("boom"),
+            side_effect=RuntimeError(
+                "Failed to fetch https://dic.nicovideo.jp/a/Foo (timeout=10s)"
+            ),
         ):
             result = check_article_status("Foo")
 
-    assert result == {
-        "status": "internal_error",
-        "input": "Foo",
-        "error_kind": "RuntimeError",
-        "message": "Internal error while checking article status.",
-    }
+    assert result["status"] == "resolution_failure"
+    assert result["failure_kind"] == "temporary_fetch_failure"
 
 
-def test_check_article_status_url_input_still_uses_resolver_path():
-    resolution = {
-        "ok": True,
-        "canonical_target": {
-            "article_url": "https://dic.nicovideo.jp/a/12345",
-            "article_id": "12345",
-            "article_type": "a",
-        },
-        "title": "Foo",
-        "matched_by": "article_url",
-        "normalized_input": "https://dic.nicovideo.jp/a/g123",
-    }
-    summary = {
-        "found": True,
-        "article_id": "12345",
-        "article_type": "a",
-        "title": "Foo",
-        "url": "https://dic.nicovideo.jp/a/12345",
-        "created_at": "2026-03-25T00:00:00+00:00",
-        "response_count": 42,
-    }
-
-    with patch("web_app.get_saved_article_summary_by_exact_title") as mock_local:
-        with patch("web_app.resolve_article_input", return_value=resolution):
-            with patch("web_app.get_saved_article_summary", return_value=summary):
-                result = check_article_status("https://dic.nicovideo.jp/a/g123")
-
-    mock_local.assert_not_called()
-    assert result["status"] == "saved"
-    assert result["matched_by"] == "article_url"
-
-
-def test_application_get_renders_form_and_message_area():
+def test_application_get_renders_externalized_title_and_waiting_state():
     response = _run_wsgi_request("GET")
 
     assert response["status"] == "200 OK"
-    assert "Article name or article URL" in response["body"]
-    assert "Submit" in response["body"]
-    assert "Submit an article name or article URL" in response["body"]
+    assert web_app.UI_TEXTS["page_title"] in response["body"]
+    assert web_app.UI_TEXTS["input_placeholder"] in response["body"]
+    assert "data-archive-check-form" in response["body"]
+    assert "data-busy-message" in response["body"]
+    assert "Saved articles will download as TXT." in response["body"]
 
 
-def test_application_post_renders_saved_result_message():
+def test_application_post_saved_result_autodownloads_without_buttons():
     result = {
         "status": "saved",
         "input": "Foo",
@@ -262,270 +125,135 @@ def test_application_post_renders_saved_result_message():
         response = _run_wsgi_request("POST", body="article_input=Foo")
 
     assert response["status"] == "200 OK"
-    assert "Saved archive found for the resolved article." in response["body"]
-    assert "Canonical target: a/12345" in response["body"]
-    assert "Saved response count: 42" in response["body"]
-    assert "Download TXT" in response["body"]
-    assert "Add To Target Registry" in response["body"]
+    assert "Saved article found. TXT download will start automatically." in (
+        response["body"]
+    )
+    assert "Article title:</strong> Foo" in response["body"]
+    assert "Article ID:</strong> 12345" in response["body"]
+    assert "Saved response count:</strong> 42" in response["body"]
+    assert "data-auto-download-form" in response["body"]
+    assert "Download TXT" not in response["body"]
+    assert "Add To Target Registry" not in response["body"]
+    assert "Matched by" not in response["body"]
 
 
-def test_application_post_renders_title_resolution_failure_message():
-    result = {
-        "status": "resolution_failure",
-        "input": "Foo",
-        "failure_kind": "not_found",
-        "message": "Could not resolve the input (not_found).",
-    }
-
-    with patch("web_app.check_article_status", return_value=result):
-        response = _run_wsgi_request("POST", body="article_input=Foo")
-
-    assert response["status"] == "200 OK"
-    assert "Could not resolve the input (not_found)." in response["body"]
-    assert "Resolution status: <strong>not_found</strong>" in response["body"]
-
-
-def test_application_post_renders_unsaved_result_with_target_action_only():
+def test_application_post_registers_unsaved_article_and_logs_action(tmp_path):
     result = {
         "status": "unsaved",
-        "input": "Foo",
-        "title": "Foo",
-        "matched_by": "exact_title",
+        "input": "https://dic.nicovideo.jp/a/%E3%83%8B%E3%82%B3",
+        "title": "ニコニコ大百科",
+        "matched_by": "article_url",
         "article_url": "https://dic.nicovideo.jp/a/12345",
         "article_id": "12345",
         "article_type": "a",
         "message": "Resolved article, but no saved archive was found yet.",
     }
+    log_path = tmp_path / "web_action.log"
 
     with patch("web_app.check_article_status", return_value=result):
-        response = _run_wsgi_request("POST", body="article_input=Foo")
+        with patch("web_app.register_target_url", return_value="added"):
+            response = _run_wsgi_request(
+                "POST",
+                body="article_input=Foo",
+                app=create_app(
+                    target_db_path="/runtime/data/custom.db",
+                    web_action_log_path=str(log_path),
+                ),
+                extra_environ={
+                    "REMOTE_ADDR": "127.0.0.1",
+                    "HTTP_USER_AGENT": "pytest-agent",
+                },
+            )
 
     assert response["status"] == "200 OK"
-    assert "Add To Target Registry" in response["body"]
-    assert "Enqueue Request" not in response["body"]
+    assert "Article registered for archive checking." in response["body"]
+    assert "Article title:</strong> ニコニコ大百科" in response["body"]
+    assert "Saved response count" not in response["body"]
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert log_text.startswith("\nWEB_ACTION_START\n")
+    assert log_text.endswith("WEB_ACTION_END\n\n")
+    assert "action_kind=registration" in log_text
+    assert "result_status=added" in log_text
+    assert "resolved_title=ニコニコ大百科" in log_text
+    assert "%E3%83%8B%E3%82%B3" not in log_text
 
 
-@patch("web_app.register_target_url", return_value="added")
-@patch("web_app.check_article_status")
-def test_application_action_add_target_uses_canonical_url(
-    mock_check_status,
-    mock_add_target_url,
-):
-    mock_check_status.return_value = {
-        "status": "unsaved",
-        "input": "Foo",
-        "title": "Foo",
-        "matched_by": "exact_title",
-        "article_url": "https://dic.nicovideo.jp/a/12345",
-        "article_id": "12345",
-        "article_type": "a",
-        "message": "Resolved article, but no saved archive was found yet.",
-    }
+def test_download_endpoint_returns_txt_and_logs_download(tmp_path):
+    log_path = tmp_path / "web_action.log"
 
-    response = _run_wsgi_request(
-        "POST",
-        path="/action",
-        body="article_input=Foo&action=add_target",
-    )
-
-    assert response["status"] == "200 OK"
-    assert (
-        "Canonical article URL was added to the target registry."
-        in response["body"]
-    )
-    mock_add_target_url.assert_called_once_with(
-        "https://dic.nicovideo.jp/a/12345",
-        web_app.DEFAULT_TARGET_DB_PATH,
-    )
-
-
-@patch("web_app.register_target_url", return_value="added")
-@patch("web_app.check_article_status")
-def test_application_action_add_target_uses_custom_runtime_target_path(
-    mock_check_status,
-    mock_add_target_url,
-):
-    mock_check_status.return_value = {
-        "status": "unsaved",
-        "input": "Foo",
-        "title": "Foo",
-        "matched_by": "exact_title",
-        "article_url": "https://dic.nicovideo.jp/a/12345",
-        "article_id": "12345",
-        "article_type": "a",
-        "message": "Resolved article, but no saved archive was found yet.",
-    }
-
-    response = _run_wsgi_request(
-        "POST",
-        path="/action",
-        body="article_input=Foo&action=add_target",
-        app=create_app(target_db_path="/runtime/data/custom.db"),
-    )
-
-    assert response["status"] == "200 OK"
-    mock_add_target_url.assert_called_once_with(
-        "https://dic.nicovideo.jp/a/12345",
-        "/runtime/data/custom.db",
-    )
-
-
-@patch("web_app.register_target_url", return_value="duplicate")
-@patch("web_app.check_article_status")
-def test_application_action_add_target_duplicate_is_bounded(
-    mock_check_status,
-    mock_add_target_url,
-):
-    mock_check_status.return_value = {
-        "status": "saved",
-        "input": "Foo",
-        "title": "Foo",
-        "matched_by": "exact_title",
-        "article_url": "https://dic.nicovideo.jp/a/12345",
-        "article_id": "12345",
-        "article_type": "a",
-        "response_count": 42,
-        "message": "Saved archive found for the resolved article.",
-    }
-
-    response = _run_wsgi_request(
-        "POST",
-        path="/action",
-        body="article_input=Foo&action=add_target",
-    )
-
-    assert response["status"] == "200 OK"
-    assert (
-        "Canonical article URL is already active in the target registry."
-        in response["body"]
-    )
-    mock_add_target_url.assert_called_once_with(
-        "https://dic.nicovideo.jp/a/12345",
-        web_app.DEFAULT_TARGET_DB_PATH,
-    )
-
-
-@patch("web_app.register_target_url", return_value="reactivated")
-@patch("web_app.check_article_status")
-def test_application_action_add_target_reactivated_is_bounded(
-    mock_check_status,
-    mock_add_target_url,
-):
-    mock_check_status.return_value = {
-        "status": "unsaved",
-        "input": "Foo",
-        "title": "Foo",
-        "matched_by": "exact_title",
-        "article_url": "https://dic.nicovideo.jp/a/12345",
-        "article_id": "12345",
-        "article_type": "a",
-        "message": "Resolved article, but no saved archive was found yet.",
-    }
-
-    response = _run_wsgi_request(
-        "POST",
-        path="/action",
-        body="article_input=Foo&action=add_target",
-    )
-
-    assert response["status"] == "200 OK"
-    assert (
-        "Canonical article URL was reactivated in the target registry."
-        in response["body"]
-    )
-    mock_add_target_url.assert_called_once_with(
-        "https://dic.nicovideo.jp/a/12345",
-        web_app.DEFAULT_TARGET_DB_PATH,
-    )
-
-
-@patch("web_app.check_article_status")
-def test_application_action_add_target_skips_write_for_unresolved_input(
-    mock_check_status,
-):
-    mock_check_status.return_value = {
-        "status": "resolution_failure",
-        "input": "Foo",
-        "failure_kind": "not_found",
-        "message": "Could not resolve the input (not_found).",
-    }
-
-    with patch("web_app.register_target_url") as mock_add_target_url:
+    with patch(
+        "web_app.get_saved_article_txt",
+        return_value={
+            "found": True,
+            "content": "=== ARTICLE META ===\nTitle: Foo",
+            "article_id": "12345",
+            "article_type": "a",
+        },
+    ):
         response = _run_wsgi_request(
-            "POST",
-            path="/action",
-            body="article_input=Foo&action=add_target",
+            "GET",
+            path="/download",
+            query_string=(
+                "article_id=12345&article_type=a&article_input=Foo"
+                "&resolved_title=Foo&article_url="
+                "https%3A%2F%2Fdic.nicovideo.jp%2Fa%2F12345"
+                "&requested_format=txt"
+            ),
+            app=create_app(web_action_log_path=str(log_path)),
+            extra_environ={
+                "REMOTE_ADDR": "127.0.0.1",
+                "HTTP_USER_AGENT": "pytest-agent",
+            },
         )
 
     assert response["status"] == "200 OK"
-    assert "Action requires a saved or unsaved resolved article." in response["body"]
-    mock_add_target_url.assert_not_called()
-
-
-@patch("web_app.get_saved_article_txt")
-@patch("web_app.check_article_status")
-def test_application_action_download_txt_for_saved(
-    mock_check_status,
-    mock_get_saved_article_txt,
-):
-    mock_check_status.return_value = {
-        "status": "saved",
-        "input": "Foo",
-        "title": "Foo",
-        "matched_by": "exact_title",
-        "article_url": "https://dic.nicovideo.jp/a/12345",
-        "article_id": "12345",
-        "article_type": "a",
-        "response_count": 42,
-        "message": "Saved archive found for the resolved article.",
-    }
-    mock_get_saved_article_txt.return_value = {
-        "found": True,
-        "content": "=== ARTICLE META ===\nTitle: Foo",
-        "article_id": "12345",
-        "article_type": "a",
-    }
-
-    response = _run_wsgi_request(
-        "POST",
-        path="/action",
-        body="article_input=Foo&action=download_txt",
-    )
-
-    assert response["status"] == "200 OK"
-    headers = dict(response["headers"])
+    headers = _header_map(response)
     assert headers["Content-Type"] == "text/plain; charset=utf-8"
-    assert "attachment; filename=\"12345a.txt\"" in headers["Content-Disposition"]
+    assert "attachment; filename=\"12345a.txt\"" in headers[
+        "Content-Disposition"
+    ]
     assert "=== ARTICLE META ===" in response["body"]
-    mock_check_status.assert_called_once_with("Foo")
-    mock_get_saved_article_txt.assert_called_once_with("12345", "a")
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "action_kind=download" in log_text
+    assert "requested_format=txt" in log_text
+    assert "result_status=success" in log_text
 
 
-@patch("web_app.check_article_status")
-def test_application_action_enqueue_request_is_not_supported_from_web(
-    mock_check_status,
-):
-    mock_check_status.return_value = {
-        "status": "unsaved",
-        "input": "Foo",
-        "title": "Foo",
-        "matched_by": "exact_title",
-        "article_url": "https://dic.nicovideo.jp/a/12345",
-        "article_id": "12345",
-        "article_type": "a",
-        "message": "Resolved article, but no saved archive was found yet.",
+def test_application_post_error_result_is_short_and_logged(tmp_path):
+    result = {
+        "status": "resolution_failure",
+        "input": "https://example.com/nope",
+        "failure_kind": "invalid_input",
+        "message": "Could not resolve the input.",
     }
+    log_path = tmp_path / "web_action.log"
 
-    with patch("web_app.register_target_url") as mock_add_target_url:
+    with patch("web_app.check_article_status", return_value=result):
         response = _run_wsgi_request(
             "POST",
-            path="/action",
-            body="article_input=Foo&action=enqueue_request",
+            body="article_input=https%3A%2F%2Fexample.com%2Fnope",
+            app=create_app(web_action_log_path=str(log_path)),
+            extra_environ={
+                "REMOTE_ADDR": "127.0.0.1",
+                "HTTP_USER_AGENT": "pytest-agent",
+            },
         )
 
     assert response["status"] == "200 OK"
-    assert "Unsupported action." in response["body"]
-    mock_add_target_url.assert_not_called()
+    assert "Enter an article name or a valid Nicopedia article URL." in (
+        response["body"]
+    )
+    assert "Reference ID:</strong>" in response["body"]
+    assert "Matched by" not in response["body"]
+    assert "Resolution status" not in response["body"]
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert log_text.startswith("\nWEB_ACTION_START\n")
+    assert log_text.endswith("WEB_ACTION_END\n\n")
+    assert "action_kind=failed_action" in log_text
+    assert "error_code=invalid_input" in log_text
 
 
 def test_application_returns_not_found_for_unknown_path():
