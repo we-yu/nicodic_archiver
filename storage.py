@@ -1,4 +1,5 @@
 import csv
+from datetime import datetime, timezone
 import json
 import os
 import sqlite3
@@ -18,7 +19,43 @@ def _target_row_to_entry(row):
         "canonical_url": row[3],
         "is_active": bool(row[4]),
         "created_at": row[5],
+        "is_redirected": bool(row[6]),
+        "redirect_target_url": row[7],
+        "redirect_detected_at": row[8],
     }
+
+
+def _list_column_names(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table_name})")
+    return {row[1] for row in cur.fetchall()}
+
+
+def _ensure_target_redirect_columns(conn: sqlite3.Connection) -> None:
+    column_names = _list_column_names(conn, "target")
+    required_columns = {
+        "is_redirected": (
+            "ALTER TABLE target ADD COLUMN is_redirected "
+            "INTEGER NOT NULL DEFAULT 0 CHECK (is_redirected IN (0, 1))"
+        ),
+        "redirect_target_url": (
+            "ALTER TABLE target ADD COLUMN redirect_target_url TEXT"
+        ),
+        "redirect_detected_at": (
+            "ALTER TABLE target ADD COLUMN redirect_detected_at TEXT"
+        ),
+    }
+
+    cur = conn.cursor()
+    changed = False
+    for column_name, statement in required_columns.items():
+        if column_name in column_names:
+            continue
+        cur.execute(statement)
+        changed = True
+
+    if changed:
+        conn.commit()
 
 
 def init_db(db_path: str = DEFAULT_DB_PATH):
@@ -84,10 +121,15 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
         article_type TEXT NOT NULL,
         canonical_url TEXT NOT NULL,
         is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+        is_redirected INTEGER NOT NULL DEFAULT 0 CHECK (is_redirected IN (0, 1)),
+        redirect_target_url TEXT,
+        redirect_detected_at TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(article_id, article_type)
     )
     """)
+
+    _ensure_target_redirect_columns(conn)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS scrape_run_observation (
@@ -289,7 +331,9 @@ def register_target(conn, article_id, article_type, canonical_url):
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT id, article_id, article_type, canonical_url, is_active, created_at
+        SELECT id, article_id, article_type, canonical_url, is_active,
+               created_at, is_redirected, redirect_target_url,
+               redirect_detected_at
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -316,7 +360,11 @@ def register_target(conn, article_id, article_type, canonical_url):
         cur.execute(
             """
             UPDATE target
-            SET canonical_url=?, is_active=1
+            SET canonical_url=?,
+                is_active=1,
+                is_redirected=0,
+                redirect_target_url=NULL,
+                redirect_detected_at=NULL
             WHERE article_id=? AND article_type=?
             """,
             (canonical_url, article_id, article_type),
@@ -326,7 +374,9 @@ def register_target(conn, article_id, article_type, canonical_url):
 
     cur.execute(
         """
-        SELECT id, article_id, article_type, canonical_url, is_active, created_at
+        SELECT id, article_id, article_type, canonical_url, is_active,
+               created_at, is_redirected, redirect_target_url,
+               redirect_detected_at
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -350,7 +400,8 @@ def list_targets(conn, active_only=True):
     cur = conn.cursor()
     query = (
         "SELECT id, article_id, article_type, canonical_url, is_active, "
-        "created_at FROM target"
+        "created_at, is_redirected, redirect_target_url, "
+        "redirect_detected_at FROM target"
     )
     params = ()
     if active_only:
@@ -367,7 +418,9 @@ def get_target(conn, article_id, article_type):
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT id, article_id, article_type, canonical_url, is_active, created_at
+        SELECT id, article_id, article_type, canonical_url, is_active,
+               created_at, is_redirected, redirect_target_url,
+               redirect_detected_at
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -401,16 +454,91 @@ def set_target_active_state(conn, article_id, article_type, is_active):
         status = "unchanged"
     else:
         cur = conn.cursor()
+        if is_active:
+            cur.execute(
+                """
+                UPDATE target
+                SET is_active=?,
+                    is_redirected=0,
+                    redirect_target_url=NULL,
+                    redirect_detected_at=NULL
+                WHERE article_id=? AND article_type=?
+                """,
+                (desired_state, article_id, article_type),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE target
+                SET is_active=?
+                WHERE article_id=? AND article_type=?
+                """,
+                (desired_state, article_id, article_type),
+            )
+        conn.commit()
+        status = "activated" if is_active else "deactivated"
+
+    return {
+        "found": True,
+        "status": status,
+        "entry": get_target(conn, article_id, article_type),
+        "target_identity": {
+            "article_id": article_id,
+            "article_type": article_type,
+        },
+    }
+
+
+def mark_target_redirected(
+    conn,
+    article_id,
+    article_type,
+    redirect_target_url,
+    redirect_detected_at=None,
+):
+    """Persist minimal redirect state and deactivate the old scrape target."""
+
+    current_entry = get_target(conn, article_id, article_type)
+    if current_entry is None:
+        return {
+            "found": False,
+            "status": "not_found",
+            "entry": None,
+            "target_identity": {
+                "article_id": article_id,
+                "article_type": article_type,
+            },
+        }
+
+    detected_at = redirect_detected_at or datetime.now(
+        timezone.utc
+    ).isoformat()
+    if (
+        current_entry["is_redirected"]
+        and current_entry["redirect_target_url"] == redirect_target_url
+        and not current_entry["is_active"]
+    ):
+        status = "unchanged"
+    else:
+        cur = conn.cursor()
         cur.execute(
             """
             UPDATE target
-            SET is_active=?
+            SET is_active=0,
+                is_redirected=1,
+                redirect_target_url=?,
+                redirect_detected_at=?
             WHERE article_id=? AND article_type=?
             """,
-            (desired_state, article_id, article_type),
+            (
+                redirect_target_url,
+                detected_at,
+                article_id,
+                article_type,
+            ),
         )
         conn.commit()
-        status = "activated" if is_active else "deactivated"
+        status = "redirected"
 
     return {
         "found": True,
@@ -427,6 +555,7 @@ _RUN_KINDS = frozenset({"batch", "periodic_batch"})
 _OUTCOMES = frozenset(
     {
         "ok",
+        "redirect_handoff",
         "skip_denylist",
         "fail_article_not_found",
         "fail_false",
@@ -474,7 +603,7 @@ def append_scrape_run_observation(
         raise ValueError(f"invalid scrape_outcome: {scrape_outcome!r}")
 
     skipped = 1 if scrape_outcome == "skip_denylist" else 0
-    scrape_ok = 1 if scrape_outcome == "ok" else 0
+    scrape_ok = 1 if scrape_outcome in {"ok", "redirect_handoff"} else 0
     saved_n, max_res = read_saved_response_observation_stats(
         conn,
         article_id,

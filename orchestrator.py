@@ -1,4 +1,6 @@
+import re
 import time
+from urllib.parse import urljoin
 from urllib.parse import urlparse
 
 from http_client import fetch_page
@@ -10,6 +12,7 @@ from storage import (
     save_json,
     save_to_db,
 )
+from target_list import parse_target_identity
 
 # 取得レス数の上限。未知の high-volume 記事に対する bounded protection。
 RESPONSE_CAP = 1_000_000
@@ -34,6 +37,7 @@ class ScrapeResult:
         "failure_page",
         "failure_cause",
         "short_reason",
+        "redirect_target_url",
     )
 
     def __init__(
@@ -47,6 +51,7 @@ class ScrapeResult:
         failure_page: str | None = None,
         failure_cause: str | None = None,
         short_reason: str | None = None,
+        redirect_target_url: str | None = None,
     ) -> None:
         self.ok = ok
         self.outcome = outcome
@@ -57,6 +62,7 @@ class ScrapeResult:
         self.failure_page = failure_page
         self.failure_cause = failure_cause
         self.short_reason = short_reason
+        self.redirect_target_url = redirect_target_url
 
     def __bool__(self) -> bool:
         return self.ok
@@ -69,6 +75,114 @@ def get_containing_page_start(res_no: int) -> int:
 
 class ArticleNotFoundError(RuntimeError):
     """記事ページが見つからない場合の orchestration 用例外。"""
+
+
+class RedirectArticleError(RuntimeError):
+    """記事ページが redirect article だった場合の orchestration 用例外。"""
+
+    def __init__(
+        self,
+        article_url: str,
+        redirect_target_url: str,
+        article_title: str = "unknown",
+    ) -> None:
+        self.article_url = article_url
+        self.redirect_target_url = redirect_target_url
+        self.article_title = article_title
+        super().__init__(
+            f"Redirect detected: {article_url} -> {redirect_target_url}"
+        )
+
+
+_LOCATION_REPLACE_RE = re.compile(
+    r"location\.replace\(\s*(['\"])(.*?)\1\s*\)",
+    re.IGNORECASE,
+)
+
+
+def _extract_page_title(soup) -> str:
+    meta_title = soup.find("meta", property="og:title")
+    if meta_title is not None:
+        title = meta_title.get("content", "").strip()
+        if title:
+            return title.split("とは")[0]
+
+    title_tag = soup.find("title")
+    if title_tag is None:
+        return "unknown"
+
+    title = title_tag.get_text(" ", strip=True)
+    if not title:
+        return "unknown"
+
+    return title.split("とは")[0]
+
+
+def _normalize_redirect_target_url(
+    article_url: str,
+    candidate_url: str,
+) -> str | None:
+    raw_target = candidate_url.strip().strip('"\'')
+    if not raw_target:
+        return None
+
+    resolved_target = urljoin(article_url, raw_target)
+    target_identity = parse_target_identity(resolved_target)
+    if target_identity is None:
+        return None
+    return target_identity["canonical_url"]
+
+
+def _extract_meta_refresh_target(article_url: str, soup) -> str | None:
+    for meta_tag in soup.find_all("meta"):
+        http_equiv = meta_tag.get("http-equiv", "").strip().lower()
+        if http_equiv != "refresh":
+            continue
+
+        content = meta_tag.get("content", "")
+        match = re.search(r"url\s*=\s*([^;]+)", content, re.IGNORECASE)
+        if match is None:
+            continue
+
+        redirect_target = _normalize_redirect_target_url(
+            article_url,
+            match.group(1),
+        )
+        if redirect_target is not None:
+            return redirect_target
+
+    return None
+
+
+def _extract_location_replace_target(article_url: str, soup) -> str | None:
+    for script_tag in soup.find_all("script"):
+        script_text = script_tag.get_text(" ", strip=True)
+        if not script_text:
+            continue
+
+        match = _LOCATION_REPLACE_RE.search(script_text)
+        if match is None:
+            continue
+
+        redirect_target = _normalize_redirect_target_url(
+            article_url,
+            match.group(2),
+        )
+        if redirect_target is not None:
+            return redirect_target
+
+    return None
+
+
+def extract_redirect_target_url(article_url: str, soup) -> str | None:
+    redirect_target = _extract_meta_refresh_target(article_url, soup)
+    if redirect_target is not None:
+        return redirect_target
+    return _extract_location_replace_target(article_url, soup)
+
+
+def is_redirect_article_page(article_url: str, soup) -> bool:
+    return extract_redirect_target_url(article_url, soup) is not None
 
 
 def get_max_saved_res_no(article_id: str, article_type: str) -> int | None:
@@ -289,6 +403,14 @@ def fetch_article_metadata(article_url: str):
             raise ArticleNotFoundError(f"Article not found: {article_url}") from exc
         raise
 
+    redirect_target_url = extract_redirect_target_url(article_url, soup)
+    if redirect_target_url is not None:
+        raise RedirectArticleError(
+            article_url,
+            redirect_target_url,
+            _extract_page_title(soup),
+        )
+
     title_tag = soup.find("meta", property="og:title")
     title = title_tag["content"].split("とは")[0] if title_tag else "unknown"
 
@@ -313,6 +435,25 @@ def run_scrape(
 ) -> ScrapeResult:
     try:
         article_id, article_type, title = fetch_article_metadata(article_url)
+
+    except RedirectArticleError as exc:
+        if progress_reporter is None:
+            print(
+                f"Redirect detected: {article_url} -> "
+                f"{exc.redirect_target_url}"
+            )
+        return ScrapeResult(
+            True,
+            "redirect_handoff",
+            "success",
+            article_title=exc.article_title,
+            collected_response_count=0,
+            observed_max_res_no=None,
+            failure_page=article_url,
+            failure_cause="redirect_detected",
+            short_reason="redirect_handoff",
+            redirect_target_url=exc.redirect_target_url,
+        )
 
     except ArticleNotFoundError:
         if progress_reporter is None:

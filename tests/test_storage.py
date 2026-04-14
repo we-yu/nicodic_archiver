@@ -16,6 +16,7 @@ from storage import (
     init_db,
     list_queue_requests,
     list_targets,
+    mark_target_redirected,
     register_target,
     save_json,
     save_to_db,
@@ -384,16 +385,13 @@ def test_register_target_reactivates_inactive_target(tmp_path, monkeypatch):
         )
 
         assert result["status"] == "reactivated"
-        assert list_targets(conn) == [
-            {
-                "id": 1,
-                "article_id": "12345",
-                "article_type": "a",
-                "canonical_url": "https://dic.nicovideo.jp/a/12345",
-                "is_active": True,
-                "created_at": result["entry"]["created_at"],
-            }
-        ]
+        targets = list_targets(conn)
+        assert len(targets) == 1
+        assert targets[0]["article_id"] == "12345"
+        assert targets[0]["article_type"] == "a"
+        assert targets[0]["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
+        assert targets[0]["is_active"] is True
+        assert targets[0]["is_redirected"] is False
     finally:
         conn.close()
 
@@ -449,6 +447,45 @@ def test_get_target_returns_single_registry_entry(tmp_path, monkeypatch):
         assert entry["article_type"] == "a"
         assert entry["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
         assert entry["is_active"] is True
+        assert entry["is_redirected"] is False
+        assert entry["redirect_target_url"] is None
+        assert entry["redirect_detected_at"] is None
+    finally:
+        conn.close()
+
+
+def test_mark_target_redirected_persists_redirect_state_and_deactivates(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
+
+        result = mark_target_redirected(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/67890",
+            "2026-04-14T00:00:00+00:00",
+        )
+
+        assert result["found"] is True
+        assert result["status"] == "redirected"
+        assert result["entry"]["is_active"] is False
+        assert result["entry"]["is_redirected"] is True
+        assert result["entry"]["redirect_target_url"] == (
+            "https://dic.nicovideo.jp/a/67890"
+        )
+        assert result["entry"]["redirect_detected_at"] == (
+            "2026-04-14T00:00:00+00:00"
+        )
     finally:
         conn.close()
 
