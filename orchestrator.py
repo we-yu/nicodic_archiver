@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 
 from http_client import fetch_page
 from parser import parse_responses
+from redirect_detect import extract_redirect_url_from_soup
 from storage import (
     dequeue_canonical_target,
     init_db,
@@ -34,6 +35,7 @@ class ScrapeResult:
         "failure_page",
         "failure_cause",
         "short_reason",
+        "redirect_url",
     )
 
     def __init__(
@@ -47,6 +49,7 @@ class ScrapeResult:
         failure_page: str | None = None,
         failure_cause: str | None = None,
         short_reason: str | None = None,
+        redirect_url: str | None = None,
     ) -> None:
         self.ok = ok
         self.outcome = outcome
@@ -57,6 +60,7 @@ class ScrapeResult:
         self.failure_page = failure_page
         self.failure_cause = failure_cause
         self.short_reason = short_reason
+        self.redirect_url = redirect_url
 
     def __bool__(self) -> bool:
         return self.ok
@@ -69,6 +73,15 @@ def get_containing_page_start(res_no: int) -> int:
 
 class ArticleNotFoundError(RuntimeError):
     """記事ページが見つからない場合の orchestration 用例外。"""
+
+
+class ArticleRedirectedError(RuntimeError):
+    """記事ページが redirect の場合の orchestration 用例外。"""
+
+    def __init__(self, article_url: str, redirect_url: str) -> None:
+        super().__init__(f"Article redirected: {article_url} -> {redirect_url}")
+        self.article_url = article_url
+        self.redirect_url = redirect_url
 
 
 def get_max_saved_res_no(article_id: str, article_type: str) -> int | None:
@@ -289,6 +302,10 @@ def fetch_article_metadata(article_url: str):
             raise ArticleNotFoundError(f"Article not found: {article_url}") from exc
         raise
 
+    redirect_url = extract_redirect_url_from_soup(soup, base_url=article_url)
+    if redirect_url is not None:
+        raise ArticleRedirectedError(article_url, redirect_url)
+
     title_tag = soup.find("meta", property="og:title")
     title = title_tag["content"].split("とは")[0] if title_tag else "unknown"
 
@@ -335,6 +352,29 @@ def run_scrape(
             failure_page="unknown",
             failure_cause="article_not_found",
             short_reason="article_not_found",
+        )
+    except ArticleRedirectedError as exc:
+        if progress_reporter is None:
+            print(f"Redirect detected: {article_url} -> {exc.redirect_url}")
+        else:
+            progress_reporter.finish_target(
+                "fail",
+                article_url,
+                0,
+                article_url,
+                reason=f"reason=redirect_detected redirect_url={exc.redirect_url}",
+            )
+        return ScrapeResult(
+            False,
+            "redirected",
+            "fail",
+            article_title="unknown",
+            collected_response_count=0,
+            observed_max_res_no=None,
+            failure_page="unknown",
+            failure_cause="redirect_detected",
+            short_reason="redirect_detected",
+            redirect_url=exc.redirect_url,
         )
 
     display_label = _display_target_label(title, article_id, article_url)

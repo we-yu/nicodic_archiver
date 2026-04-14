@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 
 from storage import get_target, init_db, list_targets, register_target
 from storage import set_target_active_state
+from storage import mark_target_redirected
 
 
 def _parse_target_line(raw_line: str) -> str | None:
@@ -179,3 +180,70 @@ def import_targets_from_text_file(
         conn.close()
 
     return counts
+
+
+def handoff_redirected_target(
+    source_article_id: str,
+    source_article_type: str,
+    redirect_target_url: str,
+    *,
+    target_db_path: str,
+    detected_at: str,
+) -> dict:
+    """
+    Persist redirect state and hand off to the redirect target.
+
+    - mark source target redirected/inactive
+    - register redirect target if it is a valid canonical target URL
+    - suppress duplicate/loop handoffs
+    """
+
+    redirect_identity = parse_target_identity(redirect_target_url)
+    if redirect_identity is None:
+        return {
+            "ok": False,
+            "status": "invalid_redirect_target",
+            "redirect_target_url": redirect_target_url,
+            "redirect_register_status": None,
+            "source_mark_status": None,
+        }
+
+    if (
+        redirect_identity["article_id"] == source_article_id
+        and redirect_identity["article_type"] == source_article_type
+    ):
+        return {
+            "ok": False,
+            "status": "redirect_loop",
+            "redirect_target_url": redirect_identity["canonical_url"],
+            "redirect_register_status": None,
+            "source_mark_status": None,
+        }
+
+    conn = init_db(target_db_path)
+    try:
+        source_mark = mark_target_redirected(
+            conn,
+            source_article_id,
+            source_article_type,
+            redirect_url=redirect_identity["canonical_url"],
+            detected_at=detected_at,
+        )
+        register_result = register_target(
+            conn,
+            redirect_identity["article_id"],
+            redirect_identity["article_type"],
+            redirect_identity["canonical_url"],
+        )
+    finally:
+        conn.close()
+
+    return {
+        "ok": True,
+        "status": "handed_off",
+        "redirect_target_url": redirect_identity["canonical_url"],
+        "redirect_register_status": register_result["status"],
+        "source_mark_status": source_mark["status"],
+        "source_entry": source_mark["entry"],
+        "redirect_entry": register_result["entry"],
+    }

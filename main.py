@@ -27,6 +27,7 @@ from target_list import (
     import_targets_from_text_file,
     list_active_target_urls,
     parse_target_identity,
+    handoff_redirected_target,
     register_target_url,
 )
 from verification_cli import verify_one_shot_batch
@@ -337,6 +338,35 @@ def run_batch_scrape(
         ok = bool(scrape_result)
         if not ok:
             failed_targets += 1
+            if scrape_result.outcome == "redirected" and scrape_result.redirect_url:
+                _append_batch_log_lines(
+                    log_path,
+                    [
+                        "  REDIRECT_DETECTED",
+                        f"    source_target_url={target}",
+                        f"    redirect_target_url={scrape_result.redirect_url}",
+                    ],
+                )
+                handoff = handoff_redirected_target(
+                    identity["article_id"],
+                    identity["article_type"],
+                    scrape_result.redirect_url,
+                    target_db_path=target_db_path,
+                    detected_at=datetime.now(timezone.utc).isoformat(),
+                )
+                _append_batch_log_lines(
+                    log_path,
+                    [
+                        "  REDIRECT_HANDOFF",
+                        f"    status={handoff['status']}",
+                        f"    redirect_target_url={handoff['redirect_target_url']}",
+                        (
+                            "    redirect_register_status="
+                            f"{handoff.get('redirect_register_status')}"
+                        ),
+                        f"    source_mark_status={handoff.get('source_mark_status')}",
+                    ],
+                )
             if progress_reporter is None:
                 print(f"[FAIL] {target}")
             short_reason = getattr(

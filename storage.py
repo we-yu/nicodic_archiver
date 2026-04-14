@@ -18,6 +18,9 @@ def _target_row_to_entry(row):
         "canonical_url": row[3],
         "is_active": bool(row[4]),
         "created_at": row[5],
+        "is_redirected": bool(row[6]) if len(row) > 6 else False,
+        "redirect_url": row[7] if len(row) > 7 else None,
+        "redirect_detected_at": row[8] if len(row) > 8 else None,
     }
 
 
@@ -89,6 +92,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     )
     """)
 
+    _ensure_target_redirect_columns(cur)
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS scrape_run_observation (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,6 +114,21 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
 
     conn.commit()
     return conn
+
+
+def _ensure_target_redirect_columns(cur) -> None:
+    cur.execute("PRAGMA table_info(target)")
+    existing = {row[1] for row in cur.fetchall()}
+
+    if "is_redirected" not in existing:
+        cur.execute(
+            "ALTER TABLE target ADD COLUMN is_redirected INTEGER NOT NULL "
+            "DEFAULT 0 CHECK (is_redirected IN (0, 1))"
+        )
+    if "redirect_url" not in existing:
+        cur.execute("ALTER TABLE target ADD COLUMN redirect_url TEXT")
+    if "redirect_detected_at" not in existing:
+        cur.execute("ALTER TABLE target ADD COLUMN redirect_detected_at TEXT")
 
 
 def save_to_db(conn, article_id, article_type, title, article_url, responses):
@@ -289,7 +309,8 @@ def register_target(conn, article_id, article_type, canonical_url):
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT id, article_id, article_type, canonical_url, is_active, created_at
+        SELECT id, article_id, article_type, canonical_url, is_active, created_at,
+               is_redirected, redirect_url, redirect_detected_at
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -316,7 +337,8 @@ def register_target(conn, article_id, article_type, canonical_url):
         cur.execute(
             """
             UPDATE target
-            SET canonical_url=?, is_active=1
+            SET canonical_url=?, is_active=1, is_redirected=0, redirect_url=NULL,
+                redirect_detected_at=NULL
             WHERE article_id=? AND article_type=?
             """,
             (canonical_url, article_id, article_type),
@@ -326,7 +348,8 @@ def register_target(conn, article_id, article_type, canonical_url):
 
     cur.execute(
         """
-        SELECT id, article_id, article_type, canonical_url, is_active, created_at
+        SELECT id, article_id, article_type, canonical_url, is_active, created_at,
+               is_redirected, redirect_url, redirect_detected_at
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -350,7 +373,7 @@ def list_targets(conn, active_only=True):
     cur = conn.cursor()
     query = (
         "SELECT id, article_id, article_type, canonical_url, is_active, "
-        "created_at FROM target"
+        "created_at, is_redirected, redirect_url, redirect_detected_at FROM target"
     )
     params = ()
     if active_only:
@@ -367,7 +390,8 @@ def get_target(conn, article_id, article_type):
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT id, article_id, article_type, canonical_url, is_active, created_at
+        SELECT id, article_id, article_type, canonical_url, is_active, created_at,
+               is_redirected, redirect_url, redirect_detected_at
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -415,6 +439,57 @@ def set_target_active_state(conn, article_id, article_type, is_active):
     return {
         "found": True,
         "status": status,
+        "entry": get_target(conn, article_id, article_type),
+        "target_identity": {
+            "article_id": article_id,
+            "article_type": article_type,
+        },
+    }
+
+
+def mark_target_redirected(
+    conn,
+    article_id: str,
+    article_type: str,
+    *,
+    redirect_url: str,
+    detected_at: str,
+) -> dict:
+    """
+    Mark one target as redirected and deactivate it.
+
+    Bounded write: does not migrate archive data.
+    """
+
+    current_entry = get_target(conn, article_id, article_type)
+    if current_entry is None:
+        return {
+            "found": False,
+            "status": "not_found",
+            "entry": None,
+            "target_identity": {
+                "article_id": article_id,
+                "article_type": article_type,
+            },
+        }
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE target
+        SET is_active=0,
+            is_redirected=1,
+            redirect_url=?,
+            redirect_detected_at=?
+        WHERE article_id=? AND article_type=?
+        """,
+        (redirect_url, detected_at, article_id, article_type),
+    )
+    conn.commit()
+
+    return {
+        "found": True,
+        "status": "redirected",
         "entry": get_target(conn, article_id, article_type),
         "target_identity": {
             "article_id": article_id,

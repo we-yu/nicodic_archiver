@@ -384,16 +384,13 @@ def test_register_target_reactivates_inactive_target(tmp_path, monkeypatch):
         )
 
         assert result["status"] == "reactivated"
-        assert list_targets(conn) == [
-            {
-                "id": 1,
-                "article_id": "12345",
-                "article_type": "a",
-                "canonical_url": "https://dic.nicovideo.jp/a/12345",
-                "is_active": True,
-                "created_at": result["entry"]["created_at"],
-            }
-        ]
+        targets = list_targets(conn)
+        assert len(targets) == 1
+        assert targets[0]["article_id"] == "12345"
+        assert targets[0]["article_type"] == "a"
+        assert targets[0]["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
+        assert targets[0]["is_active"] is True
+        assert targets[0]["is_redirected"] is False
     finally:
         conn.close()
 
