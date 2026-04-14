@@ -822,6 +822,88 @@ def test_main_batch_failure_sets_nonzero_exit_and_continues(
     assert "  final_status=partial_failure" in text
 
 
+@patch("main.handoff_redirected_target")
+@patch("main.list_active_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch(
+    "main.run_scrape",
+    side_effect=[
+        ScrapeResult(
+            True,
+            "redirect_handoff",
+            article_title="Old Title",
+            failure_page="https://dic.nicovideo.jp/a/1",
+            failure_cause="redirect_detected",
+            short_reason="redirect_handoff",
+            redirect_target_url="https://dic.nicovideo.jp/a/9",
+        ),
+        ScrapeResult(
+            True,
+            "ok",
+            article_title="Second Title",
+            collected_response_count=7,
+            observed_max_res_no=7,
+        ),
+    ],
+)
+def test_main_batch_redirect_handoff_is_success_class_and_logged(
+    mock_run_scrape,
+    mock_load_targets,
+    mock_handoff_redirected_target,
+    tmp_path,
+    capsys,
+    monkeypatch,
+):
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    mock_handoff_redirected_target.return_value = {
+        "found": True,
+        "status": "redirected",
+        "entry": {
+            "article_id": "1",
+            "article_type": "a",
+            "canonical_url": "https://dic.nicovideo.jp/a/1",
+            "is_active": False,
+            "is_redirected": True,
+            "redirect_target_url": "https://dic.nicovideo.jp/a/9",
+            "redirect_detected_at": "2026-04-14T00:00:00+00:00",
+        },
+        "register_status": "added",
+        "redirect_target": {
+            "article_id": "9",
+            "article_type": "a",
+            "canonical_url": "https://dic.nicovideo.jp/a/9",
+        },
+    }
+
+    with patch("sys.argv", ["main.py", "batch", "targets.db"]):
+        main_module.main()
+
+    out = capsys.readouterr().out
+    assert "[OK] https://dic.nicovideo.jp/a/1" in out
+    assert "redirected -> https://dic.nicovideo.jp/a/9; added" in out
+    assert "[OK] https://dic.nicovideo.jp/a/2" in out
+    mock_handoff_redirected_target.assert_called_once_with(
+        "1",
+        "a",
+        "https://dic.nicovideo.jp/a/9",
+        "targets.db",
+    )
+
+    logs = list(Path(tmp_path).glob("batch_*.log"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert "  REDIRECT_DETAIL" in text
+    assert "    source_target_url=https://dic.nicovideo.jp/a/1" in text
+    assert "    redirect_target_url=https://dic.nicovideo.jp/a/9" in text
+    assert "    source_status=redirected" in text
+    assert "    register_status=added" in text
+    assert "  success_targets=2" in text
+    assert "  failed_targets=0" in text
+    assert "  final_status=success" in text
+
+
 @patch("main.list_active_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",

@@ -1,5 +1,6 @@
 from target_list import (
     deactivate_target,
+    handoff_redirected_target,
     import_targets_from_text_file,
     inspect_registered_target,
     list_registered_targets,
@@ -140,3 +141,45 @@ def test_deactivate_and_reactivate_target_return_operator_facing_result(tmp_path
     assert deactivated["entry"]["is_active"] is False
     assert reactivated["status"] == "activated"
     assert reactivated["entry"]["is_active"] is True
+
+
+def test_handoff_redirected_target_deactivates_old_and_registers_new(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+
+    result = handoff_redirected_target(
+        "12345",
+        "a",
+        "https://dic.nicovideo.jp/a/67890",
+        str(target_db_path),
+    )
+
+    assert result["status"] == "redirected"
+    assert result["entry"]["is_active"] is False
+    assert result["entry"]["is_redirected"] is True
+    assert result["entry"]["redirect_target_url"] == (
+        "https://dic.nicovideo.jp/a/67890"
+    )
+    assert result["register_status"] == "added"
+    assert list_active_target_urls(str(target_db_path)) == [
+        "https://dic.nicovideo.jp/a/67890",
+    ]
+
+
+def test_handoff_redirected_target_suppresses_duplicate_new_target(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+    register_target_url("https://dic.nicovideo.jp/a/67890", str(target_db_path))
+
+    result = handoff_redirected_target(
+        "12345",
+        "a",
+        "https://dic.nicovideo.jp/a/67890",
+        str(target_db_path),
+    )
+
+    assert result["status"] == "redirected"
+    assert result["register_status"] == "duplicate"
+    assert list_active_target_urls(str(target_db_path)) == [
+        "https://dic.nicovideo.jp/a/67890",
+    ]

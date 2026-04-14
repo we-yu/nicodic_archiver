@@ -24,6 +24,7 @@ from storage import (
     init_db,
 )
 from target_list import (
+    handoff_redirected_target,
     import_targets_from_text_file,
     list_active_target_urls,
     parse_target_identity,
@@ -172,6 +173,28 @@ def _append_batch_failure_detail(
                 f"{_batch_log_value(observed_max_res_no)}"
             ),
             f"    short_reason={short_reason}",
+        ],
+    )
+
+
+def _append_batch_redirect_detail(
+    log_path: Path,
+    index: int,
+    total: int,
+    target_url: str,
+    redirect_target_url: str,
+    source_status: str,
+    register_status: str,
+) -> None:
+    _append_batch_log_lines(
+        log_path,
+        [
+            "  REDIRECT_DETAIL",
+            f"    progress={index}/{total}",
+            f"    source_target_url={target_url}",
+            f"    redirect_target_url={redirect_target_url}",
+            f"    source_status={source_status}",
+            f"    register_status={register_status}",
         ],
     )
 
@@ -335,6 +358,118 @@ def run_batch_scrape(
             continue
 
         ok = bool(scrape_result)
+        redirect_target_url = getattr(
+            scrape_result,
+            "redirect_target_url",
+            None,
+        )
+        if redirect_target_url is not None:
+            handoff_result = handoff_redirected_target(
+                identity["article_id"],
+                identity["article_type"],
+                redirect_target_url,
+                target_db_path,
+            )
+            redirect_status = handoff_result["status"]
+            register_status = handoff_result.get("register_status", "unknown")
+
+            if redirect_status != "redirected":
+                failed_targets += 1
+                scrape_outcome = "fail_exception"
+                if progress_reporter is None:
+                    print(
+                        f"[FAIL] {target} "
+                        f"(redirect handoff failed: {redirect_status})"
+                    )
+                else:
+                    progress_reporter.finish_target(
+                        "fail",
+                        identity["article_id"],
+                        0,
+                        identity["article_id"],
+                        reason=(
+                            "reason=redirect_handoff_failed "
+                            f"status={redirect_status}"
+                        ),
+                    )
+                _append_batch_progress(
+                    log_path,
+                    idx,
+                    len(targets),
+                    "FAIL",
+                    target,
+                    getattr(scrape_result, "article_title", "unknown"),
+                    0,
+                    None,
+                )
+                _append_batch_failure_detail(
+                    log_path,
+                    idx,
+                    len(targets),
+                    target,
+                    getattr(scrape_result, "article_title", "unknown"),
+                    target,
+                    "redirect_handoff_failed",
+                    0,
+                    None,
+                    redirect_status,
+                )
+                _record_scrape_run_observation(
+                    archive_db_path,
+                    run_id,
+                    started_at,
+                    run_kind,
+                    identity,
+                    scrape_outcome,
+                )
+                continue
+
+            if progress_reporter is None:
+                print(
+                    f"[OK] {target} "
+                    f"(redirected -> {redirect_target_url}; {register_status})"
+                )
+            else:
+                progress_reporter.finish_target(
+                    "success",
+                    getattr(scrape_result, "article_title", identity["article_id"]),
+                    0,
+                    identity["article_id"],
+                    reason=(
+                        "reason=redirect_detected "
+                        f"redirect_target={redirect_target_url} "
+                        f"handoff_status={register_status}"
+                    ),
+                )
+            _append_batch_progress(
+                log_path,
+                idx,
+                len(targets),
+                "SUCCESS",
+                target,
+                getattr(scrape_result, "article_title", "unknown"),
+                0,
+                None,
+            )
+            _append_batch_redirect_detail(
+                log_path,
+                idx,
+                len(targets),
+                target,
+                redirect_target_url,
+                redirect_status,
+                register_status,
+            )
+            _record_scrape_run_observation(
+                archive_db_path,
+                run_id,
+                started_at,
+                run_kind,
+                identity,
+                scrape_outcome,
+            )
+            continue
+
         if not ok:
             failed_targets += 1
             if progress_reporter is None:

@@ -1,7 +1,8 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
-from storage import get_target, init_db, list_targets, register_target
+from storage import get_target, init_db, list_targets, mark_target_redirected
+from storage import register_target
 from storage import set_target_active_state
 
 
@@ -135,6 +136,81 @@ def reactivate_target(
         return set_target_active_state(conn, article_id, article_type, True)
     finally:
         conn.close()
+
+
+def handoff_redirected_target(
+    article_id: str,
+    article_type: str,
+    redirect_target_url: str,
+    target_db_path: str,
+) -> dict:
+    """Deactivate a redirected source target and register the redirect target."""
+
+    redirect_identity = parse_target_identity(redirect_target_url)
+    if redirect_identity is None:
+        return {
+            "found": False,
+            "status": "invalid_redirect_target",
+            "entry": None,
+            "register_status": "invalid_redirect_target",
+            "redirect_target": None,
+            "target_identity": {
+                "article_id": article_id,
+                "article_type": article_type,
+            },
+        }
+
+    source_identity = {
+        "article_id": article_id,
+        "article_type": article_type,
+    }
+    conn = init_db(target_db_path)
+    try:
+        redirect_result = mark_target_redirected(
+            conn,
+            article_id,
+            article_type,
+            redirect_identity["canonical_url"],
+        )
+        if not redirect_result["found"]:
+            return {
+                "found": False,
+                "status": redirect_result["status"],
+                "entry": None,
+                "register_status": "skipped",
+                "redirect_target": redirect_identity,
+                "target_identity": source_identity,
+            }
+
+        register_status = "self_redirect"
+        register_entry = None
+        if (
+            article_id,
+            article_type,
+        ) != (
+            redirect_identity["article_id"],
+            redirect_identity["article_type"],
+        ):
+            register_result = register_target(
+                conn,
+                redirect_identity["article_id"],
+                redirect_identity["article_type"],
+                redirect_identity["canonical_url"],
+            )
+            register_status = register_result["status"]
+            register_entry = register_result["entry"]
+    finally:
+        conn.close()
+
+    return {
+        "found": True,
+        "status": "redirected",
+        "entry": redirect_result["entry"],
+        "register_status": register_status,
+        "register_entry": register_entry,
+        "redirect_target": redirect_identity,
+        "target_identity": source_identity,
+    }
 
 
 def import_targets_from_text_file(

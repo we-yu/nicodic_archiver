@@ -7,11 +7,14 @@ from bs4 import BeautifulSoup
 from orchestrator import (
     ArticleNotFoundError,
     QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP,
+    RedirectArticleError,
     build_bbs_base_url,
     fetch_article_metadata,
     collect_all_responses,
     drain_queue_requests,
+    extract_redirect_target_url,
     get_max_saved_res_no,
+    is_redirect_article_page,
     load_saved_responses,
     run_scrape,
 )
@@ -72,6 +75,67 @@ def test_fetch_article_metadata_wraps_404_as_article_not_found():
             match=r"Article not found: https://dic.nicovideo.jp/a/999",
         ):
             fetch_article_metadata("https://dic.nicovideo.jp/a/999")
+
+
+def test_extract_redirect_target_url_from_meta_refresh_page():
+    soup = BeautifulSoup(
+        """
+        <html><head>
+        <meta http-equiv="refresh"
+              content="0; url=https://dic.nicovideo.jp/a/redirected">
+        </head></html>
+        """,
+        "lxml",
+    )
+
+    assert extract_redirect_target_url(
+        "https://dic.nicovideo.jp/a/original",
+        soup,
+    ) == "https://dic.nicovideo.jp/a/redirected"
+    assert is_redirect_article_page(
+        "https://dic.nicovideo.jp/a/original",
+        soup,
+    ) is True
+
+
+def test_extract_redirect_target_url_from_location_replace_script():
+    soup = BeautifulSoup(
+        """
+        <html><head>
+        <script>
+        location.replace('/a/redirected-script');
+        </script>
+        </head></html>
+        """,
+        "lxml",
+    )
+
+    assert extract_redirect_target_url(
+        "https://dic.nicovideo.jp/a/original",
+        soup,
+    ) == "https://dic.nicovideo.jp/a/redirected-script"
+
+
+def test_fetch_article_metadata_raises_redirect_article_error():
+    soup = BeautifulSoup(
+        """
+        <html><head>
+        <title>旧記事とは - ニコニコ大百科</title>
+        <meta http-equiv="refresh"
+              content="0; url=https://dic.nicovideo.jp/a/new-article">
+        </head></html>
+        """,
+        "lxml",
+    )
+
+    with patch("orchestrator.fetch_page", return_value=soup):
+        with pytest.raises(RedirectArticleError) as exc_info:
+            fetch_article_metadata("https://dic.nicovideo.jp/a/old-article")
+
+    assert exc_info.value.redirect_target_url == (
+        "https://dic.nicovideo.jp/a/new-article"
+    )
+    assert exc_info.value.article_title == "旧記事"
 
 
 # ----- collect_all_responses: pagination and stopping -----
@@ -353,6 +417,38 @@ def test_run_scrape_article_not_found_skips_save_path():
     mock_print.assert_any_call(f"Article not found: {article_url}")
     assert not ok
     assert ok.outcome == "fail_article_not_found"
+
+
+def test_run_scrape_redirect_article_handoffs_without_archive_migration():
+    article_url = "https://dic.nicovideo.jp/a/old-article"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        side_effect=RedirectArticleError(
+            article_url,
+            "https://dic.nicovideo.jp/a/new-article",
+            "旧記事",
+        ),
+    ) as mock_meta:
+        with patch("orchestrator.collect_all_responses") as mock_collect:
+            with patch("orchestrator.save_json") as mock_save_json:
+                with patch("orchestrator.init_db") as mock_init:
+                    with patch("orchestrator.save_to_db") as mock_save_db:
+                        with patch("orchestrator.print") as mock_print:
+                            ok = run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_collect.assert_not_called()
+    mock_save_json.assert_not_called()
+    mock_init.assert_not_called()
+    mock_save_db.assert_not_called()
+    mock_print.assert_any_call(
+        "Redirect detected: https://dic.nicovideo.jp/a/old-article -> "
+        "https://dic.nicovideo.jp/a/new-article"
+    )
+    assert ok
+    assert ok.outcome == "redirect_handoff"
+    assert ok.redirect_target_url == "https://dic.nicovideo.jp/a/new-article"
 
 
 def test_run_scrape_saves_empty_result_for_zero_response_case():
