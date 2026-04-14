@@ -1,6 +1,8 @@
 import os
 from html import escape
+from urllib.parse import quote
 from urllib.parse import parse_qs
+from urllib.parse import urlencode
 from urllib.parse import urlparse
 from wsgiref.simple_server import make_server
 
@@ -11,6 +13,8 @@ from archive_read import (
 )
 from article_resolver import resolve_article_input
 from target_list import register_target_url
+from web_action_log import append_web_action_log
+from web_ui_text import DOWNLOAD_FORMATS, UI_TEXT
 
 
 DEFAULT_TARGET_DB_PATH = os.environ.get("TARGET_DB_PATH", "data/nicodic.db")
@@ -107,91 +111,71 @@ def _read_post_form(environ: dict) -> dict:
     return {key: values[0] if values else "" for key, values in form_data.items()}
 
 
-def _build_action_result_message(action_result: dict) -> str:
-    status = action_result["status"]
-    if status == "download_ready":
-        return "Saved article TXT download is ready."
-    if status == "target_added":
-        return "Canonical article URL was added to the target registry."
-    if status == "target_reactivated":
-        return "Canonical article URL was reactivated in the target registry."
-    if status == "target_duplicate":
-        return "Canonical article URL is already active in the target registry."
-    if status == "action_error":
-        return action_result["message"]
-    return "Action completed."
+def _make_visitor_hint(environ: dict) -> str:
+    remote_addr = environ.get("REMOTE_ADDR", "") or ""
+    user_agent = environ.get("HTTP_USER_AGENT", "") or ""
+    remote_addr = remote_addr.strip()
+    user_agent = user_agent.strip()
+    return f"ra={remote_addr} ua={user_agent}"
 
 
-def _followup_action(
-    article_input: str,
-    action: str,
-    target_db_path: str,
-) -> dict:
-    status_result = check_article_status(article_input)
-    if status_result["status"] not in {"saved", "unsaved"}:
-        return {
-            "status": "action_error",
-            "message": "Action requires a saved or unsaved resolved article.",
-            "check_result": status_result,
-        }
+def _make_action_id(environ: dict) -> str:
+    request_id = environ.get("HTTP_X_REQUEST_ID", "") or ""
+    request_id = request_id.strip()
+    if request_id:
+        return request_id
+    method = (environ.get("REQUEST_METHOD", "") or "").strip()
+    nonce = os.urandom(6).hex()
+    return f"wa_{os.getpid()}_{method}_{nonce}"
 
-    if action == "download_txt":
-        if status_result["status"] != "saved":
-            return {
-                "status": "action_error",
-                "message": "TXT download is only available for saved articles.",
-                "check_result": status_result,
-            }
-        return {
-            "status": "download_ready",
-            "check_result": status_result,
-        }
 
-    if action == "add_target":
-        add_result = register_target_url(
-            status_result["article_url"],
-            target_db_path,
-        )
-        if add_result == "added":
-            return {
-                "status": "target_added",
-                "check_result": status_result,
-            }
-        if add_result == "reactivated":
-            return {
-                "status": "target_reactivated",
-                "check_result": status_result,
-            }
-        if add_result == "duplicate":
-            return {
-                "status": "target_duplicate",
-                "check_result": status_result,
-            }
-        return {
-            "status": "action_error",
-            "message": "Canonical article URL could not be added.",
-            "check_result": status_result,
-        }
+def _error_code_for_check_result(result: dict) -> str:
+    status = result.get("status")
+    if status == "resolution_failure":
+        kind = result.get("failure_kind") or "unknown"
+        if kind in {
+            "not_found",
+            "invalid_input",
+            "ambiguous",
+            "could_not_resolve",
+            "upstream_failure",
+            "timeout",
+        }:
+            return kind
+        return "resolution_failure"
+    if status == "internal_error":
+        return "internal_error"
+    return "unknown_error"
 
-    return {
-        "status": "action_error",
-        "message": "Unsupported action.",
-        "check_result": status_result,
-    }
+
+def _user_error_message(result: dict) -> str:
+    status = result.get("status")
+    if status == "resolution_failure":
+        kind = result.get("failure_kind") or "unknown"
+        if kind in {"not_found", "article_not_found", "404"}:
+            return "記事が見つかりませんでした。入力を確認してください。"
+        if kind in {"invalid_input"}:
+            return "入力が不正です。記事名またはURLを確認してください。"
+        if kind in {"ambiguous"}:
+            return "候補が複数あり解決できませんでした。URLで指定してください。"
+        if kind in {"could_not_resolve"}:
+            return "記事を解決できませんでした。URLで指定してください。"
+        if kind in {"timeout", "upstream_failure"}:
+            return "一時的に取得に失敗しました。時間をおいて再試行してください。"
+        return "入力を解決できませんでした。記事名またはURLを確認してください。"
+    if status == "internal_error":
+        return "内部エラーが発生しました。時間をおいて再試行してください。"
+    return "不明なエラーが発生しました。"
 
 
 def _render_message_area(
     result: dict | None,
-    action_result: dict | None = None,
 ) -> str:
     if result is None:
         return (
             '<section class="message-area empty">'
-            "<h2>Result</h2>"
-            "<p>"
-            "Submit an article name or article URL to check whether it "
-            "is already saved."
-            "</p>"
+            f"<h2>{escape(UI_TEXT['result_heading'])}</h2>"
+            f"<p>{escape(UI_TEXT['result_empty'])}</p>"
             "</section>"
         )
 
@@ -199,81 +183,29 @@ def _render_message_area(
     message = escape(result["message"])
     lines = [
         f'<section class="message-area {status}">',
-        "<h2>Result</h2>",
+        f"<h2>{escape(UI_TEXT['result_heading'])}</h2>",
         f'<p class="status-line">{message}</p>',
     ]
 
-    if action_result is not None:
-        lines.append(
-            "<p>Action status: "
-            f"<strong>{escape(_build_action_result_message(action_result))}</strong>"
-            "</p>"
-        )
-
-    if result["status"] == "resolution_failure":
-        lines.append(
-            "<p>Resolution status: "
-            f"<strong>{escape(result['failure_kind'])}</strong></p>"
-        )
-
-    if result["status"] == "internal_error":
-        lines.append(
-            "<p>Error type: "
-            f"<strong>{escape(result['error_kind'])}</strong></p>"
-        )
-
-    if result["status"] in {"saved", "unsaved"}:
+    if result["status"] in {"saved", "registered"}:
         lines.extend(
             [
                 f"<p>Title: <strong>{escape(result['title'])}</strong></p>",
-                (
-                    "<p>Canonical target: "
-                    f"{escape(result['article_type'])}/"
-                    f"{escape(result['article_id'])}</p>"
-                ),
-                f"<p>Matched by: {escape(result['matched_by'])}</p>",
+                f"<p>Article ID: <strong>{escape(result['article_id'])}</strong></p>",
                 f"<p>URL: {escape(result['article_url'])}</p>",
             ]
         )
 
     if result["status"] == "saved":
         lines.append(
-            "<p>Saved response count: "
-            f"{escape(str(result['response_count']))}</p>"
+            "<p>Saved responses: "
+            f"<strong>{escape(str(result['response_count']))}</strong></p>"
         )
-        lines.append(
-            (
-                "<form method=\"post\" action=\"/action\">"
-                f"<input type=\"hidden\" name=\"article_input\" "
-                f"value=\"{escape(result['input'])}\">"
-                "<input type=\"hidden\" name=\"action\" "
-                "value=\"download_txt\">"
-                "<button type=\"submit\">Download TXT</button>"
-                "</form>"
-            )
-        )
-        lines.append(
-            (
-                "<form method=\"post\" action=\"/action\">"
-                f"<input type=\"hidden\" name=\"article_input\" "
-                f"value=\"{escape(result['input'])}\">"
-                "<input type=\"hidden\" name=\"action\" value=\"add_target\">"
-                "<button type=\"submit\">Add To Target Registry</button>"
-                "</form>"
-            )
-        )
+        fmt = escape(result.get("requested_format_display_name", ""))
+        lines.append(f"<p>{fmt} をダウンロードしました。</p>")
 
-    if result["status"] == "unsaved":
-        lines.append(
-            (
-                "<form method=\"post\" action=\"/action\">"
-                f"<input type=\"hidden\" name=\"article_input\" "
-                f"value=\"{escape(result['input'])}\">"
-                "<input type=\"hidden\" name=\"action\" value=\"add_target\">"
-                "<button type=\"submit\">Add To Target Registry</button>"
-                "</form>"
-            )
-        )
+    if result["status"] == "registered":
+        lines.append("<p>取得対象として登録しました。後で再実行してください。</p>")
 
     lines.append("</section>")
     return "".join(lines)
@@ -282,16 +214,37 @@ def _render_message_area(
 def _render_page(
     article_input: str,
     result: dict | None = None,
-    action_result: dict | None = None,
+    *,
+    is_working: bool = False,
+    auto_download_url: str | None = None,
 ) -> bytes:
     safe_input = escape(article_input)
-    message_area = _render_message_area(result, action_result)
+    message_area = _render_message_area(result)
+    headline = escape(UI_TEXT["headline"])
+    page_title = escape(UI_TEXT["page_title"])
+    lede = escape(UI_TEXT["lede"])
+    label = escape(UI_TEXT["form_label"])
+    placeholder = escape(UI_TEXT["form_placeholder"])
+    submit = escape(UI_TEXT["submit"])
+    working_text = escape(UI_TEXT["working"])
+    working_class = " working" if is_working else ""
+    disabled = " disabled" if is_working else ""
+    download_script = ""
+    if auto_download_url:
+        safe_url = escape(auto_download_url, quote=True)
+        download_script = (
+            "<script>"
+            "window.addEventListener('load', () => {"
+            f"window.location.assign('{safe_url}');"
+            "});"
+            "</script>"
+        )
     html = f"""<!doctype html>
 <html lang=\"en\">
 <head>
   <meta charset=\"utf-8\">
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <title>Nicodic Archive Checker</title>
+  <title>{page_title}</title>
   <style>
     :root {{
       color-scheme: light;
@@ -344,6 +297,18 @@ def _render_page(
       background: #fff;
       font: inherit;
     }}
+    .working-line {{
+      color: var(--muted);
+      display: none;
+      margin: 0;
+    }}
+    .panel.working .working-line {{
+      display: block;
+    }}
+    .panel.working button {{
+      opacity: 0.72;
+      cursor: wait;
+    }}
     button {{
       width: fit-content;
       padding: 12px 18px;
@@ -376,30 +341,81 @@ def _render_page(
 </head>
 <body>
   <main>
-    <section class=\"panel\">
-      <h1>Archive Checker</h1>
-      <p class=\"lede\">
-        Enter an article name or article URL to see whether a saved
-        archive already exists.
-      </p>
+    <section class=\"panel{working_class}\">
+      <h1>{headline}</h1>
+      <p class=\"lede\">{lede}</p>
+      <p class=\"working-line\">{working_text}</p>
       <form method=\"post\" action=\"/\">
-        <label for=\"article_input\">Article name or article URL</label>
+        <label for=\"article_input\">{label}</label>
         <input
           id=\"article_input\"
           name=\"article_input\"
           type=\"text\"
           value=\"{safe_input}\"
-          placeholder=\"https://dic.nicovideo.jp/a/... or exact title\"
+          placeholder=\"{placeholder}\"
+          {disabled}
         >
-        <button type=\"submit\">Submit</button>
+        <button type=\"submit\"{disabled}>{submit}</button>
       </form>
       {message_area}
     </section>
   </main>
+  <script>
+    const form = document.querySelector('form[action="/"]');
+    if (form) {{
+      form.addEventListener("submit", () => {{
+        const panel = document.querySelector(".panel");
+        if (panel) panel.classList.add("working");
+        const input = document.getElementById("article_input");
+        const btn = form.querySelector('button[type="submit"]');
+        if (input) input.disabled = true;
+        if (btn) btn.disabled = true;
+      }});
+    }}
+  </script>
+  {download_script}
 </body>
 </html>
 """
     return html.encode("utf-8")
+
+
+def _build_download_filename(article_id: str, article_type: str, ext: str) -> str:
+    base = f"{article_id}{article_type}"
+    safe = quote(base, safe="")
+    return f"{safe}.{ext}"
+
+
+def _log_web_action(
+    environ: dict,
+    *,
+    action_kind: str,
+    input_value: str,
+    requested_format: str,
+    result_status: str,
+    resolved_title: str | None = None,
+    resolved_article_id: str | None = None,
+    resolved_article_type: str | None = None,
+    resolved_canonical_url: str | None = None,
+    error_code: str | None = None,
+    error_detail: str | None = None,
+) -> None:
+    append_web_action_log(
+        {
+            "action_id": _make_action_id(environ),
+            "action_kind": action_kind,
+            "visitor_hint": _make_visitor_hint(environ),
+            "input_value": input_value,
+            "resolved_title": resolved_title or "",
+            "resolved_article_id": resolved_article_id or "",
+            "resolved_article_type": resolved_article_type or "",
+            "resolved_canonical_url": resolved_canonical_url or "",
+            "requested_format": requested_format,
+            "result_status": result_status,
+            "error_code": error_code,
+            "error_detail": error_detail,
+        }
+    )
 
 
 def create_app(target_db_path: str = DEFAULT_TARGET_DB_PATH):
@@ -418,45 +434,174 @@ def create_app(target_db_path: str = DEFAULT_TARGET_DB_PATH):
             )
             return [body]
 
-        if method == "POST" and path == "/":
-            form = _read_post_form(environ)
-            article_input = form.get("article_input", "")
-            body = _render_page(article_input, check_article_status(article_input))
+        if method == "GET" and path == "/download":
+            query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+            article_id = (query.get("article_id") or [""])[0]
+            article_type = (query.get("article_type") or [""])[0]
+            fmt_key = (query.get("format") or ["txt"])[0]
+            action_id = (query.get("action_id") or [""])[0]
+            input_value = (query.get("input") or [""])[0]
+            resolved_title = (query.get("title") or [""])[0]
+            resolved_url = (query.get("url") or [""])[0]
+
+            fmt = DOWNLOAD_FORMATS.get(fmt_key)
+            if not fmt or not article_id or not article_type:
+                _log_web_action(
+                    environ,
+                    action_kind="download",
+                    input_value=input_value,
+                    requested_format=fmt_key,
+                    result_status="failed",
+                    error_code="invalid_download_request",
+                    error_detail=environ.get("QUERY_STRING", ""),
+                )
+                error_result = {
+                    "status": "error",
+                    "message": "ダウンロード要求が不正です。",
+                }
+                body = _render_page("", error_result)
+                start_response(
+                    "200 OK",
+                    [
+                        ("Content-Type", "text/html; charset=utf-8"),
+                        ("Content-Length", str(len(body))),
+                    ],
+                )
+                return [body]
+
+            txt_result = get_saved_article_txt(article_id, article_type)
+            if not txt_result["found"]:
+                _log_web_action(
+                    {**environ, "HTTP_X_REQUEST_ID": action_id},
+                    action_kind="download",
+                    input_value=input_value,
+                    requested_format=fmt_key,
+                    result_status="failed",
+                    resolved_title=resolved_title,
+                    resolved_article_id=article_id,
+                    resolved_article_type=article_type,
+                    resolved_canonical_url=resolved_url,
+                    error_code="saved_not_found",
+                    error_detail="saved article missing for download",
+                )
+                error_result = {
+                    "status": "error",
+                    "message": "保存済み記事が見つかりませんでした。",
+                }
+                body = _render_page("", error_result)
+                start_response(
+                    "200 OK",
+                    [
+                        ("Content-Type", "text/html; charset=utf-8"),
+                        ("Content-Length", str(len(body))),
+                    ],
+                )
+                return [body]
+
+            _log_web_action(
+                {**environ, "HTTP_X_REQUEST_ID": action_id},
+                action_kind="download",
+                input_value=input_value,
+                requested_format=fmt_key,
+                result_status="ok",
+                resolved_title=resolved_title,
+                resolved_article_id=article_id,
+                resolved_article_type=article_type,
+                resolved_canonical_url=resolved_url,
+            )
+            filename = _build_download_filename(
+                article_id,
+                article_type,
+                fmt["file_ext"],
+            )
+            body = txt_result["content"].encode("utf-8")
             start_response(
                 "200 OK",
                 [
-                    ("Content-Type", "text/html; charset=utf-8"),
+                    ("Content-Type", fmt["content_type"]),
+                    (
+                        "Content-Disposition",
+                        f'attachment; filename="{filename}"',
+                    ),
                     ("Content-Length", str(len(body))),
                 ],
             )
             return [body]
 
-        if method == "POST" and path == "/action":
+        if method == "POST" and path == "/":
             form = _read_post_form(environ)
             article_input = form.get("article_input", "")
-            action = form.get("action", "")
+            fmt_key = "txt"
+            fmt = DOWNLOAD_FORMATS[fmt_key]
+            check_result = check_article_status(article_input)
 
-            action_result = _followup_action(
-                article_input,
-                action,
-                target_db_path,
-            )
-            check_result = action_result["check_result"]
-
-            if action_result["status"] == "download_ready":
-                txt_result = get_saved_article_txt(
-                    check_result["article_id"],
-                    check_result["article_type"],
+            if check_result["status"] == "saved":
+                action_id = _make_action_id(environ)
+                download_url = "/download?" + urlencode(
+                    {
+                        "article_id": check_result["article_id"],
+                        "article_type": check_result["article_type"],
+                        "format": fmt_key,
+                        "action_id": action_id,
+                        "input": article_input,
+                        "title": check_result["title"],
+                        "url": check_result["article_url"],
+                    }
                 )
-                if not txt_result["found"]:
-                    body = _render_page(
-                        article_input,
-                        check_result,
-                        {
-                            "status": "action_error",
-                            "message": "Saved article was not found for TXT download.",
-                        },
-                    )
+                saved = {
+                    "status": "saved",
+                    "message": "保存済みの記事が見つかりました。",
+                    "input": check_result["input"],
+                    "title": check_result["title"],
+                    "article_url": check_result["article_url"],
+                    "article_id": check_result["article_id"],
+                    "article_type": check_result["article_type"],
+                    "response_count": check_result["response_count"],
+                    "requested_format_display_name": fmt["display_name"],
+                }
+                body = _render_page(
+                    article_input,
+                    saved,
+                    auto_download_url=download_url,
+                )
+                start_response(
+                    "200 OK",
+                    [
+                        ("Content-Type", "text/html; charset=utf-8"),
+                        ("Content-Length", str(len(body))),
+                    ],
+                )
+                return [body]
+
+            if check_result["status"] == "unsaved":
+                add_result = register_target_url(
+                    check_result["article_url"],
+                    target_db_path,
+                )
+                result_status = "ok"
+                if add_result not in {"added", "reactivated", "duplicate"}:
+                    result_status = "failed"
+
+                _log_web_action(
+                    environ,
+                    action_kind="registration",
+                    input_value=article_input,
+                    requested_format=fmt_key,
+                    result_status=result_status,
+                    resolved_title=check_result.get("title"),
+                    resolved_article_id=check_result.get("article_id"),
+                    resolved_article_type=check_result.get("article_type"),
+                    resolved_canonical_url=check_result.get("article_url"),
+                    error_code=None if result_status == "ok" else "registration_failed",
+                    error_detail=None if result_status == "ok" else str(add_result),
+                )
+
+                if result_status != "ok":
+                    error_result = {
+                        "status": "error",
+                        "message": "取得対象の登録に失敗しました。",
+                    }
+                    body = _render_page(article_input, error_result)
                     start_response(
                         "200 OK",
                         [
@@ -466,24 +611,42 @@ def create_app(target_db_path: str = DEFAULT_TARGET_DB_PATH):
                     )
                     return [body]
 
-                filename = (
-                    f"{check_result['article_id']}{check_result['article_type']}.txt"
-                )
-                body = txt_result["content"].encode("utf-8")
+                registered = {
+                    "status": "registered",
+                    "message": "取得対象として登録しました。",
+                    "input": check_result["input"],
+                    "title": check_result["title"],
+                    "article_url": check_result["article_url"],
+                    "article_id": check_result["article_id"],
+                    "article_type": check_result["article_type"],
+                }
+                body = _render_page(article_input, registered)
                 start_response(
                     "200 OK",
                     [
-                        ("Content-Type", "text/plain; charset=utf-8"),
-                        (
-                            "Content-Disposition",
-                            f'attachment; filename="{filename}"',
-                        ),
+                        ("Content-Type", "text/html; charset=utf-8"),
                         ("Content-Length", str(len(body))),
                     ],
                 )
                 return [body]
 
-            body = _render_page(article_input, check_result, action_result)
+            error_message = _user_error_message(check_result)
+            error_code = _error_code_for_check_result(check_result)
+            _log_web_action(
+                environ,
+                action_kind="failed",
+                input_value=article_input,
+                requested_format=fmt_key,
+                result_status="failed",
+                resolved_title=check_result.get("title"),
+                resolved_article_id=check_result.get("article_id"),
+                resolved_article_type=check_result.get("article_type"),
+                resolved_canonical_url=check_result.get("article_url"),
+                error_code=error_code,
+                error_detail=check_result.get("message", ""),
+            )
+            error_result = {"status": "error", "message": error_message}
+            body = _render_page(article_input, error_result)
             start_response(
                 "200 OK",
                 [
@@ -493,7 +656,7 @@ def create_app(target_db_path: str = DEFAULT_TARGET_DB_PATH):
             )
             return [body]
 
-        if path not in {"/", "/action"}:
+        if path != "/":
             body = b"Not Found"
             start_response(
                 "404 Not Found",
