@@ -600,6 +600,7 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "targets <target_db_path>" in out
     assert "batch <target_db_path>" in out
     assert "periodic-once <target_db_path>" in out
+    assert "inspect-delete-request-feed" in out
     assert "web [--host HOST] [--port PORT] [--target-db-path PATH]" in out
     assert (
         "periodic <target_db_path> <interval_seconds> [--max-runs N]" in out
@@ -607,13 +608,79 @@ def test_main_too_few_args_exits_with_usage(capsys):
     assert "export-run-telemetry-csv" in out
 
 
+@patch("main.inspect_delete_request_feed")
+def test_main_inspect_delete_request_feed_prints_stdout_candidates(
+    mock_inspect_delete_request_feed,
+    capsys,
+):
+    mock_inspect_delete_request_feed.return_value = {
+        "candidates": [
+            {
+                "res_no": 10,
+                "raw_url": "https://dic.nicovideo.jp/a/j-pop",
+                "category": "article_direct",
+                "accepted": True,
+                "normalized_input": "https://dic.nicovideo.jp/a/j-pop",
+            }
+        ],
+        "summary": {
+            "checked_from_res_no": 1,
+            "checked_to_res_no": 10,
+            "responses_checked": 1,
+            "extracted_candidates": 1,
+            "handed_off_candidates": 0,
+            "updated_last_processed_res_no": 10,
+        },
+    }
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "inspect-delete-request-feed",
+            "--archive-db",
+            "archive.db",
+            "--state-path",
+            "state.json",
+            "--full-scan",
+        ],
+    ):
+        main_module.main()
+
+    mock_inspect_delete_request_feed.assert_called_once_with(
+        archive_db_path="archive.db",
+        state_path="state.json",
+        full_scan=True,
+    )
+    out = capsys.readouterr().out
+    assert "ACCEPT res_no=10" in out
+    assert "SUMMARY checked_range=1-10" in out
+
+
 @patch("main._record_scrape_run_observation")
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
 @patch("main.list_active_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
 ])
 @patch("main.run_scrape", return_value=ScrapeResult(True, "ok"))
 def test_main_batch_records_telemetry_once_per_target(
     mock_scrape,
+    mock_run_delete_request_feeder,
     mock_list,
     mock_record,
     tmp_path,
@@ -700,6 +767,22 @@ def test_main_inspect_without_id_type_exits_with_usage(capsys):
     "https://dic.nicovideo.jp/a/2",
 ])
 @patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": 10,
+        "responses_checked": 1,
+        "extracted_candidates": 1,
+        "handed_off_candidates": 1,
+        "updated_last_processed_res_no": 10,
+        "queued_target_urls": ["https://dic.nicovideo.jp/a/3"],
+        "added_targets": 1,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch(
     "main.run_scrape",
     side_effect=[
         ScrapeResult(
@@ -717,49 +800,87 @@ def test_main_inspect_without_id_type_exits_with_usage(capsys):
             collected_response_count=7,
             observed_max_res_no=7,
         ),
+        ScrapeResult(
+            True,
+            "ok",
+            article_title="Third Title",
+            collected_response_count=3,
+            observed_max_res_no=3,
+        ),
     ],
 )
 def test_main_batch_all_success_exits_zero(
-    mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
+    mock_run_scrape,
+    mock_run_delete_request_feeder,
+    mock_load_targets,
+    tmp_path,
+    capsys,
+    monkeypatch,
 ):
     monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
     with patch("sys.argv", ["main.py", "batch", "targets.db"]):
         main_module.main()
 
-    assert mock_run_scrape.call_count == 2
+    assert mock_run_scrape.call_count == 3
+    mock_run_delete_request_feeder.assert_called_once()
     mock_run_scrape.assert_any_call("https://dic.nicovideo.jp/a/1")
     mock_run_scrape.assert_any_call("https://dic.nicovideo.jp/a/2")
+    mock_run_scrape.assert_any_call("https://dic.nicovideo.jp/a/3")
     out = capsys.readouterr().out
+    assert "[delete-request-feed] checked_range=1-10" in out
     assert "[OK] https://dic.nicovideo.jp/a/1" in out
     assert "[OK] https://dic.nicovideo.jp/a/2" in out
+    assert "[OK] https://dic.nicovideo.jp/a/3" in out
 
     logs = list(Path(tmp_path).glob("batch_*.log"))
     assert len(logs) == 1
     text = logs[0].read_text(encoding="utf-8")
     assert "BATCH_RUN_START" in text
+    assert "DELETE_REQUEST_FEED" in text
     assert "BATCH_RUN_END" in text
     assert "  target_db_path=targets.db" in text
     assert "  target_source=target_table" in text
-    assert "  total_targets=2" in text
-    assert "[PROGRESS = 1/2]" in text
-    assert "[PROGRESS = 2/2]" in text
+    assert "  total_targets=3" in text
+    assert "[PROGRESS = 1/3]" in text
+    assert "[PROGRESS = 2/3]" in text
+    assert "[PROGRESS = 3/3]" in text
     assert "  result=SUCCESS" in text
     assert "SUCCESS_PARTIAL" not in text
     assert "  target_url=https://dic.nicovideo.jp/a/1" in text
     assert "  target_url=https://dic.nicovideo.jp/a/2" in text
+    assert "  target_url=https://dic.nicovideo.jp/a/3" in text
     assert "  article_title=First Title" in text
     assert "  collected_response_count=12" in text
     assert "  observed_max_res_no=12" in text
     assert "  article_title=Second Title" in text
     assert "  collected_response_count=7" in text
     assert "  observed_max_res_no=7" in text
-    assert "  success_targets=2" in text
+    assert "  article_title=Third Title" in text
+    assert "  collected_response_count=3" in text
+    assert "  observed_max_res_no=3" in text
+    assert "  success_targets=3" in text
     assert "  failed_targets=0" in text
     assert "  duration_seconds=" in text
     assert "  final_status=success" in text
     assert "FAILURE_DETAIL" not in text
 
 
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
 @patch("main.list_active_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
@@ -787,7 +908,12 @@ def test_main_batch_all_success_exits_zero(
     ],
 )
 def test_main_batch_failure_sets_nonzero_exit_and_continues(
-    mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
+    mock_run_scrape,
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    capsys,
+    monkeypatch,
 ):
     monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
     with patch("sys.argv", ["main.py", "batch", "targets.db"]):
@@ -823,6 +949,22 @@ def test_main_batch_failure_sets_nonzero_exit_and_continues(
 
 
 @patch("main.handoff_redirected_target")
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
 @patch("main.list_active_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
@@ -851,6 +993,7 @@ def test_main_batch_failure_sets_nonzero_exit_and_continues(
 def test_main_batch_redirect_handoff_is_success_class_and_logged(
     mock_run_scrape,
     mock_load_targets,
+    mock_run_delete_request_feeder,
     mock_handoff_redirected_target,
     tmp_path,
     capsys,
@@ -904,6 +1047,22 @@ def test_main_batch_redirect_handoff_is_success_class_and_logged(
     assert "  final_status=success" in text
 
 
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
 @patch("main.list_active_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
@@ -913,7 +1072,12 @@ def test_main_batch_redirect_handoff_is_success_class_and_logged(
     side_effect=[RuntimeError("boom"), ScrapeResult(True, "ok")],
 )
 def test_main_batch_exception_sets_nonzero_exit_and_continues(
-    mock_run_scrape, mock_load_targets, tmp_path, capsys, monkeypatch
+    mock_run_scrape,
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    capsys,
+    monkeypatch,
 ):
     monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
     with patch("sys.argv", ["main.py", "batch", "targets.db"]):
