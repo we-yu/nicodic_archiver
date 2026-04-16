@@ -7,6 +7,14 @@ from pathlib import Path
 
 from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
+from delete_request_feeder import (
+    DEFAULT_DELETE_REQUEST_FEED_STATE_PATH,
+    append_batch_targets,
+    format_delete_request_feed_inspect_lines,
+    format_delete_request_feed_summary,
+    inspect_delete_request_feed,
+    run_delete_request_feeder,
+)
 from host_cron import HostCronReporter, compress_weekly_archives, local_now
 from host_cron import rotate_active_log
 from operator_cli import add_target_for_operator
@@ -226,6 +234,27 @@ def _append_batch_run_end(
     )
 
 
+def _append_delete_request_feed_summary(log_path: Path, summary: dict) -> None:
+    _append_batch_log_lines(
+        log_path,
+        [
+            "DELETE_REQUEST_FEED",
+            f"  {format_delete_request_feed_summary(summary)}",
+        ],
+    )
+
+
+def _emit_delete_request_feed_summary(progress_reporter, summary: dict) -> None:
+    if not hasattr(progress_reporter, "emit"):
+        return
+
+    progress_reporter.emit(
+        "FEEDER",
+        format_delete_request_feed_summary(summary),
+        indent_level=1,
+    )
+
+
 def run_batch_scrape(
     target_db_path: str,
     progress_reporter=None,
@@ -234,22 +263,38 @@ def run_batch_scrape(
 
     run_kind = "periodic_batch" if _inside_periodic_batch else "batch"
 
-    targets = list_active_target_urls(target_db_path)
-
-    if progress_reporter is None:
-        print(
-            f"Loaded {len(targets)} active scrape target(s) "
-            f"from target registry {target_db_path}"
-        )
-    else:
-        progress_reporter.note_targets_loaded(len(targets), target_db_path)
-
     run_id = uuid.uuid4().hex[:12]
     started_at = datetime.now(timezone.utc).isoformat()
     archive_db_path = _telemetry_archive_db_path()
     log_dir = Path(os.environ.get("BATCH_LOG_DIR", "data/batch_runs"))
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"batch_{run_id}.log"
+
+    existing_targets = list_active_target_urls(target_db_path)
+    delete_request_feed_summary = run_delete_request_feeder(
+        target_db_path,
+        archive_db_path=archive_db_path,
+    )
+    targets = append_batch_targets(
+        existing_targets,
+        delete_request_feed_summary["queued_target_urls"],
+    )
+
+    if progress_reporter is None:
+        print(
+            "[delete-request-feed] "
+            f"{format_delete_request_feed_summary(delete_request_feed_summary)}"
+        )
+        print(
+            f"Loaded {len(targets)} active scrape target(s) "
+            f"from target registry {target_db_path}"
+        )
+    else:
+        _emit_delete_request_feed_summary(
+            progress_reporter,
+            delete_request_feed_summary,
+        )
+        progress_reporter.note_targets_loaded(len(targets), target_db_path)
 
     _append_batch_run_start(
         log_path,
@@ -258,6 +303,7 @@ def run_batch_scrape(
         target_db_path,
         len(targets),
     )
+    _append_delete_request_feed_summary(log_path, delete_request_feed_summary)
 
     failed_targets = 0
     for idx, target in enumerate(targets, start=1):
@@ -739,6 +785,13 @@ def _print_verification_usage():
     )
 
 
+def _print_delete_request_feed_usage():
+    print(
+        "Usage: inspect-delete-request-feed "
+        "[--archive-db PATH] [--state-path PATH] [--full-scan]"
+    )
+
+
 def _handle_operator_target(args):
     if not args:
         _print_operator_usage()
@@ -1040,6 +1093,10 @@ def main():
         print("  python main.py batch <target_db_path>")
         print("  python main.py periodic-once <target_db_path>")
         print(
+            "  python main.py inspect-delete-request-feed "
+            "[--archive-db PATH] [--state-path PATH] [--full-scan]"
+        )
+        print(
             "  python main.py web [--host HOST] [--port PORT] "
             "[--target-db-path PATH]"
         )
@@ -1059,6 +1116,38 @@ def main():
 
     if sys.argv[1] == "verify":
         _handle_verification_cli(sys.argv[2:])
+        return
+
+    if sys.argv[1] == "inspect-delete-request-feed":
+        archive_db_path = _telemetry_archive_db_path()
+        state_path = DEFAULT_DELETE_REQUEST_FEED_STATE_PATH
+        full_scan = False
+
+        idx = 2
+        while idx < len(sys.argv):
+            if sys.argv[idx] == "--archive-db" and idx + 1 < len(sys.argv):
+                archive_db_path = sys.argv[idx + 1]
+                idx += 2
+                continue
+            if sys.argv[idx] == "--state-path" and idx + 1 < len(sys.argv):
+                state_path = sys.argv[idx + 1]
+                idx += 2
+                continue
+            if sys.argv[idx] == "--full-scan":
+                full_scan = True
+                idx += 1
+                continue
+
+            _print_delete_request_feed_usage()
+            sys.exit(1)
+
+        scan_result = inspect_delete_request_feed(
+            archive_db_path=archive_db_path,
+            state_path=state_path,
+            full_scan=full_scan,
+        )
+        for line in format_delete_request_feed_inspect_lines(scan_result):
+            print(line)
         return
 
     # inspectモード
