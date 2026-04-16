@@ -7,6 +7,7 @@ from pathlib import Path
 
 from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
+from delete_request_feeder import run_delete_request_feeder
 from host_cron import HostCronReporter, compress_weekly_archives, local_now
 from host_cron import rotate_active_log
 from operator_cli import add_target_for_operator
@@ -233,6 +234,20 @@ def run_batch_scrape(
     """Run one full batch pass and return (final_status, failed_targets)."""
 
     run_kind = "periodic_batch" if _inside_periodic_batch else "batch"
+
+    feeder_result = run_delete_request_feeder(target_db_path)
+    checked_start, checked_end = feeder_result["checked_res_no_range"]
+    feeder_summary = (
+        "[delete-request-feeder] "
+        f"checked_res_no={checked_start}-{checked_end} "
+        f"candidates={feeder_result['extracted_candidates']} "
+        f"handoff={feeder_result['handoff_attempts']} "
+        f"last_processed_res_no={feeder_result['updated_last_processed_res_no']}"
+    )
+    if progress_reporter is None:
+        print(feeder_summary)
+    else:
+        progress_reporter.emit("INFO", feeder_summary, indent_level=1)
 
     targets = list_active_target_urls(target_db_path)
 
@@ -737,6 +752,28 @@ def _print_verification_usage():
         "  python main.py verify telemetry export "
         "[--db PATH] [--output PATH]"
     )
+    print("  python main.py delete-request-feeder inspect [--db PATH]")
+
+
+def _handle_delete_request_feeder(args) -> None:
+    if not args or args[0] != "inspect":
+        print("Usage: delete-request-feeder inspect [--db PATH]")
+        sys.exit(1)
+
+    target_db_path = _read_optional_flag(args, "--db", DEFAULT_TARGET_DB_PATH)
+    result = run_delete_request_feeder(
+        target_db_path,
+        inspect=True,
+        stdout=sys.stdout,
+    )
+    checked_start, checked_end = result["checked_res_no_range"]
+    print(
+        "[delete-request-feeder] "
+        f"checked_res_no={checked_start}-{checked_end} "
+        f"candidates={result['extracted_candidates']} "
+        f"handoff={result['handoff_attempts']} "
+        f"last_processed_res_no={result['updated_last_processed_res_no']}"
+    )
 
 
 def _handle_operator_target(args):
@@ -1025,6 +1062,7 @@ def main():
         print(
             "  python main.py verify <fetch|kgs|registry|batch|telemetry> ..."
         )
+        print("  python main.py delete-request-feeder inspect [--db PATH]")
         print("  python main.py inspect <article_id> <article_type> [--last N]")
         print("  python main.py export <article_id> <article_type> --format txt")
         print("  python main.py export <article_id> <article_type> --format md")
@@ -1059,6 +1097,10 @@ def main():
 
     if sys.argv[1] == "verify":
         _handle_verification_cli(sys.argv[2:])
+        return
+
+    if sys.argv[1] == "delete-request-feeder":
+        _handle_delete_request_feeder(sys.argv[2:])
         return
 
     # inspectモード

@@ -1,0 +1,74 @@
+Task036 report: delete-request feeder (bounded)
+
+1. changed files
+- added: nicopedia_url.py
+- added: delete_request_feeder.py
+- updated: main.py
+- added: tests/test_delete_request_feeder.py
+- added: Task036_report.txt
+
+2. 実装方針
+- 保存済み「ニコニコ大百科:掲示板レス削除依頼」(article_id=5511090, type=a)
+  のレス本文から、機械的に URL 候補を抽出する。
+- URL 候補をカテゴリ判定し、supported なものだけ article target に正規化する。
+- 正規化済み候補は裏口登録を作らず、既存の正規登録ルート
+  `target_list.register_target_url()` に handoff する。
+- 毎回全文走査しないため、`last_processed_res_no` を state として保持し、
+  次回はその res_no より後ろのみを処理する。
+
+3. 追加テスト
+- `tests/test_delete_request_feeder.py`
+  - URL カテゴリ判定と正規化 (query/fragment drop 含む)
+  - unsupported URL の reject
+  - delete-request レスからの抽出 → handoff → state 更新
+  - `last_processed_res_no` による増分処理
+  - `main.run_batch_scrape()` がショット先頭で feeder を呼ぶ順序
+
+4. URLカテゴリ判定と正規化の責務分離
+- `nicopedia_url.py`
+  - Nicopedia URL のカテゴリ判定 (supported/unsupported を独立判断)
+  - supported のみ article URL (/a/<slug>) へ正規化
+  - query / fragment を落とす
+- `delete_request_feeder.py`
+  - 削除依頼レス本文から URL 候補を抽出 (意味理解・補完はしない)
+  - `nicopedia_url.classify_and_normalize_nicopedia_url()` の結果を使い、
+    supported だけ handoff 対象にする
+
+5. `/id/...` internal helper の bounded 取り込み
+- `delete_request_feeder._resolve_article_id_url()`
+  - `/id/<article_id>` は `article_resolver.resolve_article_input()` に委譲し、
+    canonical の `article_url` を得られた場合のみ `/a/<slug>` へ解決して handoff
+  - ok でなければ skip (推論で補完しない)
+  - ユーザ向け article ID 入力 UI/CLI は追加しない
+
+6. last_processed_res_no state の持ち方
+- state ファイルは target DB ごとに作成:
+  - `<target_db_path>` の suffix を差し替えた
+    `*.delete_request_feeder.json`
+  - 形式: {"last_processed_res_no": <int>}
+- 実行時:
+  - `last_processed_res_no` より後ろのみ候補抽出/処理
+- 実行後:
+  - 保存済みレスの今回観測最大 res_no を `last_processed_res_no` として保存
+
+7. shot 先頭実行と末尾 append の扱い
+- `main.run_batch_scrape()` 冒頭で `run_delete_request_feeder()` を一回だけ実行。
+- feeder は registry に追加登録を handoff し、その後で既存の
+  `list_active_target_urls()` を読み込む。
+- registry の insertion order により、新規 target は同一 shot の
+  target list の末尾側に自然に出現する。
+
+8. inspect / dry-run seam
+- `python main.py delete-request-feeder inspect [--db PATH]`
+  - stdout に候補一覧 (res_no/category/raw/normalized/handoff) を出力
+  - 末尾に tiny summary を出力
+- 通常 batch/periodic 実行時は tiny summary のみ出力
+
+9. quality gate 確認結果
+- 触った/追加した全ファイルで 1行88文字以内を維持 (flake8 E501 想定)
+- 触った/追加した全ファイル末尾に newline あり
+- scope widening なし (削除依頼 feeder と URL helper に限定)
+- shell/pytest/python/flake8 実行前提の記述なし
+- repo 外/ root/meta repo への編集なし
+- linter 診断: 変更ファイルに対して No linter errors
+
