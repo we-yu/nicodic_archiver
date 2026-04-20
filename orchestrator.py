@@ -24,6 +24,27 @@ DENYLIST_ARTICLE_IDS = frozenset({"480340", "237789"})
 BBS_PAGE_SIZE = 30
 
 
+class ArticleMetadataResult:
+    def __init__(
+        self,
+        article_id: str,
+        article_type: str,
+        title: str,
+        published_at: str | None = None,
+        modified_at: str | None = None,
+    ) -> None:
+        self.article_id = article_id
+        self.article_type = article_type
+        self.title = title
+        self.published_at = published_at
+        self.modified_at = modified_at
+
+    def __iter__(self):
+        yield self.article_id
+        yield self.article_type
+        yield self.title
+
+
 class ScrapeResult:
     """Truthiness matches legacy bool return; ``outcome`` supports telemetry."""
 
@@ -116,6 +137,55 @@ def _extract_page_title(soup) -> str:
         return "unknown"
 
     return title.split("とは")[0]
+
+
+def _extract_itemprop_datetime(soup, itemprop: str) -> str | None:
+    tag = soup.find(attrs={"itemprop": itemprop})
+    if tag is None:
+        return None
+
+    content = tag.get("content", "").strip()
+    if content:
+        return content
+
+    text = tag.get_text(" ", strip=True)
+    return text or None
+
+
+def fetch_article_metadata_record(article_url: str) -> dict:
+    try:
+        soup = fetch_page(article_url)
+    except RuntimeError as exc:
+        if "status=404" in str(exc):
+            raise ArticleNotFoundError(f"Article not found: {article_url}") from exc
+        raise
+
+    redirect_target_url = extract_redirect_target_url(article_url, soup)
+    if redirect_target_url is not None:
+        raise RedirectArticleError(
+            article_url,
+            redirect_target_url,
+            _extract_page_title(soup),
+        )
+
+    title_tag = soup.find("meta", property="og:title")
+    title = title_tag["content"].split("とは")[0] if title_tag else "unknown"
+
+    og_url = soup.find("meta", property="og:url")
+    if og_url is None:
+        raise ArticleNotFoundError(f"Article not found: {article_url}")
+
+    article_id = og_url["content"].rstrip("/").split("/")[-1]
+    parsed = urlparse(article_url)
+    article_type = parsed.path.strip("/").split("/")[0]
+
+    return {
+        "article_id": article_id,
+        "article_type": article_type,
+        "title": title,
+        "published_at": _extract_itemprop_datetime(soup, "datePublished"),
+        "modified_at": _extract_itemprop_datetime(soup, "dateModified"),
+    }
 
 
 def _normalize_redirect_target_url(
@@ -395,35 +465,14 @@ def fetch_article_metadata(article_url: str):
       - article_type
       - title
     """
-
-    try:
-        soup = fetch_page(article_url)
-    except RuntimeError as exc:
-        if "status=404" in str(exc):
-            raise ArticleNotFoundError(f"Article not found: {article_url}") from exc
-        raise
-
-    redirect_target_url = extract_redirect_target_url(article_url, soup)
-    if redirect_target_url is not None:
-        raise RedirectArticleError(
-            article_url,
-            redirect_target_url,
-            _extract_page_title(soup),
-        )
-
-    title_tag = soup.find("meta", property="og:title")
-    title = title_tag["content"].split("とは")[0] if title_tag else "unknown"
-
-    og_url = soup.find("meta", property="og:url")
-    if og_url is None:
-        raise ArticleNotFoundError(f"Article not found: {article_url}")
-
-    article_id = og_url["content"].rstrip("/").split("/")[-1]
-
-    parsed = urlparse(article_url)
-    article_type = parsed.path.strip("/").split("/")[0]
-
-    return article_id, article_type, title
+    record = fetch_article_metadata_record(article_url)
+    return ArticleMetadataResult(
+        record["article_id"],
+        record["article_type"],
+        record["title"],
+        published_at=record.get("published_at"),
+        modified_at=record.get("modified_at"),
+    )
 
 
 def run_scrape(
@@ -434,7 +483,8 @@ def run_scrape(
     target_total: int | None = None,
 ) -> ScrapeResult:
     try:
-        article_id, article_type, title = fetch_article_metadata(article_url)
+        metadata_result = fetch_article_metadata(article_url)
+        article_id, article_type, title = metadata_result
 
     except RedirectArticleError as exc:
         if progress_reporter is None:
@@ -600,7 +650,23 @@ def run_scrape(
     )
 
     conn = init_db()
-    save_to_db(conn, article_id, article_type, title, article_url, responses)
+    save_kwargs = {}
+    published_at = getattr(metadata_result, "published_at", None)
+    modified_at = getattr(metadata_result, "modified_at", None)
+    if published_at is not None:
+        save_kwargs["published_at"] = published_at
+    if modified_at is not None:
+        save_kwargs["modified_at"] = modified_at
+
+    save_to_db(
+        conn,
+        article_id,
+        article_type,
+        title,
+        article_url,
+        responses,
+        **save_kwargs,
+    )
     conn.close()
 
     if progress_reporter is None:

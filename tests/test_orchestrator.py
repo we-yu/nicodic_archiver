@@ -5,10 +5,12 @@ import pytest
 from bs4 import BeautifulSoup
 
 from orchestrator import (
+    ArticleMetadataResult,
     ArticleNotFoundError,
     QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP,
     RedirectArticleError,
     build_bbs_base_url,
+    fetch_article_metadata_record,
     fetch_article_metadata,
     collect_all_responses,
     drain_queue_requests,
@@ -41,6 +43,8 @@ def test_fetch_article_metadata_mocked():
     <html><head>
     <meta property="og:title" content="Fooとは">
     <meta property="og:url" content="https://dic.nicovideo.jp/a/12345">
+    <meta itemprop="datePublished" content="2024-01-02T03:04:05+09:00">
+    <meta itemprop="dateModified" content="2025-02-03T04:05:06+09:00">
     </head></html>
     """
     soup = BeautifulSoup(html, "lxml")
@@ -51,6 +55,101 @@ def test_fetch_article_metadata_mocked():
     assert article_id == "12345"
     assert article_type == "a"
     assert title == "Foo"
+
+
+def test_fetch_article_metadata_record_reads_article_dates():
+    html = """
+    <html><head>
+    <meta property="og:title" content="Fooとは">
+    <meta property="og:url" content="https://dic.nicovideo.jp/a/12345">
+    <meta itemprop="datePublished" content="2024-01-02T03:04:05+09:00">
+    <meta itemprop="dateModified" content="2025-02-03T04:05:06+09:00">
+    </head></html>
+    """
+    soup = BeautifulSoup(html, "lxml")
+
+    with patch("orchestrator.fetch_page", return_value=soup):
+        record = fetch_article_metadata_record(
+            "https://dic.nicovideo.jp/a/12345"
+        )
+
+    assert record == {
+        "article_id": "12345",
+        "article_type": "a",
+        "title": "Foo",
+        "published_at": "2024-01-02T03:04:05+09:00",
+        "modified_at": "2025-02-03T04:05:06+09:00",
+    }
+
+
+def test_run_scrape_respects_existing_fetch_metadata_patch_seam():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=("12345", "a", "Title"),
+    ) as mock_meta:
+        with patch(
+            "orchestrator.build_bbs_base_url",
+            return_value="https://dic.nicovideo.jp/b/a/12345/",
+        ):
+            with patch("orchestrator.get_max_saved_res_no", return_value=None):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=([], False, False),
+                ):
+                    with patch("orchestrator.save_json"):
+                        conn = MagicMock()
+                        with patch(
+                            "orchestrator.init_db",
+                            return_value=conn,
+                        ):
+                            with patch("orchestrator.save_to_db") as mock_save_db:
+                                with patch("orchestrator.print"):
+                                    run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    assert mock_save_db.call_args.kwargs == {}
+
+
+def test_run_scrape_passes_metadata_kwargs_only_when_present():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+
+    patched_result = ArticleMetadataResult(
+        "12345",
+        "a",
+        "Title",
+        published_at="2024-01-02T03:04:05+09:00",
+        modified_at="2025-02-03T04:05:06+09:00",
+    )
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=patched_result,
+    ):
+        with patch(
+            "orchestrator.build_bbs_base_url",
+            return_value="https://dic.nicovideo.jp/b/a/12345/",
+        ):
+            with patch("orchestrator.get_max_saved_res_no", return_value=None):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=([], False, False),
+                ):
+                    with patch("orchestrator.save_json"):
+                        conn = MagicMock()
+                        with patch(
+                            "orchestrator.init_db",
+                            return_value=conn,
+                        ):
+                            with patch("orchestrator.save_to_db") as mock_save_db:
+                                with patch("orchestrator.print"):
+                                    run_scrape(article_url)
+
+    assert mock_save_db.call_args.kwargs == {
+        "published_at": "2024-01-02T03:04:05+09:00",
+        "modified_at": "2025-02-03T04:05:06+09:00",
+    }
 
 
 def test_fetch_article_metadata_raises_when_article_meta_missing():

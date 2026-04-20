@@ -118,7 +118,7 @@ def test_export_article_outputs_txt_for_saved_article(tmp_path, monkeypatch, cap
     assert "Type: a" in out
     assert "Title: First Title" in out
     assert "=== RESPONSES ===" in out
-    assert ">1 Alice 2025-01-01 00:00 ID: abc123" in out
+    assert "1 Alice 2025-01-01 00:00 ID: abc123" in out
 
 
 def test_export_article_outputs_md_for_saved_article(tmp_path, monkeypatch, capsys):
@@ -162,7 +162,7 @@ def test_export_article_uses_archive_read_seam(mock_get_saved_article_txt, capsy
             "Type: a\n"
             "Title: First Title\n"
             "=== RESPONSES ===\n"
-            ">1 Alice 2025-01-01 00:00 ID: abc123\n"
+            "1 Alice 2025-01-01 00:00 ID: abc123\n"
             "Hello\n"
             "----"
         ),
