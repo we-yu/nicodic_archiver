@@ -131,6 +131,40 @@ def test_save_to_db_insert_or_ignore_prevents_duplicate_growth(tmp_path, monkeyp
         conn.close()
 
 
+def test_save_to_db_persists_bounded_article_metadata(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "12345",
+            "a",
+            "Some Title",
+            "https://dic.nicovideo.jp/a/12345",
+            [],
+            published_at="2024-01-02T03:04:05+09:00",
+            modified_at="2025-02-03T04:05:06+09:00",
+            latest_scraped_at="2026-03-04T05:06:07+09:00",
+        )
+
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT published_at, modified_at, latest_scraped_at "
+            "FROM articles WHERE article_id=? AND article_type=?",
+            ("12345", "a"),
+        )
+        row = cur.fetchone()
+
+        assert row == (
+            "2024-01-02T03:04:05+09:00",
+            "2025-02-03T04:05:06+09:00",
+            "2026-03-04T05:06:07+09:00",
+        )
+    finally:
+        conn.close()
+
+
 def test_save_json_writes_json_and_sanitizes_title_in_filename(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(storage.time, "time", lambda: 1700000000)

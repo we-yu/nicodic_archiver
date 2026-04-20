@@ -1,8 +1,9 @@
 import os
+import re
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from uuid import uuid4
 from wsgiref.simple_server import make_server
 
@@ -111,6 +112,49 @@ def _humanize_title(value: str | None) -> str:
     return decoded if decoded else "unknown"
 
 
+def _sanitize_download_filename_title(value: str) -> str:
+    text = _humanize_title(value)
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    return text or "article"
+
+
+def _ascii_download_fallback(article_id: str, article_type: str) -> str:
+    return f"{article_id}{article_type}_article"
+
+
+def _build_download_filename(
+    article_id: str,
+    article_type: str,
+    title: str | None,
+    requested_format: str,
+) -> str:
+    safe_title = _sanitize_download_filename_title(title or "")
+    return f"{article_id}{article_type}_{safe_title}.{requested_format}"
+
+
+def _build_content_disposition(
+    article_id: str,
+    article_type: str,
+    title: str | None,
+    requested_format: str,
+) -> str:
+    utf8_filename = _build_download_filename(
+        article_id,
+        article_type,
+        title,
+        requested_format,
+    )
+    ascii_filename = (
+        f"{_ascii_download_fallback(article_id, article_type)}.{requested_format}"
+    )
+    encoded = quote(utf8_filename, safe="")
+    return (
+        f'attachment; filename="{ascii_filename}"; '
+        f"filename*=UTF-8''{encoded}"
+    )
+
+
 def _classify_runtime_failure(exc: RuntimeError) -> str | None:
     detail = str(exc)
     if "timeout=" in detail:
@@ -157,6 +201,10 @@ def check_article_status(article_input: str) -> dict:
             canonical_target["article_id"],
             canonical_target["article_type"],
         )
+        archive_summary = _restore_saved_url_input_parity(
+            resolution,
+            archive_summary,
+        )
 
         if archive_summary["found"]:
             return {
@@ -164,9 +212,10 @@ def check_article_status(article_input: str) -> dict:
                 "input": resolution["normalized_input"],
                 "title": archive_summary["title"] or resolution["title"],
                 "matched_by": resolution["matched_by"],
-                "article_url": canonical_target["article_url"],
-                "article_id": canonical_target["article_id"],
-                "article_type": canonical_target["article_type"],
+                "article_url": archive_summary["url"]
+                or canonical_target["article_url"],
+                "article_id": archive_summary["article_id"],
+                "article_type": archive_summary["article_type"],
                 "response_count": archive_summary["response_count"],
                 "message": "Saved archive found for the resolved article.",
             }
@@ -286,37 +335,40 @@ def _log_web_action(
     title = _humanize_title(
         resolved_title or input_value or resolved_canonical_url
     )
-    _append_web_action_log_lines(
-        Path(web_action_log_path),
-        [
-            "",
-            "WEB_ACTION_START",
-            f"  action_id={action_id}",
-            f"  timestamp={timestamp}",
-            f"  action_kind={action_kind}",
-            f"  visitor_hint={_visitor_hint(environ)}",
-            f"  input_value={_web_log_value(input_value)}",
-            f"  resolved_title={_web_log_value(title)}",
-            (
-                "  resolved_article_id="
-                f"{_web_log_value(resolved_article_id)}"
-            ),
-            (
-                "  resolved_article_type="
-                f"{_web_log_value(resolved_article_type)}"
-            ),
-            (
-                "  resolved_canonical_url="
-                f"{_web_log_value(resolved_canonical_url)}"
-            ),
-            f"  requested_format={_web_log_value(requested_format)}",
-            f"  result_status={_web_log_value(result_status)}",
-            f"  error_code={_web_log_value(error_code)}",
-            f"  error_detail={_web_log_value(error_detail)}",
-            "WEB_ACTION_END",
-            "",
-        ],
-    )
+    try:
+        _append_web_action_log_lines(
+            Path(web_action_log_path),
+            [
+                "",
+                "WEB_ACTION_START",
+                f"  action_id={action_id}",
+                f"  timestamp={timestamp}",
+                f"  action_kind={action_kind}",
+                f"  visitor_hint={_visitor_hint(environ)}",
+                f"  input_value={_web_log_value(input_value)}",
+                f"  resolved_title={_web_log_value(title)}",
+                (
+                    "  resolved_article_id="
+                    f"{_web_log_value(resolved_article_id)}"
+                ),
+                (
+                    "  resolved_article_type="
+                    f"{_web_log_value(resolved_article_type)}"
+                ),
+                (
+                    "  resolved_canonical_url="
+                    f"{_web_log_value(resolved_canonical_url)}"
+                ),
+                f"  requested_format={_web_log_value(requested_format)}",
+                f"  result_status={_web_log_value(result_status)}",
+                f"  error_code={_web_log_value(error_code)}",
+                f"  error_detail={_web_log_value(error_detail)}",
+                "WEB_ACTION_END",
+                "",
+            ],
+        )
+    except OSError:
+        pass
     return action_id
 
 
@@ -363,12 +415,42 @@ def _build_download_query(check_result: dict) -> str:
         {
             "article_id": check_result["article_id"],
             "article_type": check_result["article_type"],
-            "article_input": check_result["input"],
             "resolved_title": check_result["title"],
-            "article_url": check_result["article_url"],
             "requested_format": DEFAULT_DOWNLOAD_FORMAT,
         }
     )
+
+
+def _download_input_value(query: dict) -> str:
+    return (
+        query.get("article_input")
+        or query.get("resolved_title")
+        or ""
+    )
+
+
+def _restore_saved_url_input_parity(
+    resolution: dict,
+    archive_summary: dict,
+) -> dict:
+    if archive_summary["found"]:
+        return archive_summary
+    if resolution.get("matched_by") != "article_url":
+        return archive_summary
+
+    title = resolution.get("title")
+    if not title:
+        return archive_summary
+
+    saved_title_summary = get_saved_article_summary_by_exact_title(title)
+    if not saved_title_summary["found"]:
+        return archive_summary
+
+    canonical_target = resolution["canonical_target"]
+    if saved_title_summary["article_id"] != canonical_target["article_id"]:
+        return archive_summary
+
+    return saved_title_summary
 
 
 def _submit_archive_check(
@@ -385,10 +467,35 @@ def _submit_archive_check(
         )
 
     if check_result["status"] == "unsaved":
-        registration_status = register_target_url(
-            check_result["article_url"],
-            target_db_path,
-        )
+        try:
+            registration_status = register_target_url(
+                check_result["article_url"],
+                target_db_path,
+            )
+        except Exception as exc:
+            failure_result = {
+                "status": "internal_error",
+                "input": check_result["input"],
+                "error_kind": type(exc).__name__,
+                "error_detail": str(exc),
+                "message": "Internal error while checking article status.",
+            }
+            reference_id = _log_web_action(
+                web_action_log_path,
+                environ,
+                action_kind="failed_action",
+                input_value=article_input,
+                requested_format=None,
+                result_status="registration_failed",
+                resolved_title=check_result["title"],
+                resolved_article_id=check_result["article_id"],
+                resolved_article_type=check_result["article_type"],
+                resolved_canonical_url=check_result["article_url"],
+                error_code="registration_failed",
+                error_detail=str(exc),
+            )
+            return _build_error_ui_result(failure_result, reference_id), None
+
         if registration_status in {"added", "reactivated", "duplicate"}:
             _log_web_action(
                 web_action_log_path,
@@ -632,6 +739,10 @@ def _render_page(
       border: 1px solid var(--border);
       background: rgba(255, 255, 255, 0.72);
     }}
+        .message-area p {{
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }}
     .message-area h2 {{ margin-top: 0; font-size: 1.2rem; }}
     .message-area.empty {{ color: var(--muted); }}
     .message-area.saved .status-line {{ color: var(--saved); }}
@@ -750,7 +861,7 @@ def create_app(
             query = _read_query_params(environ)
             article_id = query.get("article_id", "")
             article_type = query.get("article_type", "")
-            article_input = query.get("article_input", "")
+            article_input = _download_input_value(query)
             requested_format = query.get(
                 "requested_format",
                 DEFAULT_DOWNLOAD_FORMAT,
@@ -779,7 +890,6 @@ def create_app(
                     resolved_title=query.get("resolved_title"),
                     resolved_article_id=article_id,
                     resolved_article_type=article_type,
-                    resolved_canonical_url=query.get("article_url"),
                     error_code="download_missing",
                     error_detail="Saved article was not found for download.",
                 )
@@ -811,9 +921,7 @@ def create_app(
                 resolved_title=query.get("resolved_title"),
                 resolved_article_id=article_id,
                 resolved_article_type=article_type,
-                resolved_canonical_url=query.get("article_url"),
             )
-            filename = f"{article_id}{article_type}.{requested_format}"
             body = txt_result["content"].encode("utf-8")
             start_response(
                 "200 OK",
@@ -821,7 +929,12 @@ def create_app(
                     ("Content-Type", "text/plain; charset=utf-8"),
                     (
                         "Content-Disposition",
-                        f'attachment; filename="{filename}"',
+                        _build_content_disposition(
+                            article_id,
+                            article_type,
+                            txt_result.get("title") or query.get("resolved_title"),
+                            requested_format,
+                        ),
                     ),
                     ("Content-Length", str(len(body))),
                 ],

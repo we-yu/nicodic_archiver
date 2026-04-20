@@ -1,4 +1,42 @@
 import sqlite3
+from pathlib import Path
+
+from storage import DEFAULT_DB_PATH
+
+
+def _open_archive_read_conn() -> sqlite3.Connection | None:
+    db_path = Path(DEFAULT_DB_PATH)
+    if not db_path.exists():
+        return None
+    return sqlite3.connect(str(db_path))
+
+
+def _article_select_columns(conn) -> str:
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(articles)")
+    column_names = {row[1] for row in cur.fetchall()}
+
+    published_expr = "published_at" if "published_at" in column_names else "NULL"
+    modified_expr = "modified_at" if "modified_at" in column_names else "NULL"
+    return (
+        "title, canonical_url, created_at, "
+        f"{published_expr} AS published_at, "
+        f"{modified_expr} AS modified_at"
+    )
+
+
+def _title_lookup_select_columns(conn) -> str:
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(articles)")
+    column_names = {row[1] for row in cur.fetchall()}
+
+    published_expr = "published_at" if "published_at" in column_names else "NULL"
+    modified_expr = "modified_at" if "modified_at" in column_names else "NULL"
+    return (
+        "article_id, article_type, title, canonical_url, created_at, "
+        f"{published_expr} AS published_at, "
+        f"{modified_expr} AS modified_at"
+    )
 
 
 def _count_saved_responses(cur, article_id, article_type):
@@ -19,6 +57,8 @@ def _build_saved_article_summary(
     title,
     url,
     created_at,
+    published_at,
+    modified_at,
     response_count,
 ):
     return {
@@ -28,14 +68,17 @@ def _build_saved_article_summary(
         "title": title,
         "url": url,
         "created_at": created_at,
+        "published_at": published_at,
+        "modified_at": modified_at,
         "response_count": response_count,
     }
 
 
 def _find_saved_article_by_title_lookup(cur, title):
+    select_columns = _title_lookup_select_columns(cur.connection)
     cur.execute(
-        """
-        SELECT article_id, article_type, title, canonical_url, created_at
+        f"""
+        SELECT {select_columns}
         FROM articles
         WHERE title=?
         ORDER BY created_at ASC, article_id ASC, article_type ASC
@@ -48,8 +91,8 @@ def _find_saved_article_by_title_lookup(cur, title):
         return article
 
     cur.execute(
-        """
-        SELECT article_id, article_type, title, canonical_url, created_at
+        f"""
+        SELECT {select_columns}
         FROM articles
         WHERE title = ? COLLATE NOCASE
         ORDER BY created_at ASC, article_id ASC, article_type ASC
@@ -63,68 +106,79 @@ def _find_saved_article_by_title_lookup(cur, title):
 def has_saved_article(article_id, article_type):
     """Return True when the article exists in saved archive."""
 
-    conn = sqlite3.connect("data/nicodic.db")
+    conn = _open_archive_read_conn()
+    if conn is None:
+        return False
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT 1
-        FROM articles
-        WHERE article_id=? AND article_type=?
-        LIMIT 1
-        """,
-        (article_id, article_type),
-    )
-    exists = cur.fetchone() is not None
-    conn.close()
-    return exists
-
-
-def read_article_archive(article_id, article_type, last_n=None):
-    conn = sqlite3.connect("data/nicodic.db")
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT title, canonical_url, created_at
-        FROM articles
-        WHERE article_id=? AND article_type=?
-        """,
-        (article_id, article_type),
-    )
-
-    article = cur.fetchone()
-    if not article:
-        conn.close()
-        return None
-
-    title, url, created_at = article
-
-    if last_n:
+    try:
         cur.execute(
             """
-            SELECT res_no, poster_name, posted_at, id_hash, content_text
-            FROM responses
+            SELECT 1
+            FROM articles
             WHERE article_id=? AND article_type=?
-            ORDER BY res_no DESC
-            LIMIT ?
-            """,
-            (article_id, article_type, last_n),
-        )
-        rows = cur.fetchall()
-        rows.reverse()
-    else:
-        cur.execute(
-            """
-            SELECT res_no, poster_name, posted_at, id_hash, content_text
-            FROM responses
-            WHERE article_id=? AND article_type=?
-            ORDER BY res_no ASC
+            LIMIT 1
             """,
             (article_id, article_type),
         )
-        rows = cur.fetchall()
+        return cur.fetchone() is not None
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        conn.close()
 
-    conn.close()
+
+def read_article_archive(article_id, article_type, last_n=None):
+    conn = _open_archive_read_conn()
+    if conn is None:
+        return None
+    cur = conn.cursor()
+
+    try:
+        article_columns = _article_select_columns(conn)
+        cur.execute(
+            f"""
+            SELECT {article_columns}
+            FROM articles
+            WHERE article_id=? AND article_type=?
+            """,
+            (article_id, article_type),
+        )
+
+        article = cur.fetchone()
+        if not article:
+            return None
+
+        title, url, created_at, published_at, modified_at = article
+
+        if last_n:
+            cur.execute(
+                """
+                SELECT res_no, poster_name, posted_at, id_hash, content_text
+                FROM responses
+                WHERE article_id=? AND article_type=?
+                ORDER BY res_no DESC
+                LIMIT ?
+                """,
+                (article_id, article_type, last_n),
+            )
+            rows = cur.fetchall()
+            rows.reverse()
+        else:
+            cur.execute(
+                """
+                SELECT res_no, poster_name, posted_at, id_hash, content_text
+                FROM responses
+                WHERE article_id=? AND article_type=?
+                ORDER BY res_no ASC
+                """,
+                (article_id, article_type),
+            )
+            rows = cur.fetchall()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
 
     return {
         "article_id": article_id,
@@ -132,6 +186,8 @@ def read_article_archive(article_id, article_type, last_n=None):
         "title": title,
         "url": url,
         "created_at": created_at,
+        "published_at": published_at,
+        "modified_at": modified_at,
         "responses": rows,
     }
 
@@ -139,21 +195,8 @@ def read_article_archive(article_id, article_type, last_n=None):
 def get_saved_article_summary(article_id, article_type):
     """Return bounded metadata for non-CLI consumers checking archive status."""
 
-    conn = sqlite3.connect("data/nicodic.db")
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT title, canonical_url, created_at
-        FROM articles
-        WHERE article_id=? AND article_type=?
-        """,
-        (article_id, article_type),
-    )
-
-    article = cur.fetchone()
-    if not article:
-        conn.close()
+    conn = _open_archive_read_conn()
+    if conn is None:
         return {
             "found": False,
             "article_id": article_id,
@@ -161,12 +204,54 @@ def get_saved_article_summary(article_id, article_type):
             "title": None,
             "url": None,
             "created_at": None,
+            "published_at": None,
+            "modified_at": None,
             "response_count": 0,
         }
+    cur = conn.cursor()
 
-    title, url, created_at = article
-    response_count = _count_saved_responses(cur, article_id, article_type)
-    conn.close()
+    try:
+        article_columns = _article_select_columns(conn)
+        cur.execute(
+            f"""
+            SELECT {article_columns}
+            FROM articles
+            WHERE article_id=? AND article_type=?
+            """,
+            (article_id, article_type),
+        )
+
+        article = cur.fetchone()
+        if not article:
+            return {
+                "found": False,
+                "article_id": article_id,
+                "article_type": article_type,
+                "title": None,
+                "url": None,
+                "created_at": None,
+                "published_at": None,
+                "modified_at": None,
+                "response_count": 0,
+            }
+
+        title, url, created_at, published_at, modified_at = article
+        response_count = _count_saved_responses(cur, article_id, article_type)
+    except sqlite3.OperationalError:
+        return {
+            "found": False,
+            "article_id": article_id,
+            "article_type": article_type,
+            "title": None,
+            "url": None,
+            "created_at": None,
+            "published_at": None,
+            "modified_at": None,
+            "response_count": 0,
+        }
+    finally:
+        if conn is not None:
+            conn.close()
 
     return _build_saved_article_summary(
         article_id,
@@ -174,6 +259,8 @@ def get_saved_article_summary(article_id, article_type):
         title,
         url,
         created_at,
+        published_at,
+        modified_at,
         response_count,
     )
 
@@ -181,13 +268,8 @@ def get_saved_article_summary(article_id, article_type):
 def get_saved_article_summary_by_exact_title(title):
     """Return bounded metadata for a saved-title lookup."""
 
-    conn = sqlite3.connect("data/nicodic.db")
-    cur = conn.cursor()
-
-    article = _find_saved_article_by_title_lookup(cur, title)
-
-    if not article:
-        conn.close()
+    conn = _open_archive_read_conn()
+    if conn is None:
         return {
             "found": False,
             "article_id": None,
@@ -195,12 +277,52 @@ def get_saved_article_summary_by_exact_title(title):
             "title": None,
             "url": None,
             "created_at": None,
+            "published_at": None,
+            "modified_at": None,
             "response_count": 0,
         }
+    cur = conn.cursor()
 
-    article_id, article_type, saved_title, url, created_at = article
-    response_count = _count_saved_responses(cur, article_id, article_type)
-    conn.close()
+    try:
+        article = _find_saved_article_by_title_lookup(cur, title)
+        if not article:
+            return {
+                "found": False,
+                "article_id": None,
+                "article_type": None,
+                "title": None,
+                "url": None,
+                "created_at": None,
+                "published_at": None,
+                "modified_at": None,
+                "response_count": 0,
+            }
+
+        (
+            article_id,
+            article_type,
+            saved_title,
+            url,
+            created_at,
+            published_at,
+            modified_at,
+        ) = article
+        response_count = _count_saved_responses(cur, article_id, article_type)
+    except sqlite3.OperationalError:
+        return {
+            "found": False,
+            "article_id": None,
+            "article_type": None,
+            "title": None,
+            "url": None,
+            "created_at": None,
+            "published_at": None,
+            "modified_at": None,
+            "response_count": 0,
+        }
+    finally:
+        if conn is not None:
+            conn.close()
 
     return _build_saved_article_summary(
         article_id,
@@ -208,8 +330,18 @@ def get_saved_article_summary_by_exact_title(title):
         saved_title,
         url,
         created_at,
+        published_at,
+        modified_at,
         response_count,
     )
+
+
+def _article_date_line(archive) -> str | None:
+    if archive.get("modified_at"):
+        return f"Last Modified: {archive['modified_at']}"
+    if archive.get("published_at"):
+        return f"Published: {archive['published_at']}"
+    return None
 
 
 def _render_txt_archive(archive):
@@ -219,10 +351,13 @@ def _render_txt_archive(archive):
         f"Type: {archive['article_type']}",
         f"Title: {archive['title']}",
         f"URL: {archive['url']}",
-        f"Created: {archive['created_at']}",
         "",
         "=== RESPONSES ===",
     ]
+
+    date_line = _article_date_line(archive)
+    if date_line is not None:
+        lines.insert(5, date_line)
 
     for (
         res_no,
@@ -235,7 +370,7 @@ def _render_txt_archive(archive):
         posted_at = posted_at or "unknown"
         id_hash = id_hash or "unknown"
 
-        lines.append(f">{res_no} {poster_name} {posted_at} ID: {id_hash}")
+        lines.append(f"{res_no} {poster_name} {posted_at} ID: {id_hash}")
         lines.append(content_text or "")
         lines.append("----")
 
@@ -265,38 +400,45 @@ def get_saved_article_txt(article_id, article_type):
         "content": _render_txt_archive(archive),
         "article_id": article_id,
         "article_type": article_type,
+        "title": archive["title"],
     }
 
 
 def read_article_summaries():
-    conn = sqlite3.connect("data/nicodic.db")
+    conn = _open_archive_read_conn()
+    if conn is None:
+        return []
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        SELECT
-            a.article_id,
-            a.article_type,
-            a.title,
-            a.canonical_url,
-            a.created_at,
-            COUNT(r.id) AS response_count
-        FROM articles AS a
-        LEFT JOIN responses AS r
-            ON a.article_id = r.article_id
-            AND a.article_type = r.article_type
-        GROUP BY
-            a.article_id,
-            a.article_type,
-            a.title,
-            a.canonical_url,
-            a.created_at
-        ORDER BY a.created_at ASC, a.article_id ASC, a.article_type ASC
-        """
-    )
+    try:
+        cur.execute(
+            """
+            SELECT
+                a.article_id,
+                a.article_type,
+                a.title,
+                a.canonical_url,
+                a.created_at,
+                COUNT(r.id) AS response_count
+            FROM articles AS a
+            LEFT JOIN responses AS r
+                ON a.article_id = r.article_id
+                AND a.article_type = r.article_type
+            GROUP BY
+                a.article_id,
+                a.article_type,
+                a.title,
+                a.canonical_url,
+                a.created_at
+            ORDER BY a.created_at ASC, a.article_id ASC, a.article_type ASC
+            """
+        )
 
-    rows = cur.fetchall()
-    conn.close()
+        rows = cur.fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
 
     return [
         {

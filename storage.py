@@ -58,6 +58,28 @@ def _ensure_target_redirect_columns(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def _ensure_article_metadata_columns(conn: sqlite3.Connection) -> None:
+    column_names = _list_column_names(conn, "articles")
+    required_columns = {
+        "published_at": "ALTER TABLE articles ADD COLUMN published_at TEXT",
+        "modified_at": "ALTER TABLE articles ADD COLUMN modified_at TEXT",
+        (
+            "latest_scraped_at"
+        ): "ALTER TABLE articles ADD COLUMN latest_scraped_at TEXT",
+    }
+
+    cur = conn.cursor()
+    changed = False
+    for column_name, statement in required_columns.items():
+        if column_name in column_names:
+            continue
+        cur.execute(statement)
+        changed = True
+
+    if changed:
+        conn.commit()
+
+
 def init_db(db_path: str = DEFAULT_DB_PATH):
     """
     SQLite初期化（テーブル作成）。
@@ -129,6 +151,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     )
     """)
 
+    _ensure_article_metadata_columns(conn)
     _ensure_target_redirect_columns(conn)
 
     cur.execute("""
@@ -153,7 +176,18 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     return conn
 
 
-def save_to_db(conn, article_id, article_type, title, article_url, responses):
+def save_to_db(
+    conn,
+    article_id,
+    article_type,
+    title,
+    article_url,
+    responses,
+    *,
+    published_at: str | None = None,
+    modified_at: str | None = None,
+    latest_scraped_at: str | None = None,
+):
     """
     記事およびレスをSQLiteへ保存。
     INSERT OR IGNORE で重複回避。
@@ -167,6 +201,30 @@ def save_to_db(conn, article_id, article_type, title, article_url, responses):
         (article_id, article_type, title, canonical_url)
         VALUES (?, ?, ?, ?)
     """, (article_id, article_type, title, article_url))
+
+    if latest_scraped_at is None:
+        latest_scraped_at = datetime.now(timezone.utc).isoformat()
+
+    cur.execute(
+        """
+        UPDATE articles
+        SET title = ?,
+            canonical_url = ?,
+            published_at = COALESCE(?, published_at),
+            modified_at = COALESCE(?, modified_at),
+            latest_scraped_at = ?
+        WHERE article_id = ? AND article_type = ?
+        """,
+        (
+            title,
+            article_url,
+            published_at,
+            modified_at,
+            latest_scraped_at,
+            article_id,
+            article_type,
+        ),
+    )
 
     # レス保存
     for r in responses:
