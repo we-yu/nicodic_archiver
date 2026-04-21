@@ -8,9 +8,9 @@ from uuid import uuid4
 from wsgiref.simple_server import make_server
 
 from archive_read import (
+    get_saved_article_export,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
-    get_saved_article_txt,
 )
 from article_resolver import resolve_article_input
 from target_list import register_target_url
@@ -22,6 +22,7 @@ DEFAULT_WEB_ACTION_LOG_PATH = os.environ.get(
     "data/web_action.log",
 )
 DEFAULT_DOWNLOAD_FORMAT = "txt"
+DOWNLOAD_FORMATS = ("txt", "md", "csv")
 
 UI_TEXTS = {
     "page_title": "NicoNicoPedia Archive Checker",
@@ -75,6 +76,8 @@ UI_TEXTS = {
     },
     "format_labels": {
         "txt": "TXT",
+        "md": "Markdown",
+        "csv": "CSV",
     },
 }
 
@@ -93,6 +96,12 @@ def _display_format_name(requested_format: str) -> str:
         requested_format,
         requested_format.upper(),
     )
+
+
+def _normalize_download_format(requested_format: str | None) -> str:
+    if requested_format in DOWNLOAD_FORMATS:
+        return requested_format
+    return DEFAULT_DOWNLOAD_FORMAT
 
 
 def _humanize_title(value: str | None) -> str:
@@ -372,11 +381,11 @@ def _log_web_action(
     return action_id
 
 
-def _build_saved_ui_result(check_result: dict) -> dict:
+def _build_saved_ui_result(check_result: dict, requested_format: str) -> dict:
     return {
         "status": "saved",
         "message": UI_TEXTS["saved_message"].format(
-            format_name=_display_format_name(DEFAULT_DOWNLOAD_FORMAT)
+            format_name=_display_format_name(requested_format)
         ),
         "title": check_result["title"],
         "article_id": check_result["article_id"],
@@ -384,6 +393,7 @@ def _build_saved_ui_result(check_result: dict) -> dict:
         "article_type": check_result["article_type"],
         "response_count": check_result["response_count"],
         "input": check_result["input"],
+        "requested_format": requested_format,
     }
 
 
@@ -410,13 +420,13 @@ def _build_error_ui_result(result: dict, reference_id: str | None) -> dict:
     return error_result
 
 
-def _build_download_query(check_result: dict) -> str:
+def _build_download_query(check_result: dict, requested_format: str) -> str:
     return urlencode(
         {
             "article_id": check_result["article_id"],
             "article_type": check_result["article_type"],
             "resolved_title": check_result["title"],
-            "requested_format": DEFAULT_DOWNLOAD_FORMAT,
+            "requested_format": requested_format,
         }
     )
 
@@ -460,10 +470,17 @@ def _submit_archive_check(
     environ: dict,
 ) -> tuple[dict, str | None]:
     check_result = check_article_status(article_input)
+    requested_format = _normalize_download_format(
+        environ.get("copilot.requested_format")
+    )
 
     if check_result["status"] == "saved":
-        return _build_saved_ui_result(check_result), _build_download_query(
-            check_result
+        return _build_saved_ui_result(
+            check_result,
+            requested_format,
+        ), _build_download_query(
+            check_result,
+            requested_format,
         )
 
     if check_result["status"] == "unsaved":
@@ -553,6 +570,26 @@ def _submit_archive_check(
 
 def _render_result_detail(label: str, value: str) -> str:
     return f"<p><strong>{escape(label)}:</strong> {escape(value)}</p>"
+
+
+def _render_format_selector(selected_format: str) -> str:
+    lines = [
+        '<fieldset class="format-selector">',
+        '<legend>Download format</legend>',
+    ]
+    for download_format in DOWNLOAD_FORMATS:
+        checked = " checked" if download_format == selected_format else ""
+        lines.append(
+            (
+                '<label class="format-option">'
+                f'<input type="radio" name="requested_format" '
+                f'value="{escape(download_format)}"{checked}>'
+                f'{escape(_display_format_name(download_format))}'
+                '</label>'
+            )
+        )
+    lines.append("</fieldset>")
+    return "".join(lines)
 
 
 def _render_message_area(
@@ -653,6 +690,12 @@ def _render_page(
     download_query: str | None = None,
 ) -> bytes:
     safe_input = escape(article_input)
+    selected_format = DEFAULT_DOWNLOAD_FORMAT
+    if result is not None:
+        selected_format = result.get(
+            "requested_format",
+            DEFAULT_DOWNLOAD_FORMAT,
+        )
     format_name = _display_format_name(DEFAULT_DOWNLOAD_FORMAT)
     message_area = _render_message_area(result, download_query)
     html = f"""<!doctype html>
@@ -732,6 +775,25 @@ def _render_page(
       color: var(--muted);
       font-size: 0.95rem;
     }}
+        .format-selector {{
+            margin: 16px 0;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+        }}
+        .format-selector legend {{
+            padding: 0 6px;
+            font-weight: 700;
+        }}
+        .format-option {{
+            display: inline-flex;
+            gap: 6px;
+            align-items: center;
+            font-weight: 400;
+        }}
     .message-area {{
       margin-top: 24px;
       padding: 18px;
@@ -772,6 +834,7 @@ def _render_page(
           placeholder=\"{escape(UI_TEXTS['input_placeholder'])}\"
           autocomplete=\"off\"
         >
+                {_render_format_selector(selected_format)}
         <button type=\"submit\" data-submit-button>
           {escape(UI_TEXTS['submit_label'])}
         </button>
@@ -804,6 +867,20 @@ def _render_page(
         if (busy) {{
           busy.hidden = false;
         }}
+                const selectedFormat = form.querySelector(
+                    "input[name='requested_format']:checked"
+                );
+                const autoDownload = document.querySelector(
+                    "[data-auto-download-form]"
+                );
+                if (selectedFormat && autoDownload) {{
+                    const downloadFormatInput = autoDownload.querySelector(
+                        "input[name='requested_format']"
+                    );
+                    if (downloadFormatInput) {{
+                        downloadFormatInput.value = selectedFormat.value;
+                    }}
+                }}
       }});
     }}
     const autoDownloadForm = document.querySelector(
@@ -841,6 +918,10 @@ def create_app(
         if method == "POST" and path == "/":
             form = _read_post_form(environ)
             article_input = form.get("article_input", "")
+            environ["copilot.requested_format"] = form.get(
+                "requested_format",
+                DEFAULT_DOWNLOAD_FORMAT,
+            )
             result, download_query = _submit_archive_check(
                 article_input,
                 target_db_path,
@@ -862,9 +943,11 @@ def create_app(
             article_id = query.get("article_id", "")
             article_type = query.get("article_type", "")
             article_input = _download_input_value(query)
-            requested_format = query.get(
-                "requested_format",
-                DEFAULT_DOWNLOAD_FORMAT,
+            requested_format = _normalize_download_format(
+                query.get(
+                    "requested_format",
+                    DEFAULT_DOWNLOAD_FORMAT,
+                )
             )
 
             if not article_id or not article_type:
@@ -878,8 +961,12 @@ def create_app(
                 )
                 return [body]
 
-            txt_result = get_saved_article_txt(article_id, article_type)
-            if not txt_result["found"]:
+            export_result = get_saved_article_export(
+                article_id,
+                article_type,
+                requested_format,
+            )
+            if not export_result["found"]:
                 reference_id = _log_web_action(
                     web_action_log_path,
                     environ,
@@ -922,17 +1009,23 @@ def create_app(
                 resolved_article_id=article_id,
                 resolved_article_type=article_type,
             )
-            body = txt_result["content"].encode("utf-8")
+            body = export_result["content"].encode("utf-8")
+            content_type = {
+                "txt": "text/plain; charset=utf-8",
+                "md": "text/markdown; charset=utf-8",
+                "csv": "text/csv; charset=utf-8",
+            }.get(requested_format, "text/plain; charset=utf-8")
             start_response(
                 "200 OK",
                 [
-                    ("Content-Type", "text/plain; charset=utf-8"),
+                    ("Content-Type", content_type),
                     (
                         "Content-Disposition",
                         _build_content_disposition(
                             article_id,
                             article_type,
-                            txt_result.get("title") or query.get("resolved_title"),
+                            export_result.get("title")
+                            or query.get("resolved_title"),
                             requested_format,
                         ),
                     ),

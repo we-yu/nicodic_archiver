@@ -1,7 +1,10 @@
+import csv
+from io import StringIO
 import sqlite3
 from unittest.mock import patch
 
 from archive_read import (
+    get_saved_article_export,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
     get_saved_article_txt,
@@ -101,6 +104,48 @@ def test_get_saved_article_txt_keeps_reply_markers_in_response_body(
     assert "Last Modified: 2025-01-02T00:00:00+09:00" in result["content"]
     assert "1 Alice 2025-01-01 00:00 ID: abc123" in result["content"]
     assert ">>123\nreply body" in result["content"]
+
+
+def test_get_saved_article_export_returns_markdown_for_existing_article(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = get_saved_article_export("12345", "a", "md")
+
+    assert result["found"] is True
+    assert result["format"] == "md"
+    assert "# First Title" in result["content"]
+    assert "## Responses" in result["content"]
+    assert "### 1" in result["content"]
+
+
+def test_get_saved_article_export_returns_csv_rows_with_stable_header(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = get_saved_article_export("12345", "a", "csv")
+    rows = list(csv.DictReader(StringIO(result["content"])))
+
+    assert result["found"] is True
+    assert result["format"] == "csv"
+    assert rows == [
+        {
+            "article_id": "12345",
+            "article_type": "a",
+            "article_title": "First Title",
+            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "res_no": "1",
+            "poster_name": "Alice",
+            "poster_id": "abc123",
+            "posted_at": "2025-01-01 00:00",
+            "content_text": "First response",
+            "content_html": "<p>First response</p>",
+        }
+    ]
 
 
 def test_get_saved_article_txt_returns_missing_shape_for_missing_article(

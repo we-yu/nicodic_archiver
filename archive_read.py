@@ -1,3 +1,5 @@
+import csv
+from io import StringIO
 import sqlite3
 from pathlib import Path
 
@@ -377,9 +379,131 @@ def _render_txt_archive(archive):
     return "\n".join(lines)
 
 
-def get_saved_article_txt(article_id, article_type):
+def _escape_md_response_text(content_text):
+    escaped_lines = []
+    for line in (content_text or "").splitlines():
+        if line.startswith(">"):
+            line = "\\" + line
+        escaped_lines.append(f"{line}  ")
+    return "\n".join(escaped_lines).rstrip()
+
+
+def _render_md_archive(archive):
+    lines = [
+        f"# {archive['title']}",
+        "",
+        f"- ID: {archive['article_id']}",
+        f"- Type: {archive['article_type']}",
+        f"- URL: {archive['url']}",
+    ]
+
+    date_line = _article_date_line(archive)
+    if date_line is not None:
+        lines.append(f"- {date_line}")
+
+    lines.extend(["", "## Responses", ""])
+
+    for response in archive["responses"]:
+        res_no, poster_name, posted_at, id_hash, content_text = response
+        lines.extend(
+            [
+                f"### {res_no}",
+                f"- Name: {poster_name or 'unknown'}",
+                f"- Posted At: {posted_at or 'unknown'}",
+                f"- Poster ID: {id_hash or 'unknown'}",
+                "",
+                _escape_md_response_text(content_text),
+                "",
+            ]
+        )
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _csv_field_names():
+    return [
+        "article_id",
+        "article_type",
+        "article_title",
+        "article_url",
+        "res_no",
+        "poster_name",
+        "poster_id",
+        "posted_at",
+        "content_text",
+        "content_html",
+    ]
+
+
+def _read_archive_csv_rows(article_id, article_type):
+    conn = _open_archive_read_conn()
+    if conn is None:
+        return []
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            """
+            SELECT
+                res_no,
+                poster_name,
+                posted_at,
+                id_hash,
+                content_text,
+                content_html
+            FROM responses
+            WHERE article_id=? AND article_type=?
+            ORDER BY res_no ASC
+            """,
+            (article_id, article_type),
+        )
+        return cur.fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def _render_csv_archive(archive):
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=_csv_field_names())
+    writer.writeheader()
+
+    for row in _read_archive_csv_rows(
+        archive["article_id"],
+        archive["article_type"],
+    ):
+        res_no, poster_name, posted_at, id_hash, content_text, content_html = row
+        writer.writerow(
+            {
+                "article_id": archive["article_id"],
+                "article_type": archive["article_type"],
+                "article_title": archive["title"],
+                "article_url": archive["url"],
+                "res_no": res_no,
+                "poster_name": poster_name or "",
+                "poster_id": id_hash or "",
+                "posted_at": posted_at or "",
+                "content_text": content_text or "",
+                "content_html": content_html or "",
+            }
+        )
+
+    return output.getvalue()
+
+
+def _render_article_export(archive, requested_format):
+    renderers = {
+        "txt": _render_txt_archive,
+        "md": _render_md_archive,
+        "csv": _render_csv_archive,
+    }
+    return renderers.get(requested_format, _render_txt_archive)(archive)
+
+
+def get_saved_article_export(article_id, article_type, requested_format="txt"):
     """
-    Return bounded one-article TXT payload for non-CLI consumers.
+    Return bounded one-article export payload for non-CLI consumers.
 
     Return shape:
       {"found": True, "content": str, "article_id": str, "article_type": str}
@@ -397,11 +521,16 @@ def get_saved_article_txt(article_id, article_type):
 
     return {
         "found": True,
-        "content": _render_txt_archive(archive),
+        "content": _render_article_export(archive, requested_format),
         "article_id": article_id,
         "article_type": article_type,
         "title": archive["title"],
+        "format": requested_format,
     }
+
+
+def get_saved_article_txt(article_id, article_type):
+    return get_saved_article_export(article_id, article_type, "txt")
 
 
 def read_article_summaries():

@@ -404,6 +404,59 @@ def test_application_post_saved_result_autodownloads_without_buttons():
     assert "Download TXT" not in response["body"]
     assert "Add To Target Registry" not in response["body"]
     assert "Matched by" not in response["body"]
+    assert 'name="requested_format" value="txt"' in response["body"]
+
+
+def test_saved_title_input_with_md_selection_keeps_saved_download_flow():
+    result = {
+        "status": "saved",
+        "input": "Foo",
+        "title": "Foo",
+        "matched_by": "exact_title",
+        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_id": "12345",
+        "article_type": "a",
+        "response_count": 42,
+        "message": "Saved archive found for the resolved article.",
+    }
+
+    with patch("web_app.check_article_status", return_value=result):
+        response = _run_wsgi_request(
+            "POST",
+            body="article_input=Foo&requested_format=md",
+        )
+
+    assert response["status"] == "200 OK"
+    assert "Saved article found. Markdown download will start" in (
+        response["body"]
+    )
+    assert 'name="requested_format" value="md"' in response["body"]
+
+
+def test_saved_title_input_with_csv_selection_keeps_saved_download_flow():
+    result = {
+        "status": "saved",
+        "input": "Foo",
+        "title": "Foo",
+        "matched_by": "exact_title",
+        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_id": "12345",
+        "article_type": "a",
+        "response_count": 42,
+        "message": "Saved archive found for the resolved article.",
+    }
+
+    with patch("web_app.check_article_status", return_value=result):
+        response = _run_wsgi_request(
+            "POST",
+            body="article_input=Foo&requested_format=csv",
+        )
+
+    assert response["status"] == "200 OK"
+    assert "Saved article found. CSV download will start automatically." in (
+        response["body"]
+    )
+    assert 'name="requested_format" value="csv"' in response["body"]
 
 
 def test_saved_result_encoded_url_input_autodownload_ok(
@@ -476,6 +529,64 @@ def test_saved_result_decoded_url_input_autodownload_ok(
     assert 'name="article_type" value="a"' in response["body"]
     assert 'name="resolved_title" value="たつきショック"' in response["body"]
     assert response["body"].count('name="article_input"') == 1
+
+
+def test_saved_decoded_url_input_with_csv_selection_keeps_download_flow():
+    result = {
+        "status": "saved",
+        "input": "https://dic.nicovideo.jp/a/たつきショック",
+        "title": "たつきショック",
+        "matched_by": "article_url",
+        "article_url": "https://dic.nicovideo.jp/a/たつきショック",
+        "article_id": "5502789",
+        "article_type": "a",
+        "response_count": 42,
+        "message": "Saved archive found for the resolved article.",
+    }
+
+    with patch("web_app.check_article_status", return_value=result):
+        response = _run_wsgi_request(
+            "POST",
+            body=(
+                "article_input=https%3A%2F%2Fdic.nicovideo.jp%2Fa%2F"
+                "%E3%81%9F%E3%81%A4%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF"
+                "&requested_format=csv"
+            ),
+        )
+
+    assert response["status"] == "200 OK"
+    assert 'name="requested_format" value="csv"' in response["body"]
+
+
+def test_saved_encoded_url_input_with_csv_selection_keeps_download_flow():
+    result = {
+        "status": "saved",
+        "input": (
+            "https://dic.nicovideo.jp/a/"
+            "%E3%81%9F%E3%81%A4%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF"
+        ),
+        "title": "たつきショック",
+        "matched_by": "article_url",
+        "article_url": "https://dic.nicovideo.jp/a/たつきショック",
+        "article_id": "5502789",
+        "article_type": "a",
+        "response_count": 42,
+        "message": "Saved archive found for the resolved article.",
+    }
+
+    with patch("web_app.check_article_status", return_value=result):
+        response = _run_wsgi_request(
+            "POST",
+            body=(
+                "article_input=https%3A%2F%2Fdic.nicovideo.jp%2Fa%2F"
+                "%25E3%2581%259F%25E3%2581%25A4%25E3%2581%258D%25E3%2582%25B7"
+                "%25E3%2583%25A7%25E3%2583%2583%25E3%2582%25AF"
+                "&requested_format=csv"
+            ),
+        )
+
+    assert response["status"] == "200 OK"
+    assert 'name="requested_format" value="csv"' in response["body"]
 
 
 def test_application_post_registration_write_failure_returns_bounded_error():
@@ -606,13 +717,14 @@ def test_download_endpoint_returns_txt_and_logs_download(tmp_path):
     log_path = tmp_path / "web_action.log"
 
     with patch(
-        "web_app.get_saved_article_txt",
+        "web_app.get_saved_article_export",
         return_value={
             "found": True,
             "content": "=== ARTICLE META ===\nTitle: Foo",
             "article_id": "12345",
             "article_type": "a",
             "title": "たつきショック",
+            "format": "txt",
         },
     ):
         response = _run_wsgi_request(
@@ -644,6 +756,38 @@ def test_download_endpoint_returns_txt_and_logs_download(tmp_path):
     assert "action_kind=download" in log_text
     assert "requested_format=txt" in log_text
     assert "result_status=success" in log_text
+
+
+def test_download_endpoint_returns_csv_content_type(tmp_path):
+    log_path = tmp_path / "web_action.log"
+
+    with patch(
+        "web_app.get_saved_article_export",
+        return_value={
+            "found": True,
+            "content": "article_id,res_no\n12345,1\n",
+            "article_id": "12345",
+            "article_type": "a",
+            "title": "たつきショック",
+            "format": "csv",
+        },
+    ):
+        response = _run_wsgi_request(
+            "GET",
+            path="/download",
+            query_string=(
+                "article_id=12345&article_type=a"
+                "&resolved_title=Foo&requested_format=csv"
+            ),
+            app=create_app(web_action_log_path=str(log_path)),
+        )
+
+    assert response["status"] == "200 OK"
+    headers = _header_map(response)
+    assert headers["Content-Type"] == "text/csv; charset=utf-8"
+    assert "filename=\"12345a_article.csv\"" in headers[
+        "Content-Disposition"
+    ]
 
 
 def test_application_post_error_result_is_short_and_logged(tmp_path):
