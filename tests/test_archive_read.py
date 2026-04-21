@@ -4,6 +4,7 @@ from unittest.mock import patch
 from archive_read import (
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
+    get_saved_article_export,
     get_saved_article_txt,
     has_saved_article,
 )
@@ -117,6 +118,41 @@ def test_get_saved_article_txt_returns_missing_shape_for_missing_article(
         "article_id": "99999",
         "article_type": "a",
     }
+
+
+def test_get_saved_article_export_csv_has_stable_header_and_rows(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = get_saved_article_export("12345", "a", "csv")
+
+    assert result["found"] is True
+    text = result["content"]
+    lines = text.splitlines()
+    assert lines[0] == (
+        "article_id,article_type,article_title,article_url,res_no,"
+        "poster_name,poster_id,posted_at,content_text,content_html"
+    )
+    assert len(lines) == 2
+    assert lines[1].startswith("12345,a,First Title,https://dic.nicovideo.jp/a/12345,")
+
+
+def test_get_saved_article_export_md_is_human_readable(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = get_saved_article_export("12345", "a", "md")
+
+    assert result["found"] is True
+    text = result["content"]
+    assert text.startswith("# First Title\n")
+    assert "## Meta" in text
+    assert "## Responses" in text
+    assert "### 1. Alice" in text
 
 
 def test_get_saved_article_summary_returns_bounded_metadata_for_existing_article(

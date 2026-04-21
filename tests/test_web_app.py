@@ -401,6 +401,10 @@ def test_application_post_saved_result_autodownloads_without_buttons():
     assert "Article ID:</strong> 12345" in response["body"]
     assert "Saved response count:</strong> 42" in response["body"]
     assert "data-auto-download-form" in response["body"]
+    assert 'id="download_format"' in response["body"]
+    assert 'option value="txt" selected' in response["body"]
+    assert 'option value="md"' in response["body"]
+    assert 'option value="csv"' in response["body"]
     assert "Download TXT" not in response["body"]
     assert "Add To Target Registry" not in response["body"]
     assert "Matched by" not in response["body"]
@@ -438,6 +442,8 @@ def test_saved_result_encoded_url_input_autodownload_ok(
         response["body"]
     )
     assert "data-auto-download-form" in response["body"]
+    assert 'id="download_format"' in response["body"]
+    assert 'option value="csv"' in response["body"]
     assert 'name="article_id" value="5502789"' in response["body"]
     assert 'name="article_type" value="a"' in response["body"]
     assert 'name="resolved_title" value="たつきショック"' in response["body"]
@@ -472,6 +478,8 @@ def test_saved_result_decoded_url_input_autodownload_ok(
         response["body"]
     )
     assert "data-auto-download-form" in response["body"]
+    assert 'id="download_format"' in response["body"]
+    assert 'option value="csv"' in response["body"]
     assert 'name="article_id" value="5502789"' in response["body"]
     assert 'name="article_type" value="a"' in response["body"]
     assert 'name="resolved_title" value="たつきショック"' in response["body"]
@@ -606,13 +614,14 @@ def test_download_endpoint_returns_txt_and_logs_download(tmp_path):
     log_path = tmp_path / "web_action.log"
 
     with patch(
-        "web_app.get_saved_article_txt",
+        "web_app.get_saved_article_export",
         return_value={
             "found": True,
             "content": "=== ARTICLE META ===\nTitle: Foo",
             "article_id": "12345",
             "article_type": "a",
             "title": "たつきショック",
+            "format": "txt",
         },
     ):
         response = _run_wsgi_request(
@@ -644,6 +653,67 @@ def test_download_endpoint_returns_txt_and_logs_download(tmp_path):
     assert "action_kind=download" in log_text
     assert "requested_format=txt" in log_text
     assert "result_status=success" in log_text
+
+
+def test_download_endpoint_returns_md_content_type(tmp_path):
+    log_path = tmp_path / "web_action.log"
+
+    with patch(
+        "web_app.get_saved_article_export",
+        return_value={
+            "found": True,
+            "content": "# Foo\n",
+            "article_id": "12345",
+            "article_type": "a",
+            "title": "Foo",
+            "format": "md",
+        },
+    ):
+        response = _run_wsgi_request(
+            "GET",
+            path="/download",
+            query_string=(
+                "article_id=12345&article_type=a"
+                "&resolved_title=Foo&requested_format=md"
+            ),
+            app=create_app(web_action_log_path=str(log_path)),
+        )
+
+    assert response["status"] == "200 OK"
+    headers = _header_map(response)
+    assert headers["Content-Type"] == "text/markdown; charset=utf-8"
+    assert headers["Content-Disposition"].endswith(".md")
+
+
+def test_download_endpoint_returns_csv_content_type(tmp_path):
+    log_path = tmp_path / "web_action.log"
+
+    with patch(
+        "web_app.get_saved_article_export",
+        return_value={
+            "found": True,
+            "content": "article_id,res_no\n12345,1\n",
+            "article_id": "12345",
+            "article_type": "a",
+            "title": "たつきショック",
+            "format": "csv",
+        },
+    ):
+        response = _run_wsgi_request(
+            "GET",
+            path="/download",
+            query_string=(
+                "article_id=12345&article_type=a"
+                "&resolved_title=%E3%81%9F%E3%81%A4%E3%81%8D"
+                "%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF&requested_format=csv"
+            ),
+            app=create_app(web_action_log_path=str(log_path)),
+        )
+
+    assert response["status"] == "200 OK"
+    headers = _header_map(response)
+    assert headers["Content-Type"] == "text/csv; charset=utf-8"
+    assert "filename=\"12345a_article.csv\"" in headers["Content-Disposition"]
 
 
 def test_application_post_error_result_is_short_and_logged(tmp_path):

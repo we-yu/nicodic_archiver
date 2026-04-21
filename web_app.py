@@ -10,7 +10,7 @@ from wsgiref.simple_server import make_server
 from archive_read import (
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
-    get_saved_article_txt,
+    get_saved_article_export,
 )
 from article_resolver import resolve_article_input
 from target_list import register_target_url
@@ -22,6 +22,7 @@ DEFAULT_WEB_ACTION_LOG_PATH = os.environ.get(
     "data/web_action.log",
 )
 DEFAULT_DOWNLOAD_FORMAT = "txt"
+SUPPORTED_DOWNLOAD_FORMATS = ("txt", "md", "csv")
 
 UI_TEXTS = {
     "page_title": "NicoNicoPedia Archive Checker",
@@ -75,6 +76,8 @@ UI_TEXTS = {
     },
     "format_labels": {
         "txt": "TXT",
+        "md": "MD",
+        "csv": "CSV",
     },
 }
 
@@ -93,6 +96,13 @@ def _display_format_name(requested_format: str) -> str:
         requested_format,
         requested_format.upper(),
     )
+
+
+def _normalize_download_format(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    if text in SUPPORTED_DOWNLOAD_FORMATS:
+        return text
+    return DEFAULT_DOWNLOAD_FORMAT
 
 
 def _humanize_title(value: str | None) -> str:
@@ -599,6 +609,48 @@ def _render_message_area(
             lines.append(
                 '<iframe name="download_frame" class="download-frame"></iframe>'
             )
+            lines.append('<div class="download-controls">')
+            lines.append(
+                (
+                    '<form method="get" action="/download" '
+                    'target="download_frame" class="download-form">'
+                )
+            )
+            lines.append(
+                (
+                    '<input type="hidden" name="article_id" '
+                    f'value="{escape(result["article_id"])}">'
+                )
+            )
+            lines.append(
+                (
+                    '<input type="hidden" name="article_type" '
+                    f'value="{escape(result["article_type"])}">'
+                )
+            )
+            lines.append(
+                (
+                    '<input type="hidden" name="resolved_title" '
+                    f'value="{escape(result["title"])}">'
+                )
+            )
+            lines.append(
+                '<label class="format-label" for="download_format">Format</label>'
+            )
+            lines.append('<select id="download_format" name="requested_format">')
+            for fmt in SUPPORTED_DOWNLOAD_FORMATS:
+                label = _display_format_name(fmt)
+                selected = " selected" if fmt == DEFAULT_DOWNLOAD_FORMAT else ""
+                lines.append(
+                    (
+                        f'<option value="{escape(fmt)}"{selected}>'
+                        f"{escape(label)}</option>"
+                    )
+                )
+            lines.append("</select>")
+            lines.append('<button type="submit">Download</button>')
+            lines.append("</form>")
+            lines.append("</div>")
             lines.append(
                 (
                     '<form method="get" action="/download" '
@@ -750,10 +802,21 @@ def _render_page(
     .message-area.error .status-line {{ color: var(--error); }}
     .followup-note {{ color: var(--muted); }}
     .download-frame {{ display: none; width: 0; height: 0; border: 0; }}
+    .download-controls {{ margin-top: 14px; }}
+    .download-form {{ display: flex; gap: 10px; align-items: center; }}
+    .download-form select {{
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #fff;
+      font: inherit;
+    }}
+    .format-label {{ font-weight: 700; }}
     @media (max-width: 640px) {{
       main {{ padding: 24px 14px 36px; }}
       .panel {{ padding: 18px; }}
       button {{ width: 100%; }}
+      .download-form {{ flex-direction: column; align-items: stretch; }}
     }}
   </style>
 </head>
@@ -862,9 +925,8 @@ def create_app(
             article_id = query.get("article_id", "")
             article_type = query.get("article_type", "")
             article_input = _download_input_value(query)
-            requested_format = query.get(
-                "requested_format",
-                DEFAULT_DOWNLOAD_FORMAT,
+            requested_format = _normalize_download_format(
+                query.get("requested_format")
             )
 
             if not article_id or not article_type:
@@ -878,8 +940,12 @@ def create_app(
                 )
                 return [body]
 
-            txt_result = get_saved_article_txt(article_id, article_type)
-            if not txt_result["found"]:
+            export_result = get_saved_article_export(
+                article_id,
+                article_type,
+                requested_format,
+            )
+            if not export_result["found"]:
                 reference_id = _log_web_action(
                     web_action_log_path,
                     environ,
@@ -922,17 +988,23 @@ def create_app(
                 resolved_article_id=article_id,
                 resolved_article_type=article_type,
             )
-            body = txt_result["content"].encode("utf-8")
+            body = export_result["content"].encode("utf-8")
+            content_type = "text/plain; charset=utf-8"
+            if requested_format == "md":
+                content_type = "text/markdown; charset=utf-8"
+            if requested_format == "csv":
+                content_type = "text/csv; charset=utf-8"
             start_response(
                 "200 OK",
                 [
-                    ("Content-Type", "text/plain; charset=utf-8"),
+                    ("Content-Type", content_type),
                     (
                         "Content-Disposition",
                         _build_content_disposition(
                             article_id,
                             article_type,
-                            txt_result.get("title") or query.get("resolved_title"),
+                            export_result.get("title")
+                            or query.get("resolved_title"),
                             requested_format,
                         ),
                     ),
