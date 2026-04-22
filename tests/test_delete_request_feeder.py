@@ -10,6 +10,7 @@ from delete_request_feeder import (
     normalize_supported_delete_request_input,
     resolve_internal_article_id_input,
     run_delete_request_feeder,
+    sanitize_delete_request_candidate,
 )
 
 
@@ -71,6 +72,13 @@ def test_classify_rejects_unsupported_delete_request_categories():
     assert classify_delete_request_url("https://dic.nicovideo.jp/a/") == (
         "malformed"
     )
+
+
+def test_sanitize_delete_request_candidate_strips_control_contamination():
+    assert sanitize_delete_request_candidate(
+        " \r\nhttps://dic.nicovideo.jp/a/j-pop%0D%0A\n"
+    ) == "https://dic.nicovideo.jp/a/j-pop"
+    assert sanitize_delete_request_candidate("\r\n\x01\x02") is None
 
 
 def test_resolve_internal_article_id_input_uses_saved_article_row(tmp_path):
@@ -149,6 +157,176 @@ def test_run_delete_request_feeder_updates_state_and_deduplicates(tmp_path):
     assert saved["last_processed_res_no"] == 12
 
 
+def test_run_delete_request_feeder_skips_malformed_candidate_without_abort(
+    tmp_path,
+):
+    state_path = tmp_path / "feed_state.json"
+    responses = [
+        {
+            "res_no": 20,
+            "body": "https://dic.nicovideo.jp/a/%0D%0A",
+        }
+    ]
+
+    with patch(
+        "delete_request_feeder._load_delete_request_responses",
+        return_value=responses,
+    ), patch(
+        "delete_request_feeder.resolve_article_input",
+    ) as resolve_mock, patch(
+        "delete_request_feeder.register_target_url",
+    ) as register_mock:
+        summary = run_delete_request_feeder(
+            "targets.db",
+            archive_db_path="archive.db",
+            state_path=str(state_path),
+        )
+
+    resolve_mock.assert_not_called()
+    register_mock.assert_not_called()
+    assert summary["skipped_invalid_candidates"] == 1
+    assert summary["handed_off_candidates"] == 0
+
+
+def test_run_delete_request_feeder_continues_after_candidate_resolver_failure(
+    tmp_path,
+):
+    state_path = tmp_path / "feed_state.json"
+    responses = [
+        {
+            "res_no": 21,
+            "body": (
+                "https://dic.nicovideo.jp/a/bad-one\n"
+                "https://dic.nicovideo.jp/a/good-one"
+            ),
+        }
+    ]
+
+    with patch(
+        "delete_request_feeder._load_delete_request_responses",
+        return_value=responses,
+    ), patch(
+        "delete_request_feeder.resolve_article_input",
+        side_effect=[ValueError("resolver broke"), {
+            "ok": True,
+            "canonical_target": {
+                "article_url": "https://dic.nicovideo.jp/a/good-one",
+                "article_id": "good-one",
+                "article_type": "a",
+            },
+        }],
+    ), patch(
+        "delete_request_feeder.register_target_url",
+        return_value="added",
+    ) as register_mock:
+        summary = run_delete_request_feeder(
+            "targets.db",
+            archive_db_path="archive.db",
+            state_path=str(state_path),
+        )
+
+    assert summary["skipped_resolution_failures"] == 1
+    assert summary["queued_target_urls"] == [
+        "https://dic.nicovideo.jp/a/good-one"
+    ]
+    assert register_mock.call_count == 1
+
+
+def test_run_delete_request_feeder_continues_after_upstream_fetch_failure(
+    tmp_path,
+):
+    state_path = tmp_path / "feed_state.json"
+    responses = [
+        {
+            "res_no": 22,
+            "body": (
+                "https://dic.nicovideo.jp/a/slow-one\n"
+                "https://dic.nicovideo.jp/a/good-two"
+            ),
+        }
+    ]
+
+    with patch(
+        "delete_request_feeder._load_delete_request_responses",
+        return_value=responses,
+    ), patch(
+        "delete_request_feeder.resolve_article_input",
+        side_effect=[RuntimeError("Failed to fetch upstream (status=500)"), {
+            "ok": True,
+            "canonical_target": {
+                "article_url": "https://dic.nicovideo.jp/a/good-two",
+                "article_id": "good-two",
+                "article_type": "a",
+            },
+        }],
+    ), patch(
+        "delete_request_feeder.register_target_url",
+        return_value="added",
+    ):
+        summary = run_delete_request_feeder(
+            "targets.db",
+            archive_db_path="archive.db",
+            state_path=str(state_path),
+        )
+
+    assert summary["skipped_resolution_failures"] == 1
+    assert summary["processed_candidates"] == 2
+    assert summary["registered_candidates"] == 1
+
+
+def test_run_delete_request_feeder_continues_after_registration_failure(
+    tmp_path,
+):
+    state_path = tmp_path / "feed_state.json"
+    responses = [
+        {
+            "res_no": 23,
+            "body": (
+                "https://dic.nicovideo.jp/a/bad-register\n"
+                "https://dic.nicovideo.jp/a/good-three"
+            ),
+        }
+    ]
+
+    with patch(
+        "delete_request_feeder._load_delete_request_responses",
+        return_value=responses,
+    ), patch(
+        "delete_request_feeder.resolve_article_input",
+        side_effect=[
+            {
+                "ok": True,
+                "canonical_target": {
+                    "article_url": "https://dic.nicovideo.jp/a/bad-register",
+                    "article_id": "bad-register",
+                    "article_type": "a",
+                },
+            },
+            {
+                "ok": True,
+                "canonical_target": {
+                    "article_url": "https://dic.nicovideo.jp/a/good-three",
+                    "article_id": "good-three",
+                    "article_type": "a",
+                },
+            },
+        ],
+    ), patch(
+        "delete_request_feeder.register_target_url",
+        side_effect=[sqlite3.OperationalError("readonly"), "added"],
+    ):
+        summary = run_delete_request_feeder(
+            "targets.db",
+            archive_db_path="archive.db",
+            state_path=str(state_path),
+        )
+
+    assert summary["skipped_registration_failures"] == 1
+    assert summary["queued_target_urls"] == [
+        "https://dic.nicovideo.jp/a/good-three"
+    ]
+
+
 def test_append_batch_targets_appends_only_new_urls_at_tail():
     assert append_batch_targets(
         [
@@ -199,3 +377,6 @@ def test_format_delete_request_feed_inspect_lines_is_stdout_friendly():
     assert lines[0].startswith("ACCEPT ")
     assert lines[1].startswith("REJECT ")
     assert lines[2].startswith("SUMMARY ")
+    assert "processed_candidates=0" in lines[2]
+    assert "skipped_invalid_candidates=0" in lines[2]
+    assert "skipped_registration_failures=0" in lines[2]
