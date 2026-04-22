@@ -9,6 +9,7 @@ from delete_request_feeder import (
     format_delete_request_feed_inspect_lines,
     normalize_supported_delete_request_input,
     resolve_internal_article_id_input,
+    sanitize_delete_request_candidate,
     run_delete_request_feeder,
 )
 
@@ -147,6 +148,202 @@ def test_run_delete_request_feeder_updates_state_and_deduplicates(tmp_path):
     assert register_mock.call_count == 1
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     assert saved["last_processed_res_no"] == 12
+
+
+def test_sanitize_delete_request_candidate_strips_crlf_and_controls():
+    assert sanitize_delete_request_candidate("  a%0D%0A\nb\r\t") == "ab"
+    assert sanitize_delete_request_candidate(" \n\r ") is None
+
+
+def test_run_delete_request_feeder_skips_malformed_candidate_after_sanitize(tmp_path):
+    state_path = tmp_path / "feed_state.json"
+    scan_result = {
+        "candidates": [
+            {
+                "res_no": 1,
+                "raw_url": "https://dic.nicovideo.jp/a/x",
+                "category": "article_direct",
+                "accepted": True,
+                "normalized_input": "\r\n\t",
+            },
+            {
+                "res_no": 1,
+                "raw_url": "https://dic.nicovideo.jp/a/j-pop",
+                "category": "article_direct",
+                "accepted": True,
+                "normalized_input": "https://dic.nicovideo.jp/a/j-pop",
+            },
+        ],
+        "summary": {
+            "checked_from_res_no": 1,
+            "checked_to_res_no": 1,
+            "responses_checked": 1,
+            "extracted_candidates": 2,
+            "accepted_candidates": 2,
+            "handed_off_candidates": 0,
+            "updated_last_processed_res_no": 1,
+            "queued_target_urls": [],
+            "added_targets": 0,
+            "reactivated_targets": 0,
+            "duplicate_targets": 0,
+            "invalid_targets": 0,
+        },
+    }
+
+    with patch(
+        "delete_request_feeder.scan_delete_request_feed",
+        return_value=scan_result,
+    ), patch(
+        "delete_request_feeder.resolve_article_input",
+        return_value={
+            "ok": True,
+            "canonical_target": {
+                "article_url": "https://dic.nicovideo.jp/a/j-pop",
+                "article_id": "j-pop",
+                "article_type": "a",
+            },
+        },
+    ), patch(
+        "delete_request_feeder.register_target_url",
+        return_value="added",
+    ) as register_mock:
+        summary = run_delete_request_feeder(
+            "targets.db",
+            archive_db_path="archive.db",
+            state_path=str(state_path),
+        )
+
+    assert register_mock.call_count == 1
+    assert summary["skipped_invalid_candidates"] == 1
+
+
+def test_run_delete_request_feeder_contains_candidate_level_resolver_failure(tmp_path):
+    state_path = tmp_path / "feed_state.json"
+    scan_result = {
+        "candidates": [
+            {
+                "res_no": 1,
+                "raw_url": "https://dic.nicovideo.jp/a/bad",
+                "category": "article_direct",
+                "accepted": True,
+                "normalized_input": "https://dic.nicovideo.jp/a/bad",
+            },
+            {
+                "res_no": 1,
+                "raw_url": "https://dic.nicovideo.jp/a/good",
+                "category": "article_direct",
+                "accepted": True,
+                "normalized_input": "https://dic.nicovideo.jp/a/good",
+            },
+        ],
+        "summary": {
+            "checked_from_res_no": 1,
+            "checked_to_res_no": 1,
+            "responses_checked": 1,
+            "extracted_candidates": 2,
+            "accepted_candidates": 2,
+            "handed_off_candidates": 0,
+            "updated_last_processed_res_no": 1,
+            "queued_target_urls": [],
+            "added_targets": 0,
+            "reactivated_targets": 0,
+            "duplicate_targets": 0,
+            "invalid_targets": 0,
+        },
+    }
+
+    def resolve_side_effect(value):
+        if value.endswith("/bad"):
+            raise RuntimeError("temporary fetch failure")
+        return {
+            "ok": True,
+            "canonical_target": {
+                "article_url": "https://dic.nicovideo.jp/a/good",
+                "article_id": "good",
+                "article_type": "a",
+            },
+        }
+
+    with patch(
+        "delete_request_feeder.scan_delete_request_feed",
+        return_value=scan_result,
+    ), patch(
+        "delete_request_feeder.resolve_article_input",
+        side_effect=resolve_side_effect,
+    ), patch(
+        "delete_request_feeder.register_target_url",
+        return_value="added",
+    ) as register_mock:
+        summary = run_delete_request_feeder(
+            "targets.db",
+            archive_db_path="archive.db",
+            state_path=str(state_path),
+        )
+
+    assert register_mock.call_count == 1
+    assert summary["skipped_resolution_failures"] == 1
+
+
+def test_run_delete_request_feeder_contains_candidate_level_upstream_failure(tmp_path):
+    state_path = tmp_path / "feed_state.json"
+    scan_result = {
+        "candidates": [
+            {
+                "res_no": 1,
+                "raw_url": "https://dic.nicovideo.jp/a/j-pop",
+                "category": "article_direct",
+                "accepted": True,
+                "normalized_input": "https://dic.nicovideo.jp/a/j-pop",
+            },
+            {
+                "res_no": 1,
+                "raw_url": "https://dic.nicovideo.jp/a/good",
+                "category": "article_direct",
+                "accepted": True,
+                "normalized_input": "https://dic.nicovideo.jp/a/good",
+            },
+        ],
+        "summary": {
+            "checked_from_res_no": 1,
+            "checked_to_res_no": 1,
+            "responses_checked": 1,
+            "extracted_candidates": 2,
+            "accepted_candidates": 2,
+            "handed_off_candidates": 0,
+            "updated_last_processed_res_no": 1,
+            "queued_target_urls": [],
+            "added_targets": 0,
+            "reactivated_targets": 0,
+            "duplicate_targets": 0,
+            "invalid_targets": 0,
+        },
+    }
+
+    with patch(
+        "delete_request_feeder.scan_delete_request_feed",
+        return_value=scan_result,
+    ), patch(
+        "delete_request_feeder.resolve_article_input",
+        return_value={
+            "ok": True,
+            "canonical_target": {
+                "article_url": "https://dic.nicovideo.jp/a/good",
+                "article_id": "good",
+                "article_type": "a",
+            },
+        },
+    ), patch(
+        "delete_request_feeder.register_target_url",
+        side_effect=[RuntimeError("500"), "added"],
+    ) as register_mock:
+        summary = run_delete_request_feeder(
+            "targets.db",
+            archive_db_path="archive.db",
+            state_path=str(state_path),
+        )
+
+    assert register_mock.call_count == 2
+    assert summary["skipped_upstream_failures"] == 1
 
 
 def test_append_batch_targets_appends_only_new_urls_at_tail():

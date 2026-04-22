@@ -27,6 +27,8 @@ SUPPORTED_DELETE_REQUEST_URL_CATEGORIES = {
 
 _URL_PATTERN = re.compile(r"https?://dic\.nicovideo\.jp/[^\s<>'\"）】]+")
 _TRAILING_URL_CHARS = ".,)]}>】）"
+_PCT_ENCODED_CRLF = re.compile(r"%(?:0d|0a)", re.IGNORECASE)
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def extract_delete_request_urls(text: str) -> list[str]:
@@ -34,6 +36,19 @@ def extract_delete_request_urls(text: str) -> list[str]:
     for raw_url in _URL_PATTERN.findall(text or ""):
         urls.append(raw_url.rstrip(_TRAILING_URL_CHARS))
     return urls
+
+
+def sanitize_delete_request_candidate(value: str | None) -> str | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+
+    text = _PCT_ENCODED_CRLF.sub("", text)
+    text = text.replace("\r", "").replace("\n", "")
+    text = _CONTROL_CHARS.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text if text else None
 
 
 def classify_delete_request_url(url: str) -> str:
@@ -242,6 +257,7 @@ def scan_delete_request_feed(
                     ),
                 )
 
+            normalized_input = sanitize_delete_request_candidate(normalized_input)
             accepted = normalized_input is not None
             if accepted:
                 accepted_candidates += 1
@@ -304,29 +320,45 @@ def run_delete_request_feeder(
     summary = dict(scan_result["summary"])
 
     handed_off_candidates = 0
+    processed_candidates = 0
     added_targets = 0
     reactivated_targets = 0
     duplicate_targets = 0
     invalid_targets = 0
+    skipped_invalid_candidates = 0
+    skipped_resolution_failures = 0
+    skipped_upstream_failures = 0
     queued_target_urls: list[str] = []
     seen_inputs: set[str] = set()
 
     for candidate in scan_result["candidates"]:
-        normalized_input = candidate["normalized_input"]
-        if not normalized_input:
+        normalized_input = sanitize_delete_request_candidate(
+            candidate.get("normalized_input")
+        )
+        if normalized_input is None:
+            skipped_invalid_candidates += 1
             continue
         if normalized_input in seen_inputs:
             continue
         seen_inputs.add(normalized_input)
 
         handed_off_candidates += 1
-        resolution = resolve_article_input(normalized_input)
+        try:
+            resolution = resolve_article_input(normalized_input)
+        except Exception:
+            skipped_resolution_failures += 1
+            continue
         if not resolution["ok"]:
             invalid_targets += 1
             continue
 
         canonical_url = resolution["canonical_target"]["article_url"]
-        register_status = register_target_url(canonical_url, target_db_path)
+        try:
+            register_status = register_target_url(canonical_url, target_db_path)
+        except Exception:
+            skipped_upstream_failures += 1
+            continue
+        processed_candidates += 1
 
         if register_status == "added":
             added_targets += 1
@@ -343,11 +375,15 @@ def run_delete_request_feeder(
         invalid_targets += 1
 
     summary["handed_off_candidates"] = handed_off_candidates
+    summary["processed_candidates"] = processed_candidates
     summary["queued_target_urls"] = queued_target_urls
     summary["added_targets"] = added_targets
     summary["reactivated_targets"] = reactivated_targets
     summary["duplicate_targets"] = duplicate_targets
     summary["invalid_targets"] = invalid_targets
+    summary["skipped_invalid_candidates"] = skipped_invalid_candidates
+    summary["skipped_resolution_failures"] = skipped_resolution_failures
+    summary["skipped_upstream_failures"] = skipped_upstream_failures
 
     if summary["checked_to_res_no"] is not None:
         save_last_processed_res_no(
@@ -373,6 +409,19 @@ def format_delete_request_feed_summary(summary: dict) -> str:
             f"responses_checked={summary.get('responses_checked', 0)}",
             f"extracted_candidates={summary.get('extracted_candidates', 0)}",
             f"handed_off_candidates={summary.get('handed_off_candidates', 0)}",
+            f"processed_candidates={summary.get('processed_candidates', 0)}",
+            (
+                "skipped_invalid_candidates="
+                f"{summary.get('skipped_invalid_candidates', 0)}"
+            ),
+            (
+                "skipped_resolution_failures="
+                f"{summary.get('skipped_resolution_failures', 0)}"
+            ),
+            (
+                "skipped_upstream_failures="
+                f"{summary.get('skipped_upstream_failures', 0)}"
+            ),
             (
                 "updated_last_processed_res_no="
                 f"{summary.get('updated_last_processed_res_no', 0)}"
