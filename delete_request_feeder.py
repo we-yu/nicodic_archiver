@@ -27,6 +27,7 @@ SUPPORTED_DELETE_REQUEST_URL_CATEGORIES = {
 
 _URL_PATTERN = re.compile(r"https?://dic\.nicovideo\.jp/[^\s<>'\"）】]+")
 _TRAILING_URL_CHARS = ".,)]}>】）"
+_CONTROL_ESCAPE_PATTERN = re.compile(r"(?i)%(?:0[0-9a-f]|1[0-9a-f]|7f)")
 
 
 def extract_delete_request_urls(text: str) -> list[str]:
@@ -34,6 +35,25 @@ def extract_delete_request_urls(text: str) -> list[str]:
     for raw_url in _URL_PATTERN.findall(text or ""):
         urls.append(raw_url.rstrip(_TRAILING_URL_CHARS))
     return urls
+
+
+def sanitize_delete_request_candidate(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    cleaned = value.strip()
+    cleaned = "".join(
+        character for character in cleaned if character >= " " and character != "\x7f"
+    )
+    cleaned = _CONTROL_ESCAPE_PATTERN.sub("", cleaned).strip()
+    if not cleaned:
+        return None
+
+    if _looks_like_url_input(cleaned):
+        if classify_delete_request_url(cleaned) == "malformed":
+            return None
+
+    return cleaned
 
 
 def classify_delete_request_url(url: str) -> str:
@@ -222,6 +242,8 @@ def scan_delete_request_feed(
 
     candidates: list[dict] = []
     accepted_candidates = 0
+    skipped_invalid_candidates = 0
+    skipped_resolution_failures = 0
     max_res_no = last_processed_res_no
 
     for response in responses:
@@ -230,17 +252,30 @@ def scan_delete_request_feed(
         for raw_url in extract_delete_request_urls(response["body"]):
             category = classify_delete_request_url(raw_url)
             normalized_input = None
+            failure_kind = None
             if category in SUPPORTED_DELETE_REQUEST_URL_CATEGORIES:
-                normalized_input = normalize_supported_delete_request_input(
-                    raw_url,
-                    category,
-                    article_id_resolver=(
-                        lambda value: resolve_internal_article_id_input(
-                            value,
-                            archive_db_path=archive_db_path,
-                        )
-                    ),
-                )
+                try:
+                    normalized_input = normalize_supported_delete_request_input(
+                        raw_url,
+                        category,
+                        article_id_resolver=(
+                            lambda value: resolve_internal_article_id_input(
+                                value,
+                                archive_db_path=archive_db_path,
+                            )
+                        ),
+                    )
+                except Exception:
+                    failure_kind = "resolution_failure"
+                    skipped_resolution_failures += 1
+
+            normalized_input = sanitize_delete_request_candidate(
+                normalized_input,
+            )
+            if category in SUPPORTED_DELETE_REQUEST_URL_CATEGORIES:
+                if normalized_input is None and failure_kind is None:
+                    failure_kind = "invalid_candidate"
+                    skipped_invalid_candidates += 1
 
             accepted = normalized_input is not None
             if accepted:
@@ -253,6 +288,7 @@ def scan_delete_request_feed(
                     "category": category,
                     "accepted": accepted,
                     "normalized_input": normalized_input,
+                    "failure_kind": failure_kind,
                 }
             )
 
@@ -267,9 +303,14 @@ def scan_delete_request_feed(
             "responses_checked": len(responses),
             "extracted_candidates": len(candidates),
             "accepted_candidates": accepted_candidates,
+            "skipped_invalid_candidates": skipped_invalid_candidates,
+            "skipped_resolution_failures": skipped_resolution_failures,
+            "skipped_registration_failures": 0,
             "handed_off_candidates": 0,
             "updated_last_processed_res_no": updated_last_processed_res_no,
             "queued_target_urls": [],
+            "processed_candidates": 0,
+            "registered_candidates": 0,
             "added_targets": 0,
             "reactivated_targets": 0,
             "duplicate_targets": 0,
@@ -304,6 +345,12 @@ def run_delete_request_feeder(
     summary = dict(scan_result["summary"])
 
     handed_off_candidates = 0
+    skipped_invalid_candidates = summary.get("skipped_invalid_candidates", 0)
+    skipped_resolution_failures = summary.get(
+        "skipped_resolution_failures",
+        0,
+    )
+    skipped_registration_failures = 0
     added_targets = 0
     reactivated_targets = 0
     duplicate_targets = 0
@@ -312,21 +359,35 @@ def run_delete_request_feeder(
     seen_inputs: set[str] = set()
 
     for candidate in scan_result["candidates"]:
-        normalized_input = candidate["normalized_input"]
+        normalized_input = sanitize_delete_request_candidate(
+            candidate["normalized_input"],
+        )
         if not normalized_input:
+            if candidate.get("accepted"):
+                skipped_invalid_candidates += 1
             continue
         if normalized_input in seen_inputs:
             continue
         seen_inputs.add(normalized_input)
 
         handed_off_candidates += 1
-        resolution = resolve_article_input(normalized_input)
+        try:
+            resolution = resolve_article_input(normalized_input)
+        except Exception:
+            skipped_resolution_failures += 1
+            continue
+
         if not resolution["ok"]:
+            skipped_invalid_candidates += 1
             invalid_targets += 1
             continue
 
         canonical_url = resolution["canonical_target"]["article_url"]
-        register_status = register_target_url(canonical_url, target_db_path)
+        try:
+            register_status = register_target_url(canonical_url, target_db_path)
+        except Exception:
+            skipped_registration_failures += 1
+            continue
 
         if register_status == "added":
             added_targets += 1
@@ -343,11 +404,16 @@ def run_delete_request_feeder(
         invalid_targets += 1
 
     summary["handed_off_candidates"] = handed_off_candidates
+    summary["processed_candidates"] = handed_off_candidates
     summary["queued_target_urls"] = queued_target_urls
+    summary["registered_candidates"] = added_targets + reactivated_targets
     summary["added_targets"] = added_targets
     summary["reactivated_targets"] = reactivated_targets
     summary["duplicate_targets"] = duplicate_targets
     summary["invalid_targets"] = invalid_targets
+    summary["skipped_invalid_candidates"] = skipped_invalid_candidates
+    summary["skipped_resolution_failures"] = skipped_resolution_failures
+    summary["skipped_registration_failures"] = skipped_registration_failures
 
     if summary["checked_to_res_no"] is not None:
         save_last_processed_res_no(
@@ -372,7 +438,21 @@ def format_delete_request_feed_summary(summary: dict) -> str:
             f"checked_range={checked_range}",
             f"responses_checked={summary.get('responses_checked', 0)}",
             f"extracted_candidates={summary.get('extracted_candidates', 0)}",
+            f"processed_candidates={summary.get('processed_candidates', 0)}",
+            f"registered_candidates={summary.get('registered_candidates', 0)}",
             f"handed_off_candidates={summary.get('handed_off_candidates', 0)}",
+            (
+                "skipped_invalid_candidates="
+                f"{summary.get('skipped_invalid_candidates', 0)}"
+            ),
+            (
+                "skipped_resolution_failures="
+                f"{summary.get('skipped_resolution_failures', 0)}"
+            ),
+            (
+                "skipped_registration_failures="
+                f"{summary.get('skipped_registration_failures', 0)}"
+            ),
             (
                 "updated_last_processed_res_no="
                 f"{summary.get('updated_last_processed_res_no', 0)}"
@@ -416,6 +496,11 @@ def _resolve_archive_db_path(archive_db_path: str | None) -> str:
 
 def _split_path_parts(path: str) -> list[str]:
     return [part for part in path.split("/") if part]
+
+
+def _looks_like_url_input(value: str) -> bool:
+    parsed = urlparse(value)
+    return bool(parsed.scheme or parsed.netloc)
 
 
 def _can_open_archive_db(archive_db_path: str) -> bool:
