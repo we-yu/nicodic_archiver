@@ -3,6 +3,7 @@ from operator_cli import (
     inspect_target_for_operator,
     list_archives_for_operator,
     list_targets_for_operator,
+    show_scraped_res_for_operator,
 )
 from storage import init_db, save_to_db
 from target_list import deactivate_target, register_target_url
@@ -125,3 +126,117 @@ def test_export_archive_for_operator_writes_requested_output_file(
     content = output_path.read_text(encoding="utf-8")
     assert "# Archive Title" in content
     assert "### Response 1" in content
+
+
+def _seed_article(tmp_path, article_id="12345", article_type="a"):
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            article_id,
+            article_type,
+            "管理者向けテスト記事",
+            f"https://dic.nicovideo.jp/{article_type}/{article_id}",
+            [
+                {
+                    "res_no": 1,
+                    "id_hash": "abc",
+                    "poster_name": "User",
+                    "posted_at": "2025-01-01 00:00",
+                    "content": "test content",
+                    "content_html": "<p>test content</p>",
+                }
+            ],
+        )
+    finally:
+        conn.close()
+
+
+def test_show_scraped_res_for_operator_exports_by_title(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    _seed_article(tmp_path)
+
+    result = show_scraped_res_for_operator(
+        "管理者向けテスト記事", requested_format="txt"
+    )
+
+    assert result is True
+    out, err = capsys.readouterr()
+    assert "=== ARTICLE META ===" in out
+    assert "ok:" in err
+    assert "12345a_" in err
+    assert ".txt" in err
+
+
+def test_show_scraped_res_for_operator_exports_by_id(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    _seed_article(tmp_path)
+
+    result = show_scraped_res_for_operator("12345", is_id=True)
+
+    assert result is True
+    out, err = capsys.readouterr()
+    assert "=== ARTICLE META ===" in out
+    assert "ok:" in err
+
+
+def test_show_scraped_res_for_operator_exports_md_format(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    _seed_article(tmp_path)
+
+    result = show_scraped_res_for_operator(
+        "管理者向けテスト記事", requested_format="md"
+    )
+
+    assert result is True
+    out, err = capsys.readouterr()
+    assert "# 管理者向けテスト記事" in out
+    assert ".md" in err
+
+
+def test_show_scraped_res_for_operator_exports_csv_format(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    _seed_article(tmp_path)
+
+    result = show_scraped_res_for_operator(
+        "管理者向けテスト記事", requested_format="csv"
+    )
+
+    assert result is True
+    out, err = capsys.readouterr()
+    assert "article_id" in out
+    assert ".csv" in err
+
+
+def test_show_scraped_res_for_operator_returns_false_for_missing_title(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+
+    result = show_scraped_res_for_operator("存在しない記事")
+
+    assert result is False
+    _, err = capsys.readouterr()
+    assert "not found" in err
+
+
+def test_show_scraped_res_for_operator_returns_false_for_missing_id(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+
+    result = show_scraped_res_for_operator("99999", is_id=True)
+
+    assert result is False
+    _, err = capsys.readouterr()
+    assert "not found" in err

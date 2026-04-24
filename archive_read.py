@@ -1,4 +1,5 @@
 import csv
+from datetime import datetime, timezone
 from io import StringIO
 import sqlite3
 from pathlib import Path
@@ -587,3 +588,168 @@ def read_article_summaries():
             response_count,
         ) in rows
     ]
+
+
+def get_saved_article_summary_by_id(article_id):
+    """Return bounded metadata for the first saved article matching article_id."""
+
+    conn = _open_archive_read_conn()
+    _not_found = {
+        "found": False,
+        "article_id": article_id,
+        "article_type": None,
+        "title": None,
+        "url": None,
+        "created_at": None,
+        "published_at": None,
+        "modified_at": None,
+        "response_count": 0,
+    }
+    if conn is None:
+        return _not_found
+    cur = conn.cursor()
+
+    try:
+        select_columns = _title_lookup_select_columns(conn)
+        cur.execute(
+            f"""
+            SELECT {select_columns}
+            FROM articles
+            WHERE article_id=?
+            ORDER BY created_at ASC, article_type ASC
+            LIMIT 1
+            """,
+            (article_id,),
+        )
+        article = cur.fetchone()
+        if not article:
+            return _not_found
+
+        (
+            found_id,
+            article_type,
+            title,
+            url,
+            created_at,
+            published_at,
+            modified_at,
+        ) = article
+        response_count = _count_saved_responses(
+            cur, found_id, article_type
+        )
+    except sqlite3.OperationalError:
+        return _not_found
+    finally:
+        conn.close()
+
+    return _build_saved_article_summary(
+        found_id,
+        article_type,
+        title,
+        url,
+        created_at,
+        published_at,
+        modified_at,
+        response_count,
+    )
+
+
+def list_registered_articles():
+    """Return per-article summary list for registered article table view."""
+
+    conn = _open_archive_read_conn()
+    if conn is None:
+        return []
+    cur = conn.cursor()
+
+    try:
+        cur.execute("PRAGMA table_info(articles)")
+        column_names = {row[1] for row in cur.fetchall()}
+        has_scraped_at = "latest_scraped_at" in column_names
+
+        if has_scraped_at:
+            scraped_at_sel = (
+                ", a.latest_scraped_at AS last_scraped_at"
+            )
+            scraped_at_grp = ", a.latest_scraped_at"
+        else:
+            scraped_at_sel = ", NULL AS last_scraped_at"
+            scraped_at_grp = ""
+
+        cur.execute(
+            f"""
+            SELECT
+                a.article_id,
+                a.article_type,
+                a.title,
+                a.canonical_url,
+                COUNT(r.id) AS saved_response_count,
+                MAX(r.res_no) AS latest_scraped_max_res_no
+                {scraped_at_sel}
+            FROM articles AS a
+            LEFT JOIN responses AS r
+                ON a.article_id = r.article_id
+                AND a.article_type = r.article_type
+            GROUP BY
+                a.article_id,
+                a.article_type,
+                a.title,
+                a.canonical_url
+                {scraped_at_grp}
+            ORDER BY
+                a.created_at ASC, a.article_id ASC, a.article_type ASC
+            """
+        )
+        rows = cur.fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+    return [
+        {
+            "article_type": article_type,
+            "title": title or "",
+            "canonical_url": canonical_url or "",
+            "saved_response_count": saved_response_count,
+            "latest_scraped_max_res_no": latest_scraped_max_res_no,
+            "last_scraped_at": last_scraped_at,
+        }
+        for (
+            article_id,
+            article_type,
+            title,
+            canonical_url,
+            saved_response_count,
+            latest_scraped_max_res_no,
+            last_scraped_at,
+        ) in rows
+    ]
+
+
+def write_scrape_targets_txt(data_dir="data"):
+    """Write a human-readable targets snapshot to scrape_targets.txt."""
+
+    articles = list_registered_articles()
+    ts = datetime.now(timezone.utc).isoformat()
+    lines = [
+        "# scrape_targets: registered article snapshot",
+        f"# generated_at: {ts}",
+        f"# count: {len(articles)}",
+        "",
+    ]
+    for row in articles:
+        last_scraped = row.get("last_scraped_at") or "-"
+        max_res = row["latest_scraped_max_res_no"]
+        lines.append(
+            f"type={row['article_type']}"
+            f" | responses={row['saved_response_count']}"
+            f" | max_res_no={max_res if max_res is not None else '-'}"
+            f" | last_scraped={last_scraped}"
+            f" | title={row['title']}"
+        )
+    lines.append("")
+
+    output_path = Path(data_dir) / "scrape_targets.txt"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines), encoding="utf-8")

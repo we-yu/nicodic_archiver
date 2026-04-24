@@ -98,15 +98,16 @@ def test_run_scrape_respects_existing_fetch_metadata_patch_seam():
                     "orchestrator.collect_all_responses",
                     return_value=([], False, False),
                 ):
-                    with patch("orchestrator.save_json"):
-                        conn = MagicMock()
+                    conn = MagicMock()
+                    with patch(
+                        "orchestrator.init_db",
+                        return_value=conn,
+                    ):
                         with patch(
-                            "orchestrator.init_db",
-                            return_value=conn,
-                        ):
-                            with patch("orchestrator.save_to_db") as mock_save_db:
-                                with patch("orchestrator.print"):
-                                    run_scrape(article_url)
+                            "orchestrator.save_to_db"
+                        ) as mock_save_db:
+                            with patch("orchestrator.print"):
+                                run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     assert mock_save_db.call_args.kwargs == {}
@@ -136,20 +137,58 @@ def test_run_scrape_passes_metadata_kwargs_only_when_present():
                     "orchestrator.collect_all_responses",
                     return_value=([], False, False),
                 ):
-                    with patch("orchestrator.save_json"):
-                        conn = MagicMock()
+                    conn = MagicMock()
+                    with patch(
+                        "orchestrator.init_db",
+                        return_value=conn,
+                    ):
                         with patch(
-                            "orchestrator.init_db",
-                            return_value=conn,
-                        ):
-                            with patch("orchestrator.save_to_db") as mock_save_db:
-                                with patch("orchestrator.print"):
-                                    run_scrape(article_url)
+                            "orchestrator.save_to_db"
+                        ) as mock_save_db:
+                            with patch("orchestrator.print"):
+                                run_scrape(article_url)
 
     assert mock_save_db.call_args.kwargs == {
         "published_at": "2024-01-02T03:04:05+09:00",
         "modified_at": "2025-02-03T04:05:06+09:00",
     }
+
+
+def test_run_scrape_does_not_write_json_artifact(tmp_path, monkeypatch):
+    """run_scrape must not create any JSON file (JSON always-on write off)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    article_url = "https://dic.nicovideo.jp/a/12345"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=ArticleMetadataResult("12345", "a", "Foo"),
+    ):
+        with patch(
+            "orchestrator.build_bbs_base_url",
+            return_value="https://dic.nicovideo.jp/b/a/12345/",
+        ):
+            with patch(
+                "orchestrator.get_max_saved_res_no", return_value=None
+            ):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=(
+                        [{"res_no": 1, "id_hash": None,
+                          "poster_name": None, "posted_at": None,
+                          "content": "hi", "content_html": None}],
+                        False,
+                        False,
+                    ),
+                ):
+                    conn = MagicMock()
+                    with patch("orchestrator.init_db", return_value=conn):
+                        with patch("orchestrator.save_to_db"):
+                            with patch("orchestrator.print"):
+                                run_scrape(article_url)
+
+    json_files = list(tmp_path.rglob("*.json"))
+    assert json_files == []
 
 
 def test_fetch_article_metadata_raises_when_article_meta_missing():
@@ -436,15 +475,14 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
                     "orchestrator.collect_all_responses",
                     return_value=([{"res_no": 1}], False, False),
                 ) as mock_collect:
-                    with patch("orchestrator.save_json") as mock_save_json:
-                        conn = MagicMock()
-                        with patch(
-                            "orchestrator.init_db",
-                            return_value=conn,
-                        ) as mock_init:
-                            with patch("orchestrator.save_to_db") as mock_save_db:
-                                with patch("orchestrator.print") as mock_print:
-                                    ok = run_scrape(article_url)
+                    conn = MagicMock()
+                    with patch(
+                        "orchestrator.init_db",
+                        return_value=conn,
+                    ) as mock_init:
+                        with patch("orchestrator.save_to_db") as mock_save_db:
+                            with patch("orchestrator.print") as mock_print:
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -452,15 +490,6 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
         "https://dic.nicovideo.jp/b/a/12345/",
         response_cap=None,
         progress_reporter=None,
-    )
-
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        [{"res_no": 1}],
-        announce=True,
     )
 
     mock_init.assert_called_once_with()
@@ -502,15 +531,13 @@ def test_run_scrape_article_not_found_skips_save_path():
         side_effect=ArticleNotFoundError(f"Article not found: {article_url}"),
     ) as mock_meta:
         with patch("orchestrator.collect_all_responses") as mock_collect:
-            with patch("orchestrator.save_json") as mock_save_json:
-                with patch("orchestrator.init_db") as mock_init:
-                    with patch("orchestrator.save_to_db") as mock_save_db:
-                        with patch("orchestrator.print") as mock_print:
-                            ok = run_scrape(article_url)
+            with patch("orchestrator.init_db") as mock_init:
+                with patch("orchestrator.save_to_db") as mock_save_db:
+                    with patch("orchestrator.print") as mock_print:
+                        ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_collect.assert_not_called()
-    mock_save_json.assert_not_called()
     mock_init.assert_not_called()
     mock_save_db.assert_not_called()
     mock_print.assert_any_call(f"Article not found: {article_url}")
@@ -530,15 +557,13 @@ def test_run_scrape_redirect_article_handoffs_without_archive_migration():
         ),
     ) as mock_meta:
         with patch("orchestrator.collect_all_responses") as mock_collect:
-            with patch("orchestrator.save_json") as mock_save_json:
-                with patch("orchestrator.init_db") as mock_init:
-                    with patch("orchestrator.save_to_db") as mock_save_db:
-                        with patch("orchestrator.print") as mock_print:
-                            ok = run_scrape(article_url)
+            with patch("orchestrator.init_db") as mock_init:
+                with patch("orchestrator.save_to_db") as mock_save_db:
+                    with patch("orchestrator.print") as mock_print:
+                        ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_collect.assert_not_called()
-    mock_save_json.assert_not_called()
     mock_init.assert_not_called()
     mock_save_db.assert_not_called()
     mock_print.assert_any_call(
@@ -566,15 +591,14 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
                     "orchestrator.collect_all_responses",
                     return_value=([], False, False),
                 ) as mock_collect:
-                    with patch("orchestrator.save_json") as mock_save_json:
-                        conn = MagicMock()
-                        with patch(
-                            "orchestrator.init_db",
-                            return_value=conn,
-                        ) as mock_init:
-                            with patch("orchestrator.save_to_db") as mock_save_db:
-                                with patch("orchestrator.print") as mock_print:
-                                    ok = run_scrape(article_url)
+                    conn = MagicMock()
+                    with patch(
+                        "orchestrator.init_db",
+                        return_value=conn,
+                    ) as mock_init:
+                        with patch("orchestrator.save_to_db") as mock_save_db:
+                            with patch("orchestrator.print") as mock_print:
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -582,14 +606,6 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
         "https://dic.nicovideo.jp/b/a/12345/",
         response_cap=None,
         progress_reporter=None,
-    )
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        [],
-        announce=True,
     )
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
@@ -623,15 +639,14 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
                     "orchestrator.collect_all_responses",
                     return_value=(partial, True, False),
                 ) as mock_collect:
-                    with patch("orchestrator.save_json") as mock_save_json:
-                        conn = MagicMock()
-                        with patch(
-                            "orchestrator.init_db",
-                            return_value=conn,
-                        ) as mock_init:
-                            with patch("orchestrator.save_to_db") as mock_save_db:
-                                with patch("orchestrator.print") as mock_print:
-                                    ok = run_scrape(article_url)
+                    conn = MagicMock()
+                    with patch(
+                        "orchestrator.init_db",
+                        return_value=conn,
+                    ) as mock_init:
+                        with patch("orchestrator.save_to_db") as mock_save_db:
+                            with patch("orchestrator.print") as mock_print:
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -641,14 +656,6 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
         progress_reporter=None,
     )
 
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        partial,
-        announce=True,
-    )
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,
@@ -676,16 +683,14 @@ def test_run_scrape_denylist_skips_collection_and_save():
     ) as mock_meta:
         with patch("orchestrator.build_bbs_base_url") as mock_build:
             with patch("orchestrator.collect_all_responses") as mock_collect:
-                with patch("orchestrator.save_json") as mock_save_json:
-                    with patch("orchestrator.init_db") as mock_init:
-                        with patch("orchestrator.save_to_db") as mock_save_db:
-                            with patch("orchestrator.print") as mock_print:
-                                ok = run_scrape(article_url)
+                with patch("orchestrator.init_db") as mock_init:
+                    with patch("orchestrator.save_to_db") as mock_save_db:
+                        with patch("orchestrator.print") as mock_print:
+                            ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_not_called()
     mock_collect.assert_not_called()
-    mock_save_json.assert_not_called()
     mock_init.assert_not_called()
     mock_save_db.assert_not_called()
     mock_print.assert_any_call("Skipping article (high-volume).")
@@ -710,15 +715,14 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
                     "orchestrator.collect_all_responses",
                     return_value=(partial, False, True),
                 ) as mock_collect:
-                    with patch("orchestrator.save_json") as mock_save_json:
-                        conn = MagicMock()
-                        with patch(
-                            "orchestrator.init_db",
-                            return_value=conn,
-                        ) as mock_init:
-                            with patch("orchestrator.save_to_db") as mock_save_db:
-                                with patch("orchestrator.print") as mock_print:
-                                    ok = run_scrape(article_url)
+                    conn = MagicMock()
+                    with patch(
+                        "orchestrator.init_db",
+                        return_value=conn,
+                    ) as mock_init:
+                        with patch("orchestrator.save_to_db") as mock_save_db:
+                            with patch("orchestrator.print") as mock_print:
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -726,14 +730,6 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
         "https://dic.nicovideo.jp/b/a/12345/",
         response_cap=None,
         progress_reporter=None,
-    )
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        partial,
-        announce=True,
     )
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
@@ -805,15 +801,14 @@ def test_run_scrape_representative_save_path_regression(
                     "orchestrator.collect_all_responses",
                     return_value=collected,
                 ) as mock_collect:
-                    with patch("orchestrator.save_json") as mock_save_json:
-                        conn = MagicMock()
-                        with patch(
-                            "orchestrator.init_db",
-                            return_value=conn,
-                        ) as mock_init:
-                            with patch("orchestrator.save_to_db") as mock_save_db:
-                                with patch("orchestrator.print") as mock_print:
-                                    ok = run_scrape(article_url)
+                    conn = MagicMock()
+                    with patch(
+                        "orchestrator.init_db",
+                        return_value=conn,
+                    ) as mock_init:
+                        with patch("orchestrator.save_to_db") as mock_save_db:
+                            with patch("orchestrator.print") as mock_print:
+                                ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -821,14 +816,6 @@ def test_run_scrape_representative_save_path_regression(
         "https://dic.nicovideo.jp/b/a/12345/",
         response_cap=None,
         progress_reporter=None,
-    )
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        expected_responses,
-        announce=True,
     )
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
@@ -888,16 +875,14 @@ def test_run_scrape_representative_skip_path_regression(
     with patch("orchestrator.fetch_article_metadata", **fetch_kwargs) as mock_meta:
         with patch("orchestrator.build_bbs_base_url") as mock_build:
             with patch("orchestrator.collect_all_responses") as mock_collect:
-                with patch("orchestrator.save_json") as mock_save_json:
-                    with patch("orchestrator.init_db") as mock_init:
-                        with patch("orchestrator.save_to_db") as mock_save_db:
-                            with patch("orchestrator.print") as mock_print:
-                                ok = run_scrape(article_url)
+                with patch("orchestrator.init_db") as mock_init:
+                    with patch("orchestrator.save_to_db") as mock_save_db:
+                        with patch("orchestrator.print") as mock_print:
+                            ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_not_called()
     mock_collect.assert_not_called()
-    mock_save_json.assert_not_called()
     mock_init.assert_not_called()
     mock_save_db.assert_not_called()
     mock_print.assert_any_call(expected_message)
@@ -1005,19 +990,18 @@ def test_run_scrape_saved_article_resumes_and_saves_only_new_items():
                         "orchestrator.load_saved_responses",
                         return_value=saved_responses,
                     ) as mock_saved:
-                        with patch("orchestrator.save_json") as mock_save_json:
-                            conn = MagicMock()
+                        conn = MagicMock()
+                        with patch(
+                            "orchestrator.init_db",
+                            return_value=conn,
+                        ) as mock_init:
                             with patch(
-                                "orchestrator.init_db",
-                                return_value=conn,
-                            ) as mock_init:
+                                "orchestrator.save_to_db",
+                            ) as mock_save_db:
                                 with patch(
-                                    "orchestrator.save_to_db",
-                                ) as mock_save_db:
-                                    with patch(
-                                        "orchestrator.print",
-                                    ) as mock_print:
-                                        ok = run_scrape(article_url)
+                                    "orchestrator.print",
+                                ) as mock_print:
+                                    ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -1029,14 +1013,6 @@ def test_run_scrape_saved_article_resumes_and_saves_only_new_items():
         progress_reporter=None,
     )
     mock_saved.assert_called_once_with("12345", "a")
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        saved_responses + new_responses,
-        announce=True,
-    )
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,
@@ -1072,15 +1048,14 @@ def test_run_scrape_saved_article_zero_new_is_success_without_writing():
                     with patch(
                         "orchestrator.load_saved_responses",
                     ) as mock_saved:
-                        with patch("orchestrator.save_json") as mock_save_json:
-                            with patch("orchestrator.init_db") as mock_init:
+                        with patch("orchestrator.init_db") as mock_init:
+                            with patch(
+                                "orchestrator.save_to_db",
+                            ) as mock_save_db:
                                 with patch(
-                                    "orchestrator.save_to_db",
-                                ) as mock_save_db:
-                                    with patch(
-                                        "orchestrator.print",
-                                    ) as mock_print:
-                                        ok = run_scrape(article_url)
+                                    "orchestrator.print",
+                                ) as mock_print:
+                                    ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -1092,7 +1067,6 @@ def test_run_scrape_saved_article_zero_new_is_success_without_writing():
         progress_reporter=None,
     )
     mock_saved.assert_not_called()
-    mock_save_json.assert_not_called()
     mock_init.assert_not_called()
     mock_save_db.assert_not_called()
     mock_print.assert_any_call(

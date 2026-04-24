@@ -830,3 +830,74 @@ def test_application_returns_not_found_for_unknown_path():
 
     assert response["status"] == "404 Not Found"
     assert response["body"] == "Not Found"
+
+
+def test_top_page_includes_registered_list_link():
+    response = _run_wsgi_request("GET")
+
+    assert response["status"] == "200 OK"
+    assert 'href="/registered"' in response["body"]
+    assert 'target="_blank"' in response["body"]
+    assert "登録済み記事一覧" in response["body"]
+
+
+def test_registered_page_renders_html_table_with_expected_columns():
+    with patch(
+        "web_app.list_registered_articles",
+        return_value=[
+            {
+                "article_type": "a",
+                "title": "テスト記事",
+                "canonical_url": "https://dic.nicovideo.jp/a/12345",
+                "saved_response_count": 42,
+                "latest_scraped_max_res_no": 50,
+                "last_scraped_at": "2026-01-01T00:00:00+00:00",
+            }
+        ],
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert response["status"] == "200 OK"
+    assert "<table" in response["body"]
+    assert "テスト記事" in response["body"]
+    assert "https://dic.nicovideo.jp/a/12345" in response["body"]
+    assert ">42<" in response["body"]
+    assert ">50<" in response["body"]
+    assert "2026-01-01T00:00:00+00:00" in response["body"]
+
+
+def test_registered_page_renders_empty_table_when_no_articles():
+    with patch("web_app.list_registered_articles", return_value=[]):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert response["status"] == "200 OK"
+    assert "<table" in response["body"]
+    assert "Count: 0" in response["body"]
+
+
+def test_registered_page_lists_multiple_articles():
+    articles = [
+        {
+            "article_type": "a",
+            "title": "記事A",
+            "canonical_url": "https://dic.nicovideo.jp/a/1",
+            "saved_response_count": 10,
+            "latest_scraped_max_res_no": 10,
+            "last_scraped_at": None,
+        },
+        {
+            "article_type": "id",
+            "title": "記事B",
+            "canonical_url": "https://dic.nicovideo.jp/id/2",
+            "saved_response_count": 5,
+            "latest_scraped_max_res_no": None,
+            "last_scraped_at": None,
+        },
+    ]
+    with patch("web_app.list_registered_articles", return_value=articles):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert response["status"] == "200 OK"
+    assert "記事A" in response["body"]
+    assert "記事B" in response["body"]
+    assert "Count: 2" in response["body"]

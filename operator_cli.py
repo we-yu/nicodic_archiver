@@ -1,6 +1,14 @@
+import re
+import sys
 from pathlib import Path
 
-from archive_read import read_article_archive, read_article_summaries
+from archive_read import (
+    get_saved_article_export,
+    get_saved_article_summary_by_exact_title,
+    get_saved_article_summary_by_id,
+    read_article_archive,
+    read_article_summaries,
+)
 from cli import build_archive_export
 from target_list import (
     deactivate_target,
@@ -211,4 +219,53 @@ def export_archive_for_operator(
     print(f"Type: {article_type}")
     print(f"Format: {output_format}")
     print(f"Output: {output_path}")
+    return True
+
+
+def _admin_export_filename(article_id, article_type, title, fmt):
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (title or "").strip())
+    safe = re.sub(r"\s+", " ", safe).strip(" .")
+    safe = safe or "article"
+    return f"{article_id}{article_type}_{safe}.{fmt}"
+
+
+def show_scraped_res_for_operator(
+    article_input,
+    is_id=False,
+    requested_format="txt",
+):
+    """Write saved archive to stdout; status and errors to stderr."""
+
+    if is_id:
+        summary = get_saved_article_summary_by_id(article_input)
+    else:
+        summary = get_saved_article_summary_by_exact_title(article_input)
+
+    if not summary["found"]:
+        kind = "id" if is_id else "title"
+        print(f"not found: {kind}={article_input}", file=sys.stderr)
+        return False
+
+    article_id = summary["article_id"]
+    article_type = summary["article_type"]
+
+    export = get_saved_article_export(
+        article_id,
+        article_type,
+        requested_format,
+    )
+    if not export["found"]:
+        print(
+            f"not found in archive: "
+            f"article_id={article_id} article_type={article_type}",
+            file=sys.stderr,
+        )
+        return False
+
+    title = export.get("title") or summary.get("title") or ""
+    filename = _admin_export_filename(
+        article_id, article_type, title, requested_format
+    )
+    print(f"ok: {filename}", file=sys.stderr)
+    sys.stdout.write(export["content"])
     return True
