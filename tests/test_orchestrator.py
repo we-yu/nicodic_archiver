@@ -454,15 +454,7 @@ def test_run_scrape_happy_path_orchestrates_dependencies_correctly():
         progress_reporter=None,
     )
 
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        [{"res_no": 1}],
-        announce=True,
-    )
-
+    mock_save_json.assert_not_called()
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,
@@ -583,14 +575,7 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
         response_cap=None,
         progress_reporter=None,
     )
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        [],
-        announce=True,
-    )
+    mock_save_json.assert_not_called()
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,
@@ -641,14 +626,7 @@ def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
         progress_reporter=None,
     )
 
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        partial,
-        announce=True,
-    )
+    mock_save_json.assert_not_called()
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,
@@ -727,14 +705,7 @@ def test_run_scrape_cap_reached_saves_partial_and_logs():
         response_cap=None,
         progress_reporter=None,
     )
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        partial,
-        announce=True,
-    )
+    mock_save_json.assert_not_called()
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,
@@ -822,14 +793,7 @@ def test_run_scrape_representative_save_path_regression(
         response_cap=None,
         progress_reporter=None,
     )
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        expected_responses,
-        announce=True,
-    )
+    mock_save_json.assert_not_called()
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,
@@ -1029,14 +993,7 @@ def test_run_scrape_saved_article_resumes_and_saves_only_new_items():
         progress_reporter=None,
     )
     mock_saved.assert_called_once_with("12345", "a")
-    mock_save_json.assert_called_once_with(
-        "12345",
-        "a",
-        "Title",
-        article_url,
-        saved_responses + new_responses,
-        announce=True,
-    )
+    mock_save_json.assert_not_called()
     mock_init.assert_called_once_with()
     mock_save_db.assert_called_once_with(
         conn,

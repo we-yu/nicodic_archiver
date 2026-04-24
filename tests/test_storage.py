@@ -3,10 +3,8 @@
 These tests run in a temp working directory so production `data/` is untouched.
 """
 
-import json
 import sqlite3
 
-import storage
 from storage import (
     append_scrape_run_observation,
     dequeue_canonical_target,
@@ -165,9 +163,8 @@ def test_save_to_db_persists_bounded_article_metadata(tmp_path, monkeypatch):
         conn.close()
 
 
-def test_save_json_writes_json_and_sanitizes_title_in_filename(tmp_path, monkeypatch):
+def test_save_json_no_longer_writes_json_artifacts(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(storage.time, "time", lambda: 1700000000)
 
     article_id = "99999"
     article_type = "a"
@@ -186,30 +183,7 @@ def test_save_json_writes_json_and_sanitizes_title_in_filename(tmp_path, monkeyp
 
     save_json(article_id, article_type, title, article_url, responses)
 
-    # Filename behavior: / -> ／ and \ -> ＼
-    expected_filename = f"{article_id}{article_type}_A／B＼C.json"
-    output_path = tmp_path / "data" / expected_filename
-    assert output_path.is_file()
-
-    data = json.loads(output_path.read_text(encoding="utf-8"))
-    for key in [
-        "article_id",
-        "article_type",
-        "article_url",
-        "title",
-        "collected_at",
-        "response_count",
-        "responses",
-    ]:
-        assert key in data
-
-    assert data["article_id"] == article_id
-    assert data["article_type"] == article_type
-    assert data["article_url"] == article_url
-    assert data["title"] == title
-    assert data["collected_at"] == 1700000000
-    assert data["response_count"] == 1
-    assert data["responses"] == responses
+    assert not (tmp_path / "data").exists()
 
 
 def test_enqueue_canonical_target_persists_minimal_queue_entry(

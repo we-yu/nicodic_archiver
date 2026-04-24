@@ -375,6 +375,42 @@ def test_application_get_renders_externalized_title_and_waiting_state():
     assert "data-busy-message" in response["body"]
     assert "Saved articles will download as TXT." in response["body"]
     assert "overflow-wrap: anywhere;" in response["body"]
+    assert 'href="/registered-articles"' in response["body"]
+    assert 'target="_blank"' in response["body"]
+    assert "登録済み記事一覧" in response["body"]
+
+
+def test_registered_articles_route_renders_expected_rows():
+    rows = [
+        {
+            "article_type": "a",
+            "title": "First Title",
+            "canonical_url": "https://dic.nicovideo.jp/a/12345",
+            "saved_response_count": 2,
+            "latest_scraped_max_res_no": 20,
+            "last_scraped_at": "2026-04-25T00:00:00+00:00",
+        }
+    ]
+
+    with patch("web_app.read_registered_article_rows", return_value=rows):
+        response = _run_wsgi_request("GET", path="/registered-articles")
+
+    assert response["status"] == "200 OK"
+    assert "<th>article_type</th>" in response["body"]
+    assert "<td>a</td>" in response["body"]
+    assert "<td>First Title</td>" in response["body"]
+    assert "<td>https://dic.nicovideo.jp/a/12345</td>" in response["body"]
+    assert "<td>2</td>" in response["body"]
+    assert "<td>20</td>" in response["body"]
+
+
+def test_registered_articles_route_is_separate_and_read_only():
+    response = _run_wsgi_request("GET", path="/registered-articles")
+
+    assert response["status"] == "200 OK"
+    assert "Registered Articles" in response["body"]
+    assert "<form" not in response["body"]
+    assert "delete" not in response["body"].lower()
 
 
 def test_application_post_saved_result_autodownloads_without_buttons():

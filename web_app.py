@@ -8,9 +8,12 @@ from uuid import uuid4
 from wsgiref.simple_server import make_server
 
 from archive_read import (
+    build_ascii_download_fallback,
+    build_download_filename,
     get_saved_article_export,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
+    read_registered_article_rows,
 )
 from article_resolver import resolve_article_input
 from target_list import register_target_url
@@ -129,7 +132,7 @@ def _sanitize_download_filename_title(value: str) -> str:
 
 
 def _ascii_download_fallback(article_id: str, article_type: str) -> str:
-    return f"{article_id}{article_type}_article"
+    return build_ascii_download_fallback(article_id, article_type)
 
 
 def _build_download_filename(
@@ -138,8 +141,12 @@ def _build_download_filename(
     title: str | None,
     requested_format: str,
 ) -> str:
-    safe_title = _sanitize_download_filename_title(title or "")
-    return f"{article_id}{article_type}_{safe_title}.{requested_format}"
+    return build_download_filename(
+        article_id,
+        article_type,
+        title,
+        requested_format,
+    )
 
 
 def _build_content_disposition(
@@ -684,6 +691,87 @@ def _render_message_area(
     return "".join(lines)
 
 
+def _render_registered_articles_page() -> bytes:
+    rows = read_registered_article_rows()
+    table_rows = []
+    for row in rows:
+        table_rows.append(
+            "<tr>"
+            f"<td>{escape(str(row['article_type']))}</td>"
+            f"<td>{escape(str(row['title']))}</td>"
+            f"<td>{escape(str(row['canonical_url']))}</td>"
+            f"<td>{escape(str(row['saved_response_count']))}</td>"
+            f"<td>{escape(str(row['latest_scraped_max_res_no']))}</td>"
+            f"<td>{escape(str(row['last_scraped_at']))}</td>"
+            "</tr>"
+        )
+
+    if not table_rows:
+        table_body = (
+            '<tr><td colspan="6" class="empty-row">'
+            "No registered articles found."
+            "</td></tr>"
+        )
+    else:
+        table_body = "".join(table_rows)
+
+    html = f"""<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>Registered Articles</title>
+  <style>
+    body {{
+      margin: 0;
+      font-family: Georgia, \"Times New Roman\", serif;
+      color: #1f2430;
+      background: #f4efe5;
+    }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 32px 20px; }}
+    h1 {{ margin: 0 0 8px; }}
+    p {{ color: #6b7280; }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      background: #fffaf2;
+      border: 1px solid #d9ccb4;
+    }}
+    th, td {{
+      border: 1px solid #d9ccb4;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }}
+    th {{ background: #efe6d7; }}
+    .empty-row {{ color: #6b7280; text-align: center; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Registered Articles</h1>
+    <p>Read-only SQLite-backed saved article list.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>article_type</th>
+          <th>title</th>
+          <th>canonical_url</th>
+          <th>saved_response_count</th>
+          <th>latest_scraped_max_res_no</th>
+          <th>last_scraped_at</th>
+        </tr>
+      </thead>
+      <tbody>{table_body}</tbody>
+    </table>
+  </main>
+</body>
+</html>
+"""
+    return html.encode("utf-8")
+
+
 def _render_page(
     article_input: str,
     result: dict | None = None,
@@ -812,6 +900,8 @@ def _render_page(
     .message-area.error .status-line {{ color: var(--error); }}
     .followup-note {{ color: var(--muted); }}
     .download-frame {{ display: none; width: 0; height: 0; border: 0; }}
+    .utility-links {{ margin: 20px 0 0; font-size: 0.95rem; }}
+    .utility-links a {{ color: var(--accent); }}
     @media (max-width: 640px) {{
       main {{ padding: 24px 14px 36px; }}
       .panel {{ padding: 18px; }}
@@ -824,6 +914,11 @@ def _render_page(
     <section class=\"panel\">
       <h1>{escape(UI_TEXTS['heading'])}</h1>
       <p class=\"lede\">{escape(UI_TEXTS['lede'])}</p>
+      <p class=\"utility-links\">
+        <a href=\"/registered-articles\" target=\"_blank\" rel=\"noopener\">
+          登録済み記事一覧
+        </a>
+      </p>
       <form method=\"post\" action=\"/\" data-archive-check-form>
         <label for=\"article_input\">{escape(UI_TEXTS['input_label'])}</label>
         <input
@@ -906,6 +1001,17 @@ def create_app(
 
         if method == "GET" and path == "/":
             body = _render_page("")
+            start_response(
+                "200 OK",
+                [
+                    ("Content-Type", "text/html; charset=utf-8"),
+                    ("Content-Length", str(len(body))),
+                ],
+            )
+            return [body]
+
+        if method == "GET" and path == "/registered-articles":
+            body = _render_registered_articles_page()
             start_response(
                 "200 OK",
                 [
@@ -1034,7 +1140,7 @@ def create_app(
             )
             return [body]
 
-        if path not in {"/", "/download"}:
+        if path not in {"/", "/download", "/registered-articles"}:
             body = b"Not Found"
             start_response(
                 "404 Not Found",

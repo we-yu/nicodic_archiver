@@ -1,7 +1,9 @@
 import csv
 from io import StringIO
+import re
 import sqlite3
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from storage import DEFAULT_DB_PATH
 
@@ -25,6 +27,15 @@ def _article_select_columns(conn) -> str:
         f"{published_expr} AS published_at, "
         f"{modified_expr} AS modified_at"
     )
+
+
+def _latest_scraped_expr(conn) -> str:
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(articles)")
+    column_names = {row[1] for row in cur.fetchall()}
+    if "latest_scraped_at" in column_names:
+        return "a.latest_scraped_at"
+    return "NULL"
 
 
 def _title_lookup_select_columns(conn) -> str:
@@ -51,6 +62,49 @@ def _count_saved_responses(cur, article_id, article_type):
         (article_id, article_type),
     )
     return cur.fetchone()[0]
+
+
+def _looks_like_url_input(article_input: str) -> bool:
+    parsed = urlparse(article_input)
+    return bool(parsed.scheme or parsed.netloc)
+
+
+def _humanize_title(value: str | None) -> str:
+    text = (value or "").strip()
+    if not text:
+        return "unknown"
+
+    if _looks_like_url_input(text):
+        parsed = urlparse(text)
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if path_parts:
+            decoded = unquote(path_parts[-1]).strip()
+            if decoded:
+                return decoded
+
+    decoded = unquote(text).strip()
+    return decoded if decoded else "unknown"
+
+
+def _sanitize_download_filename_title(value: str) -> str:
+    text = _humanize_title(value)
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    return text or "article"
+
+
+def build_download_filename(
+    article_id: str,
+    article_type: str,
+    title: str | None,
+    requested_format: str,
+) -> str:
+    safe_title = _sanitize_download_filename_title(title or "")
+    return f"{article_id}{article_type}_{safe_title}.{requested_format}"
+
+
+def build_ascii_download_fallback(article_id: str, article_type: str) -> str:
+    return f"{article_id}{article_type}_article"
 
 
 def _build_saved_article_summary(
@@ -103,6 +157,58 @@ def _find_saved_article_by_title_lookup(cur, title):
         (title,),
     )
     return cur.fetchone()
+
+
+def find_saved_article_ref_by_title(title):
+    conn = _open_archive_read_conn()
+    if conn is None:
+        return None
+    cur = conn.cursor()
+
+    try:
+        article = _find_saved_article_by_title_lookup(cur, title)
+        if not article:
+            return None
+        return {
+            "article_id": article[0],
+            "article_type": article[1],
+            "title": article[2],
+        }
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def find_saved_article_ref_by_id(article_id):
+    conn = _open_archive_read_conn()
+    if conn is None:
+        return None
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            """
+            SELECT article_id, article_type, title
+            FROM articles
+            WHERE article_id=?
+            ORDER BY created_at ASC, article_type ASC
+            LIMIT 1
+            """,
+            (article_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "article_id": row[0],
+            "article_type": row[1],
+            "title": row[2],
+        }
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
 
 
 def has_saved_article(article_id, article_type):
@@ -585,5 +691,66 @@ def read_article_summaries():
             canonical_url,
             created_at,
             response_count,
+        ) in rows
+    ]
+
+
+def read_registered_article_rows():
+    conn = _open_archive_read_conn()
+    if conn is None:
+        return []
+    cur = conn.cursor()
+
+    try:
+        latest_scraped_expr = _latest_scraped_expr(conn)
+        cur.execute(
+            f"""
+            SELECT
+                a.article_type,
+                a.title,
+                a.canonical_url,
+                COUNT(r.id) AS saved_response_count,
+                MAX(r.res_no) AS latest_scraped_max_res_no,
+                {latest_scraped_expr} AS last_scraped_at
+            FROM articles AS a
+            LEFT JOIN responses AS r
+                ON a.article_id = r.article_id
+                AND a.article_type = r.article_type
+            GROUP BY
+                a.article_id,
+                a.article_type,
+                a.title,
+                a.canonical_url,
+                a.created_at,
+                last_scraped_at
+            ORDER BY a.created_at ASC, a.article_id ASC, a.article_type ASC
+            """
+        )
+        rows = cur.fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+    return [
+        {
+            "article_type": article_type,
+            "title": title or "unknown",
+            "canonical_url": canonical_url or "unknown",
+            "saved_response_count": int(saved_response_count),
+            "latest_scraped_max_res_no": (
+                "unknown"
+                if latest_scraped_max_res_no is None
+                else latest_scraped_max_res_no
+            ),
+            "last_scraped_at": last_scraped_at or "unknown",
+        }
+        for (
+            article_type,
+            title,
+            canonical_url,
+            saved_response_count,
+            latest_scraped_max_res_no,
+            last_scraped_at,
         ) in rows
     ]

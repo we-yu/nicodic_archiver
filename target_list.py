@@ -6,6 +6,44 @@ from storage import register_target
 from storage import set_target_active_state
 
 
+def _default_summary_path(target_db_path: str) -> Path:
+    return Path(target_db_path).with_name("scrape_targets.txt")
+
+
+def write_scrape_targets_summary(
+    target_db_path: str,
+    summary_path: str | None = None,
+) -> Path:
+    """Write a simple human-facing summary of registered scrape targets."""
+
+    output_path = (
+        Path(summary_path)
+        if summary_path is not None
+        else _default_summary_path(target_db_path)
+    )
+    entries = list_registered_targets(target_db_path, active_only=False)
+    lines = [
+        "# scrape targets summary",
+        "# status\tarticle_type\tarticle_id\tcanonical_url",
+    ]
+    for entry in entries:
+        status = "active" if entry["is_active"] else "inactive"
+        lines.append(
+            "\t".join(
+                [
+                    status,
+                    entry["article_type"],
+                    entry["article_id"],
+                    entry["canonical_url"],
+                ]
+            )
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return output_path
+
+
 def _parse_target_line(raw_line: str) -> str | None:
     line = raw_line.strip()
 
@@ -93,6 +131,7 @@ def register_target_url(article_url: str, target_db_path: str) -> str:
     finally:
         conn.close()
 
+    write_scrape_targets_summary(target_db_path)
     return result["status"]
 
 
@@ -119,9 +158,11 @@ def deactivate_target(
 
     conn = init_db(target_db_path)
     try:
-        return set_target_active_state(conn, article_id, article_type, False)
+        result = set_target_active_state(conn, article_id, article_type, False)
     finally:
         conn.close()
+    write_scrape_targets_summary(target_db_path)
+    return result
 
 
 def reactivate_target(
@@ -133,9 +174,11 @@ def reactivate_target(
 
     conn = init_db(target_db_path)
     try:
-        return set_target_active_state(conn, article_id, article_type, True)
+        result = set_target_active_state(conn, article_id, article_type, True)
     finally:
         conn.close()
+    write_scrape_targets_summary(target_db_path)
+    return result
 
 
 def handoff_redirected_target(
@@ -202,6 +245,7 @@ def handoff_redirected_target(
     finally:
         conn.close()
 
+    write_scrape_targets_summary(target_db_path)
     return {
         "found": True,
         "status": "redirected",
@@ -254,4 +298,5 @@ def import_targets_from_text_file(
     finally:
         conn.close()
 
+    write_scrape_targets_summary(target_db_path)
     return counts

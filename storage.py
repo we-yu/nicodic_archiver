@@ -1,9 +1,6 @@
 import csv
 from datetime import datetime, timezone
-import json
-import os
 import sqlite3
-import time
 from io import StringIO
 from pathlib import Path
 
@@ -256,30 +253,12 @@ def save_json(
     announce=True,
 ):
     """
-    取得結果をJSONとして保存（保険用途）。
+    Deprecated compatibility seam.
+
+    Archive persistence is SQLite-centered; scrape paths must not create JSON
+    artifacts as a side effect.
     """
-
-    os.makedirs("data", exist_ok=True)
-
-    safe_title = title.replace("/", "／").replace("\\", "＼")
-    filename = f"{article_id}{article_type}_{safe_title}.json"
-    output_path = os.path.join("data", filename)
-
-    data = {
-        "article_id": article_id,
-        "article_type": article_type,
-        "article_url": article_url,
-        "title": title,
-        "collected_at": int(time.time()),
-        "response_count": len(responses),
-        "responses": responses
-    }
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-    if announce:
-        print("Saved JSON:", output_path)
+    return None
 
 
 def enqueue_canonical_target(conn, canonical_target, title=None):

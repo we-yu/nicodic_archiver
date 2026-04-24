@@ -4,11 +4,15 @@ import sqlite3
 from unittest.mock import patch
 
 from archive_read import (
+    build_download_filename,
+    find_saved_article_ref_by_id,
+    find_saved_article_ref_by_title,
     get_saved_article_export,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
     get_saved_article_txt,
     has_saved_article,
+    read_registered_article_rows,
 )
 from storage import init_db, save_to_db
 
@@ -146,6 +150,54 @@ def test_get_saved_article_export_returns_csv_rows_with_stable_header(
             "content_html": "<p>First response</p>",
         }
     ]
+
+
+def test_read_registered_article_rows_returns_one_row_per_article(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    rows = read_registered_article_rows()
+
+    assert rows == [
+        {
+            "article_type": "a",
+            "title": "First Title",
+            "canonical_url": "https://dic.nicovideo.jp/a/12345",
+            "saved_response_count": 1,
+            "latest_scraped_max_res_no": 1,
+            "last_scraped_at": rows[0]["last_scraped_at"],
+        }
+    ]
+    assert rows[0]["last_scraped_at"] != "unknown"
+
+
+def test_saved_article_ref_lookup_supports_title_and_id(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    assert find_saved_article_ref_by_title("First Title") == {
+        "article_id": "12345",
+        "article_type": "a",
+        "title": "First Title",
+    }
+    assert find_saved_article_ref_by_id("12345") == {
+        "article_id": "12345",
+        "article_type": "a",
+        "title": "First Title",
+    }
+
+
+def test_download_filename_builder_matches_web_download_shape():
+    assert build_download_filename(
+        "12345",
+        "a",
+        "A/B\\C",
+        "txt",
+    ) == "12345a_A_B_C.txt"
 
 
 def test_get_saved_article_txt_returns_missing_shape_for_missing_article(

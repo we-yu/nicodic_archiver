@@ -9,7 +9,6 @@ from storage import (
     dequeue_canonical_target,
     init_db,
     list_queue_requests,
-    save_json,
     save_to_db,
 )
 from target_list import parse_target_identity
@@ -22,6 +21,12 @@ QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP = 10_800
 DENYLIST_ARTICLE_IDS = frozenset({"480340", "237789"})
 
 BBS_PAGE_SIZE = 30
+
+
+def save_json(*args, **kwargs):
+    """Legacy seam; scrape persistence is SQLite-only."""
+
+    return None
 
 
 class ArticleMetadataResult:
@@ -611,9 +616,9 @@ def run_scrape(
             short_reason="already_up_to_date",
         )
 
-    json_responses = responses
+    known_responses = responses
     if max_saved_res_no is not None:
-        json_responses = load_saved_responses(article_id, article_type) + responses
+        known_responses = load_saved_responses(article_id, article_type) + responses
 
     # empty-result / later-page interruption / cap reached を区別して扱う。
     if (
@@ -639,15 +644,6 @@ def run_scrape(
                 f"Response cap reached; saving partial responses "
                 f"({len(responses)} items) for: {article_url}"
             )
-
-    save_json(
-        article_id,
-        article_type,
-        title,
-        article_url,
-        json_responses,
-        announce=progress_reporter is None,
-    )
 
     conn = init_db()
     save_kwargs = {}
@@ -676,7 +672,7 @@ def run_scrape(
         progress_reporter.finish_target(
             display_status,
             display_label,
-            len(json_responses),
+            len(known_responses),
             target_ref,
         )
     return ScrapeResult(
@@ -685,7 +681,7 @@ def run_scrape(
         "partial" if interrupted or cap_reached else "success",
         article_title=title,
         collected_response_count=len(responses),
-        observed_max_res_no=_observed_max_res_no(json_responses),
+        observed_max_res_no=_observed_max_res_no(known_responses),
         failure_page="unknown",
         failure_cause=(
             "later_page_interrupted"

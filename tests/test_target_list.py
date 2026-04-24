@@ -8,6 +8,7 @@ from target_list import (
     reactivate_target,
     register_target_url,
     validate_target_url,
+    write_scrape_targets_summary,
 )
 
 
@@ -45,6 +46,10 @@ def test_register_target_url_inserts_valid_target_into_registry(tmp_path):
     assert list_active_target_urls(str(target_db_path)) == [
         "https://dic.nicovideo.jp/a/12345",
     ]
+    summary_text = (tmp_path / "scrape_targets.txt").read_text(
+        encoding="utf-8",
+    )
+    assert "active\ta\t12345\thttps://dic.nicovideo.jp/a/12345" in summary_text
 
 
 def test_register_target_url_suppresses_duplicate_identity(tmp_path):
@@ -69,6 +74,7 @@ def test_register_target_url_rejects_invalid_target_without_writing(tmp_path):
 
     assert result == "invalid"
     assert target_db_path.exists() is False
+    assert (tmp_path / "scrape_targets.txt").exists() is False
 
 
 def test_import_targets_from_text_file_is_one_shot_and_non_automatic(tmp_path):
@@ -141,6 +147,24 @@ def test_deactivate_and_reactivate_target_return_operator_facing_result(tmp_path
     assert deactivated["entry"]["is_active"] is False
     assert reactivated["status"] == "activated"
     assert reactivated["entry"]["is_active"] is True
+    summary_text = (tmp_path / "scrape_targets.txt").read_text(
+        encoding="utf-8",
+    )
+    assert "active\ta\t12345\thttps://dic.nicovideo.jp/a/12345" in summary_text
+
+
+def test_write_scrape_targets_summary_supports_explicit_path(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+    summary_path = tmp_path / "data" / "scrape_targets.txt"
+    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+
+    output_path = write_scrape_targets_summary(
+        str(target_db_path),
+        str(summary_path),
+    )
+
+    assert output_path == summary_path
+    assert summary_path.read_text(encoding="utf-8").endswith("\n")
 
 
 def test_handoff_redirected_target_deactivates_old_and_registers_new(tmp_path):
