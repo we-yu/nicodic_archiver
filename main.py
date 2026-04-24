@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from archive_read import write_scrape_targets_txt
 from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
 from delete_request_feeder import (
@@ -24,6 +25,7 @@ from operator_cli import inspect_archive_for_operator
 from operator_cli import inspect_target_for_operator
 from operator_cli import list_archives_for_operator, list_targets_for_operator
 from operator_cli import reactivate_target_for_operator
+from operator_cli import show_scraped_res_for_operator
 from orchestrator import run_scrape
 from storage import (
     DEFAULT_DB_PATH,
@@ -600,6 +602,11 @@ def run_batch_scrape(
         final_status,
     )
 
+    try:
+        write_scrape_targets_txt()
+    except Exception:
+        pass
+
     return final_status, failed_targets
 
 
@@ -757,6 +764,52 @@ def _print_operator_usage():
         "  python main.py operator archive export <article_id> "
         "<article_type> --format txt|md [--output PATH]"
     )
+
+
+def _handle_show_scraped_res(args):
+    is_id = False
+    article_input = None
+    requested_format = "txt"
+    idx = 0
+
+    while idx < len(args):
+        if args[idx] == "--id" and idx + 1 < len(args):
+            is_id = True
+            article_input = args[idx + 1]
+            idx += 2
+        elif args[idx] == "--title" and idx + 1 < len(args):
+            article_input = args[idx + 1]
+            idx += 2
+        elif args[idx] == "--txt":
+            requested_format = "txt"
+            idx += 1
+        elif args[idx] == "--md":
+            requested_format = "md"
+            idx += 1
+        elif args[idx] == "--csv":
+            requested_format = "csv"
+            idx += 1
+        elif not args[idx].startswith("-"):
+            article_input = args[idx]
+            idx += 1
+        else:
+            print(f"Unknown argument: {args[idx]}", file=sys.stderr)
+            sys.exit(1)
+
+    if article_input is None:
+        print(
+            "Usage: show-scraped-res [TITLE] [--id ID] "
+            "[--title TITLE] [--txt|--md|--csv]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not show_scraped_res_for_operator(
+        article_input,
+        is_id=is_id,
+        requested_format=requested_format,
+    ):
+        sys.exit(1)
 
 
 def _print_verification_usage():
@@ -1097,6 +1150,10 @@ def main():
             "[--archive-db PATH] [--state-path PATH] [--full-scan]"
         )
         print(
+            "  python main.py show-scraped-res [TITLE] "
+            "[--id ID] [--title TITLE] [--txt|--md|--csv]"
+        )
+        print(
             "  python main.py web [--host HOST] [--port PORT] "
             "[--target-db-path PATH]"
         )
@@ -1116,6 +1173,10 @@ def main():
 
     if sys.argv[1] == "verify":
         _handle_verification_cli(sys.argv[2:])
+        return
+
+    if sys.argv[1] == "show-scraped-res":
+        _handle_show_scraped_res(sys.argv[2:])
         return
 
     if sys.argv[1] == "inspect-delete-request-feed":

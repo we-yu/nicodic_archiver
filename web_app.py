@@ -11,6 +11,7 @@ from archive_read import (
     get_saved_article_export,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
+    list_registered_articles,
 )
 from article_resolver import resolve_article_input
 from target_list import register_target_url
@@ -812,6 +813,8 @@ def _render_page(
     .message-area.error .status-line {{ color: var(--error); }}
     .followup-note {{ color: var(--muted); }}
     .download-frame {{ display: none; width: 0; height: 0; border: 0; }}
+    .list-link-line {{ margin: 0 0 16px; font-size: 0.9rem; }}
+    .list-link {{ color: var(--accent); }}
     @media (max-width: 640px) {{
       main {{ padding: 24px 14px 36px; }}
       .panel {{ padding: 18px; }}
@@ -824,6 +827,11 @@ def _render_page(
     <section class=\"panel\">
       <h1>{escape(UI_TEXTS['heading'])}</h1>
       <p class=\"lede\">{escape(UI_TEXTS['lede'])}</p>
+      <p class=\"list-link-line\">
+        <a href=\"/registered\" target=\"_blank\" class=\"list-link\">
+          登録済み記事一覧
+        </a>
+      </p>
       <form method=\"post\" action=\"/\" data-archive-check-form>
         <label for=\"article_input\">{escape(UI_TEXTS['input_label'])}</label>
         <input
@@ -890,6 +898,87 @@ def _render_page(
       autoDownloadForm.submit();
     }}
   </script>
+</body>
+</html>
+"""
+    return html.encode("utf-8")
+
+
+def _render_registered_list_page() -> bytes:
+    articles = list_registered_articles()
+    rows_html_parts = []
+    for row in articles:
+        max_res = row["latest_scraped_max_res_no"]
+        max_res_text = str(max_res) if max_res is not None else ""
+        last_scraped = row.get("last_scraped_at") or ""
+        rows_html_parts.append(
+            "<tr>"
+            f"<td>{escape(row['article_type'])}</td>"
+            f"<td>{escape(row['title'])}</td>"
+            f"<td>{escape(row['canonical_url'])}</td>"
+            f"<td>{escape(str(row['saved_response_count']))}</td>"
+            f"<td>{escape(max_res_text)}</td>"
+            f"<td>{escape(last_scraped)}</td>"
+            "</tr>"
+        )
+    rows_html = "".join(rows_html_parts)
+    total = len(articles)
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Registered Articles</title>
+  <style>
+    body {{
+      font-family: Georgia, serif;
+      margin: 0;
+      padding: 24px 20px;
+      background: #f4efe5;
+      color: #1f2430;
+    }}
+    h1 {{ margin: 0 0 8px; font-size: 1.8rem; }}
+    .meta {{ color: #6b7280; margin: 0 0 20px; font-size: 0.9rem; }}
+    table {{
+      border-collapse: collapse;
+      width: 100%;
+      background: #fffaf2;
+      border: 1px solid #d9ccb4;
+      border-radius: 8px;
+      overflow: hidden;
+    }}
+    th, td {{
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 1px solid #e8dfc8;
+      word-break: break-word;
+    }}
+    th {{ background: #f0e9d8; font-weight: 700; }}
+    tr:last-child td {{ border-bottom: none; }}
+    a {{ color: #0f766e; }}
+  </style>
+</head>
+<body>
+  <h1>Registered Articles</h1>
+  <p class="meta">
+    Count: {total} &mdash;
+    <a href="/" target="_self">&larr; Top</a>
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Type</th>
+        <th>Title</th>
+        <th>Canonical URL</th>
+        <th>Saved Responses</th>
+        <th>Max Res No</th>
+        <th>Last Scraped</th>
+      </tr>
+    </thead>
+    <tbody>
+{rows_html}
+    </tbody>
+  </table>
 </body>
 </html>
 """
@@ -1034,7 +1123,18 @@ def create_app(
             )
             return [body]
 
-        if path not in {"/", "/download"}:
+        if method == "GET" and path == "/registered":
+            body = _render_registered_list_page()
+            start_response(
+                "200 OK",
+                [
+                    ("Content-Type", "text/html; charset=utf-8"),
+                    ("Content-Length", str(len(body))),
+                ],
+            )
+            return [body]
+
+        if path not in {"/", "/download", "/registered"}:
             body = b"Not Found"
             start_response(
                 "404 Not Found",

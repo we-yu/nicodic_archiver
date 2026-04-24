@@ -9,7 +9,6 @@ from storage import (
     dequeue_canonical_target,
     init_db,
     list_queue_requests,
-    save_json,
     save_to_db,
 )
 from target_list import parse_target_identity
@@ -639,15 +638,6 @@ def run_scrape(
                 f"Response cap reached; saving partial responses "
                 f"({len(responses)} items) for: {article_url}"
             )
-
-    save_json(
-        article_id,
-        article_type,
-        title,
-        article_url,
-        json_responses,
-        announce=progress_reporter is None,
-    )
 
     conn = init_db()
     save_kwargs = {}

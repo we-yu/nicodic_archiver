@@ -7,8 +7,11 @@ from archive_read import (
     get_saved_article_export,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
+    get_saved_article_summary_by_id,
     get_saved_article_txt,
     has_saved_article,
+    list_registered_articles,
+    write_scrape_targets_txt,
 )
 from storage import init_db, save_to_db
 
@@ -388,3 +391,91 @@ def test_archive_read_does_not_call_init_db_on_read_path(
 
     mock_connect.assert_called_once()
     assert result["found"] is True
+
+
+def test_get_saved_article_summary_by_id_returns_first_match(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = get_saved_article_summary_by_id("12345")
+
+    assert result["found"] is True
+    assert result["article_id"] == "12345"
+    assert result["article_type"] == "a"
+    assert result["title"] == "First Title"
+    assert result["response_count"] == 1
+
+
+def test_get_saved_article_summary_by_id_returns_missing_shape(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = get_saved_article_summary_by_id("99999")
+
+    assert result["found"] is False
+    assert result["article_id"] == "99999"
+    assert result["article_type"] is None
+
+
+def test_list_registered_articles_returns_expected_columns(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    articles = list_registered_articles()
+
+    assert len(articles) == 1
+    row = articles[0]
+    assert row["article_type"] == "a"
+    assert row["title"] == "First Title"
+    assert row["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
+    assert row["saved_response_count"] == 1
+    assert row["latest_scraped_max_res_no"] == 1
+    assert "last_scraped_at" in row
+
+
+def test_list_registered_articles_returns_empty_list_when_no_db(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    # No data/ dir created — DB does not exist
+    articles = list_registered_articles()
+    assert articles == []
+
+
+def test_write_scrape_targets_txt_creates_artifact(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    write_scrape_targets_txt(data_dir=str(tmp_path / "data"))
+
+    artifact = tmp_path / "data" / "scrape_targets.txt"
+    assert artifact.is_file()
+    content = artifact.read_text(encoding="utf-8")
+    assert "scrape_targets:" in content
+    assert "First Title" in content
+    assert "responses=1" in content
+    assert "max_res_no=1" in content
+
+
+def test_write_scrape_targets_txt_empty_when_no_db(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    data_dir = tmp_path / "data"
+
+    write_scrape_targets_txt(data_dir=str(data_dir))
+
+    artifact = data_dir / "scrape_targets.txt"
+    assert artifact.is_file()
+    content = artifact.read_text(encoding="utf-8")
+    assert "count: 0" in content
