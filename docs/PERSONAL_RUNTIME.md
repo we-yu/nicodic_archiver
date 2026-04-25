@@ -58,6 +58,7 @@ Expected keys:
 - `WEB_PORT`
 - `LOCAL_UID`
 - `LOCAL_GID`
+- `SCRAPE_PAGE_DELAY_SECONDS`
 
 The file is intentionally local-only and should not be committed. Use the
 tracked template as a starting point:
@@ -67,6 +68,10 @@ tracked template as a starting point:
 The runtime helper scripts automatically load this file when it exists. If the
 file is missing, the helper falls back to safe defaults and auto-detects the
 host UID/GID to reduce common permission mismatches.
+
+`SCRAPE_PAGE_DELAY_SECONDS` controls the delay between BBS page fetches during
+scrape pagination. If it is unset or invalid, the application falls back to
+`5.0` seconds.
 
 ## Host UID/GID Handling
 
