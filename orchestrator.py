@@ -1,3 +1,5 @@
+import math
+import os
 import re
 import time
 from urllib.parse import urljoin
@@ -21,6 +23,7 @@ QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP = 10_800
 DENYLIST_ARTICLE_IDS = frozenset({"480340", "237789"})
 
 BBS_PAGE_SIZE = 30
+DEFAULT_SCRAPE_PAGE_DELAY_SECONDS = 5.0
 
 
 class ArticleMetadataResult:
@@ -86,6 +89,24 @@ class ScrapeResult:
 
     def __bool__(self) -> bool:
         return self.ok
+
+
+def get_scrape_delay_seconds() -> float:
+    raw_value = os.environ.get("SCRAPE_PAGE_DELAY_SECONDS")
+    if raw_value is None:
+        return DEFAULT_SCRAPE_PAGE_DELAY_SECONDS
+
+    try:
+        delay_seconds = float(raw_value)
+    except (TypeError, ValueError):
+        return DEFAULT_SCRAPE_PAGE_DELAY_SECONDS
+
+    if not math.isfinite(delay_seconds):
+        return DEFAULT_SCRAPE_PAGE_DELAY_SECONDS
+    if delay_seconds < 0:
+        return DEFAULT_SCRAPE_PAGE_DELAY_SECONDS
+
+    return delay_seconds
 
 
 def get_containing_page_start(res_no: int) -> int:
@@ -452,7 +473,7 @@ def collect_all_responses(
         first_request = False
 
         # 過度アクセス回避
-        time.sleep(1)
+        time.sleep(get_scrape_delay_seconds())
 
     return all_responses, interrupted, cap_reached
 

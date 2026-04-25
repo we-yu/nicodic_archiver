@@ -1,4 +1,5 @@
 """Unit tests for orchestrator: URL building, metadata, pagination, orchestration."""
+import os
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -7,6 +8,7 @@ from bs4 import BeautifulSoup
 from orchestrator import (
     ArticleMetadataResult,
     ArticleNotFoundError,
+    DEFAULT_SCRAPE_PAGE_DELAY_SECONDS,
     QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP,
     RedirectArticleError,
     build_bbs_base_url,
@@ -15,6 +17,7 @@ from orchestrator import (
     collect_all_responses,
     drain_queue_requests,
     extract_redirect_target_url,
+    get_scrape_delay_seconds,
     get_max_saved_res_no,
     is_redirect_article_page,
     load_saved_responses,
@@ -279,6 +282,33 @@ def test_fetch_article_metadata_raises_redirect_article_error():
 # ----- collect_all_responses: pagination and stopping -----
 
 
+def test_get_scrape_delay_seconds_defaults_to_five_when_unset():
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_scrape_delay_seconds() == 5.0
+
+
+def test_get_scrape_delay_seconds_uses_valid_env_value():
+    with patch.dict(
+        os.environ,
+        {"SCRAPE_PAGE_DELAY_SECONDS": "2.5"},
+        clear=True,
+    ):
+        assert get_scrape_delay_seconds() == 2.5
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    ["", "abc", "-1", "NaN", "inf", "-inf"],
+)
+def test_get_scrape_delay_seconds_falls_back_for_invalid_values(raw_value):
+    with patch.dict(
+        os.environ,
+        {"SCRAPE_PAGE_DELAY_SECONDS": raw_value},
+        clear=True,
+    ):
+        assert get_scrape_delay_seconds() == DEFAULT_SCRAPE_PAGE_DELAY_SECONDS
+
+
 @patch("orchestrator.time.sleep")
 @patch("orchestrator.parse_responses")
 @patch("orchestrator.fetch_page")
@@ -299,7 +329,7 @@ def test_collect_all_responses_stops_on_empty_page(
     assert mock_fetch.call_count == 2
     mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/1-")
     mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/3-")
-    mock_sleep.assert_called_once_with(1)
+    mock_sleep.assert_called_once_with(5.0)
 
 
 @patch("orchestrator.time.sleep")
@@ -353,7 +383,7 @@ def test_collect_all_responses_resume_can_return_zero_new_without_failure(
     assert cap_reached is False
     mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/4-")
     mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/5-")
-    mock_sleep.assert_called_once_with(1)
+    mock_sleep.assert_called_once_with(5.0)
 
 
 @patch("orchestrator.time.sleep")
@@ -430,7 +460,7 @@ def test_collect_all_responses_sets_interrupted_on_later_page_error(
     assert interrupted is True
     assert cap_reached is False
     assert mock_fetch.call_count == 2
-    mock_sleep.assert_called_once_with(1)
+    mock_sleep.assert_called_once_with(5.0)
 
 
 @patch("orchestrator.time.sleep")
@@ -453,7 +483,33 @@ def test_collect_all_responses_stops_at_cap_and_sets_cap_reached(
     assert interrupted is False
     assert cap_reached is True
     assert mock_fetch.call_count == 2
-    mock_sleep.assert_called_once_with(1)
+    mock_sleep.assert_called_once_with(5.0)
+
+
+@patch("orchestrator.time.sleep")
+@patch("orchestrator.parse_responses")
+@patch("orchestrator.fetch_page")
+def test_collect_all_responses_uses_configured_sleep_delay(
+    mock_fetch,
+    mock_parse,
+    mock_sleep,
+):
+    mock_fetch.return_value = MagicMock()
+    mock_parse.side_effect = [[{"res_no": 1}], []]
+
+    with patch.dict(
+        os.environ,
+        {"SCRAPE_PAGE_DELAY_SECONDS": "2.5"},
+        clear=True,
+    ):
+        result, interrupted, cap_reached = collect_all_responses(
+            "https://dic.nicovideo.jp/b/a/12345/"
+        )
+
+    assert result == [{"res_no": 1}]
+    assert interrupted is False
+    assert cap_reached is False
+    mock_sleep.assert_called_once_with(2.5)
 
 
 # ----- run_scrape orchestration flow -----
