@@ -51,34 +51,55 @@ main.py
 orchestrator.py
     Coordinates scraping flow and persistence order
     returns bounded scrape outcome semantics compatible with telemetry insertion
+    persists normal archive data through SQLite-centered archive storage
 
 archive_read.py
     Archive-facing read / export seam
+    provides saved article summaries, registered article list data,
+    and bounded txt / md / csv export helpers
 
 article_resolver.py
     Resolves bounded article input into canonical article targets
 
 http_client.py
-    Handles HTTP requests
+    HTTP fetch boundary
+    resolves Nicopedia `/id/<number>` article URLs to effective `/a/<title>`
+    URLs for target registration normalization
+    does not define scrape persistence semantics
 
 parser.py
     Extracts response data from HTML
 
 storage.py
-    Handles SQLite and JSON persistence, including:
+    Handles SQLite-centered persistence, including:
+    - archive persistence
     - target-registry persistence
     - append-only scrape-run telemetry persistence
     - read-only telemetry CSV derivation
+    - legacy JSON helper behavior for historical compatibility only
 
 target_list.py
-    Handles target registration, active-target reads, legacy target import,
-    and bounded target identity parsing
+    target registry boundary
+    validates and persists scrape targets
+    normalizes incoming Nicopedia `/id/<number>` URLs to effective `/a/<title>`
+    URLs before registration
+    keeps parse / validate helpers syntax-only
+
+host_cron.py
+    Host-side cron log formatting / rollover / compaction seam for runtime
+    operation
 
 web_app.py
     Provides the bounded Web-facing archive-check / follow-up interface
+    provides saved-download format selection and a read-only registered
+    article list page
 
 cli.py
     Provides CLI-facing archive output helpers
+
+operator_cli.py
+    Provides bounded operator-facing management and export helper behavior,
+    including ad-hoc saved article export for `tools/show_scraped_res.sh`
 
 tests/conftest.py
     Supports pytest import resolution
@@ -113,8 +134,17 @@ orchestrator.py
     article metadata fetching
     BBS base URL generation
     paginated response collection
-    JSON save + SQLite save flow
+    SQLite-centered archive save flow
     bounded scrape outcome semantics
+
+delete_request_feeder.py
+    bounded delete-request candidate extraction and normalization
+    bounded candidate sanitize hardening
+    bounded self-heal of already-dirty candidate input at handoff time
+    candidate-level failure containment for:
+    - resolver failure
+    - registration failure
+    tiny-summary-only feeder outcome visibility
 
 archive_read.py
     archive-facing read and export seam
@@ -130,11 +160,12 @@ parser.py
 
 storage.py
     persistence layer
-    archive persistence
+    SQLite-centered archive persistence
     queue persistence
     target-registry persistence
     append-only scrape-run telemetry persistence
     telemetry CSV derivation
+    legacy JSON helper behavior for historical compatibility only
 
 target_list.py
     target-source handling layer
@@ -143,10 +174,23 @@ target_list.py
     bounded legacy `targets.txt` import
     bounded target identity parsing
 
+host_cron.py
+    host/runtime-facing cron log readability layer
+    structured run-block emission
+    bounded daily rollover
+    bounded weekly log compaction
+
 web_app.py
     bounded Web-facing archive-check and follow-up actions
     bounded target registration
-    saved article TXT download
+    bounded saved-article download format selection
+    bounded read-only registered article list page
+    saved article download formats:
+    - txt
+    - md
+    - csv
+    default saved-download format:
+    - txt
 
 cli.py
     archive-facing CLI output formatting
@@ -221,16 +265,46 @@ For adoption history, refer to:
 Future note
 
 Unless a later task explicitly changes architecture,
-this document should be treated as the post-TASK031B baseline.
+this document should be treated as the post-SUBTASK007 baseline.
 
 Important current interpretation:
 
 - the bounded Web/runtime publication baseline exists
-- the target source of truth is DB-backed in bounded form
-- append-only scrape-run telemetry now exists in bounded form
-- telemetry CSV export exists as a read-only derived artifact
-- the next likely bounded mainline step is still an operator-facing target /
-  archive management seam
+- the runtime Web surface is publicly reachable through bounded nginx front-door
+  publication at:
+  - `nicoarc-prelim.mimizuku.dev`
+- the current Web saved-download baseline now includes bounded format selection
+  for:
+  - `txt`
+  - `md`
+  - `csv`
+- default saved-download format remains `txt`
+- the Web app now includes a bounded read-only registered article list page
+- normal archive operation is now SQLite-centered
+- always-on `data/*.json` archive output is no longer part of the current
+  scrape persistence path
+- existing JSON files should be treated as historical artifacts unless a later
+  task explicitly reintroduces JSON output semantics
+- operator ad-hoc article export now includes:
+  - `tools/show_scraped_res.sh`
+  - title input by default
+  - explicit `--title TITLE`
+  - explicit `--id ID`
+  - `--txt`
+  - `--md`
+  - `--csv`
+- HTML export remains deferred
+- JSON export remains deferred
+- append-only scrape-run telemetry still exists in bounded form
+- telemetry CSV export remains a read-only derived artifact
 - broader observability, GUI admin expansion, PostgreSQL migration,
   DB containerization, and wider dashboard/platform work remain deferred
   unless a later task explicitly brings them into scope
+- incoming Nicopedia `/id/<number>` article URLs should not be persisted as
+  scrape targets when they can be resolved to effective `/a/<title>` URLs
+- target registration and target import should share the same URL
+  normalization boundary
+- target parsing and URL validation remain syntax-only and must not perform
+  network access
+- existing runtime `id` rows are historical data until a separate maintenance
+  task handles them
