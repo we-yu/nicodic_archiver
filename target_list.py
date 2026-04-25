@@ -1,6 +1,7 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
+from http_client import resolve_id_article_url
 from storage import get_target, init_db, list_targets, mark_target_redirected
 from storage import register_target
 from storage import set_target_active_state
@@ -73,12 +74,31 @@ def list_registered_targets(
         conn.close()
 
 
+def normalize_target_url(article_url: str) -> str | None:
+    target_identity = _parse_target_identity(article_url)
+    if target_identity is None:
+        return None
+
+    canonical_url = target_identity["canonical_url"]
+    if target_identity["article_type"] != "id":
+        return canonical_url
+
+    try:
+        return resolve_id_article_url(canonical_url)
+    except RuntimeError:
+        return None
+
+
 def validate_target_url(article_url: str) -> bool:
-    return parse_target_identity(article_url) is not None
+    return _parse_target_identity(article_url) is not None
 
 
 def register_target_url(article_url: str, target_db_path: str) -> str:
-    target_identity = parse_target_identity(article_url)
+    normalized_url = normalize_target_url(article_url)
+    if normalized_url is None:
+        return "invalid"
+
+    target_identity = parse_target_identity(normalized_url)
     if target_identity is None:
         return "invalid"
 
@@ -231,27 +251,13 @@ def import_targets_from_text_file(
 
     lines = Path(source_path).read_text(encoding="utf-8").splitlines()
 
-    conn = init_db(target_db_path)
-    try:
-        for raw_line in lines:
-            line = _parse_target_line(raw_line)
-            if line is None:
-                continue
+    for raw_line in lines:
+        line = _parse_target_line(raw_line)
+        if line is None:
+            continue
 
-            counts["processed"] += 1
-            target_identity = _parse_target_identity(line)
-            if target_identity is None:
-                counts["invalid"] += 1
-                continue
-
-            result = register_target(
-                conn,
-                target_identity["article_id"],
-                target_identity["article_type"],
-                target_identity["canonical_url"],
-            )
-            counts[result["status"]] += 1
-    finally:
-        conn.close()
+        counts["processed"] += 1
+        result = register_target_url(line, target_db_path)
+        counts[result] += 1
 
     return counts
