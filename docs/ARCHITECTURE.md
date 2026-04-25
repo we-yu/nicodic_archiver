@@ -52,6 +52,8 @@ orchestrator.py
     Coordinates scraping flow and persistence order
     returns bounded scrape outcome semantics compatible with telemetry insertion
     persists normal archive data through SQLite-centered archive storage
+    reads `SCRAPE_PAGE_DELAY_SECONDS` for runtime-configurable BBS page
+    pagination delay, defaulting safely to 5.0 seconds
 
 archive_read.py
     Archive-facing read / export seam
@@ -136,6 +138,7 @@ orchestrator.py
     paginated response collection
     SQLite-centered archive save flow
     bounded scrape outcome semantics
+    runtime-configurable BBS page delay through `SCRAPE_PAGE_DELAY_SECONDS`
 
 delete_request_feeder.py
     bounded delete-request candidate extraction and normalization
@@ -265,7 +268,7 @@ For adoption history, refer to:
 Future note
 
 Unless a later task explicitly changes architecture,
-this document should be treated as the post-SUBTASK007 baseline.
+this document should be treated as the post-SUBTASK009 baseline.
 
 Important current interpretation:
 
@@ -308,3 +311,8 @@ Important current interpretation:
   network access
 - existing runtime `id` rows are historical data until a separate maintenance
   task handles them
+- BBS page-to-page scrape delay is runtime-configurable through
+  `SCRAPE_PAGE_DELAY_SECONDS`
+- unset or invalid scrape delay configuration falls back to 5.0 seconds
+- `.env.runtime.local` changes may require runtime container recreation before
+  they affect the running runtime container
