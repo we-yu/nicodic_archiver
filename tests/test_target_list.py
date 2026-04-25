@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from target_list import (
     deactivate_target,
     handoff_redirected_target,
@@ -5,6 +7,7 @@ from target_list import (
     inspect_registered_target,
     list_registered_targets,
     list_active_target_urls,
+    parse_target_identity,
     reactivate_target,
     register_target_url,
     validate_target_url,
@@ -15,16 +18,43 @@ def test_list_active_target_urls_reads_registered_targets_stably(tmp_path):
     target_db_path = tmp_path / "targets.db"
 
     register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
-    register_target_url("https://dic.nicovideo.jp/id/99999", str(target_db_path))
+    with patch(
+        "target_list.resolve_id_article_url",
+        return_value="https://dic.nicovideo.jp/a/osomatsu-san",
+    ):
+        register_target_url(
+            "https://dic.nicovideo.jp/id/99999",
+            str(target_db_path),
+        )
 
     assert list_active_target_urls(str(target_db_path)) == [
         "https://dic.nicovideo.jp/a/12345",
-        "https://dic.nicovideo.jp/id/99999",
+        "https://dic.nicovideo.jp/a/osomatsu-san",
     ]
 
 
 def test_validate_target_url_accepts_minimally_valid_nicopedia_article_url():
     assert validate_target_url("https://dic.nicovideo.jp/a/12345") is True
+
+
+def test_validate_target_url_stays_syntax_only_for_id_input():
+    with patch("target_list.resolve_id_article_url") as mock_resolve:
+        ok = validate_target_url("https://dic.nicovideo.jp/id/5364158")
+
+    assert ok is True
+    mock_resolve.assert_not_called()
+
+
+def test_parse_target_identity_remains_pure_for_id_input():
+    with patch("target_list.resolve_id_article_url") as mock_resolve:
+        identity = parse_target_identity("https://dic.nicovideo.jp/id/5364158")
+
+    assert identity == {
+        "article_id": "5364158",
+        "article_type": "id",
+        "canonical_url": "https://dic.nicovideo.jp/id/5364158",
+    }
+    mock_resolve.assert_not_called()
 
 
 def test_validate_target_url_rejects_non_article_shape():
@@ -45,6 +75,37 @@ def test_register_target_url_inserts_valid_target_into_registry(tmp_path):
     assert list_active_target_urls(str(target_db_path)) == [
         "https://dic.nicovideo.jp/a/12345",
     ]
+
+
+def test_register_target_url_stores_resolved_a_target_for_id_input(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+
+    with patch(
+        "target_list.resolve_id_article_url",
+        return_value="https://dic.nicovideo.jp/a/osomatsu-san",
+    ):
+        result = register_target_url(
+            "https://dic.nicovideo.jp/id/5364158",
+            str(target_db_path),
+        )
+
+    assert result == "added"
+    assert list_active_target_urls(str(target_db_path)) == [
+        "https://dic.nicovideo.jp/a/osomatsu-san",
+    ]
+
+
+def test_register_target_url_rejects_unresolved_id_input(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+
+    with patch("target_list.resolve_id_article_url", return_value=None):
+        result = register_target_url(
+            "https://dic.nicovideo.jp/id/5364158",
+            str(target_db_path),
+        )
+
+    assert result == "invalid"
+    assert target_db_path.exists() is False
 
 
 def test_register_target_url_suppresses_duplicate_identity(tmp_path):
@@ -84,10 +145,14 @@ def test_import_targets_from_text_file_is_one_shot_and_non_automatic(tmp_path):
         encoding="utf-8",
     )
 
-    result = import_targets_from_text_file(
-        str(source_file),
-        str(target_db_path),
-    )
+    with patch(
+        "target_list.resolve_id_article_url",
+        return_value="https://dic.nicovideo.jp/a/777-title",
+    ):
+        result = import_targets_from_text_file(
+            str(source_file),
+            str(target_db_path),
+        )
 
     assert result == {
         "source_path": str(source_file),
@@ -100,7 +165,7 @@ def test_import_targets_from_text_file_is_one_shot_and_non_automatic(tmp_path):
     }
     assert list_active_target_urls(str(target_db_path)) == [
         "https://dic.nicovideo.jp/a/12345",
-        "https://dic.nicovideo.jp/id/777",
+        "https://dic.nicovideo.jp/a/777-title",
     ]
 
 
