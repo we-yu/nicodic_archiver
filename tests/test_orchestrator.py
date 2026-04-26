@@ -79,10 +79,62 @@ def test_fetch_article_metadata_record_reads_article_dates():
     assert record == {
         "article_id": "12345",
         "article_type": "a",
+        "article_url": "https://dic.nicovideo.jp/a/12345",
         "title": "Foo",
         "published_at": "2024-01-02T03:04:05+09:00",
         "modified_at": "2025-02-03T04:05:06+09:00",
     }
+
+
+def test_fetch_article_metadata_record_prefers_canonical_a_over_og_id():
+    html = """
+    <html><head>
+    <meta property="og:title" content="おそ松さんとは">
+    <link rel="canonical"
+     href="/a/%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93">
+    <meta property="og:url" content="https://dic.nicovideo.jp/id/5364158">
+    </head></html>
+    """
+    soup = BeautifulSoup(html, "lxml")
+
+    with patch("orchestrator.fetch_page", return_value=soup):
+        record = fetch_article_metadata_record(
+            "https://dic.nicovideo.jp/id/5364158"
+        )
+
+    assert record == {
+        "article_id": "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93",
+        "article_type": "a",
+        "article_url": (
+            "https://dic.nicovideo.jp/a/"
+            "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93"
+        ),
+        "title": "おそ松さん",
+        "published_at": None,
+        "modified_at": None,
+    }
+
+
+def test_fetch_article_metadata_preserves_canonical_article_url():
+    canonical_url = (
+        "https://dic.nicovideo.jp/a/"
+        "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93"
+    )
+
+    with patch(
+        "orchestrator.fetch_article_metadata_record",
+        return_value={
+            "article_id": "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93",
+            "article_type": "a",
+            "article_url": canonical_url,
+            "title": "おそ松さん",
+            "published_at": None,
+            "modified_at": None,
+        },
+    ):
+        result = fetch_article_metadata("https://dic.nicovideo.jp/id/5364158")
+
+    assert result.article_url == canonical_url
 
 
 def test_run_scrape_respects_existing_fetch_metadata_patch_seam():
@@ -114,6 +166,38 @@ def test_run_scrape_respects_existing_fetch_metadata_patch_seam():
 
     mock_meta.assert_called_once_with(article_url)
     assert mock_save_db.call_args.kwargs == {}
+
+
+def test_run_scrape_legacy_tuple_metadata_uses_input_a_identity():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+    responses = [{"res_no": 1}]
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=("12345", "a", "Title"),
+    ):
+        with patch("orchestrator.get_max_saved_res_no", return_value=None):
+            with patch(
+                "orchestrator.collect_all_responses",
+                return_value=(responses, False, False),
+            ) as mock_collect:
+                conn = MagicMock()
+                with patch("orchestrator.init_db", return_value=conn):
+                    with patch("orchestrator.save_to_db") as mock_save_db:
+                        with patch("orchestrator.print"):
+                            run_scrape(article_url)
+
+    mock_collect.assert_called_once_with(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        response_cap=None,
+        progress_reporter=None,
+    )
+    assert mock_save_db.call_args.args[1:5] == (
+        "12345",
+        "a",
+        "Title",
+        article_url,
+    )
 
 
 def test_run_scrape_passes_metadata_kwargs_only_when_present():
@@ -155,6 +239,77 @@ def test_run_scrape_passes_metadata_kwargs_only_when_present():
         "published_at": "2024-01-02T03:04:05+09:00",
         "modified_at": "2025-02-03T04:05:06+09:00",
     }
+
+
+def test_run_scrape_uses_canonical_article_url_for_bbs_collection():
+    article_url = "https://dic.nicovideo.jp/id/5364158"
+    canonical_url = (
+        "https://dic.nicovideo.jp/a/"
+        "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93"
+    )
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=ArticleMetadataResult(
+            "5364158",
+            "id",
+            "おそ松さん",
+            article_url=canonical_url,
+        ),
+    ) as mock_meta:
+        with patch("orchestrator.get_max_saved_res_no", return_value=None):
+            with patch(
+                "orchestrator.collect_all_responses",
+                return_value=([], False, False),
+            ) as mock_collect:
+                conn = MagicMock()
+                with patch("orchestrator.init_db", return_value=conn):
+                    with patch("orchestrator.save_to_db"):
+                        with patch("orchestrator.print"):
+                            run_scrape(article_url)
+
+    mock_meta.assert_called_once_with(article_url)
+    mock_collect.assert_called_once_with(
+        "https://dic.nicovideo.jp/b/a/"
+        "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93/",
+        response_cap=None,
+        progress_reporter=None,
+    )
+
+
+def test_run_scrape_persists_final_canonical_a_identity_at_save_boundary():
+    article_url = "https://dic.nicovideo.jp/id/5364158"
+    canonical_url = (
+        "https://dic.nicovideo.jp/a/"
+        "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93"
+    )
+    responses = [{"res_no": 1}]
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=ArticleMetadataResult(
+            "5364158",
+            "id",
+            "おそ松さん",
+            article_url=canonical_url,
+        ),
+    ):
+        with patch("orchestrator.get_max_saved_res_no", return_value=None):
+            with patch(
+                "orchestrator.collect_all_responses",
+                return_value=(responses, False, False),
+            ):
+                conn = MagicMock()
+                with patch("orchestrator.init_db", return_value=conn):
+                    with patch("orchestrator.save_to_db") as mock_save_db:
+                        with patch("orchestrator.print"):
+                            run_scrape(article_url)
+
+    save_args = mock_save_db.call_args.args
+    assert save_args[1] == "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93"
+    assert save_args[2] == "a"
+    assert save_args[4] == canonical_url
+    assert save_args[5] == responses
 
 
 def test_run_scrape_does_not_write_json_artifact(tmp_path, monkeypatch):
