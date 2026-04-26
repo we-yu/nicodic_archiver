@@ -1,0 +1,5 @@
+
+# runtime local state must not be baked into Docker images
+runtime/data/**
+runtime/logs/**
+runtime/targets/**
