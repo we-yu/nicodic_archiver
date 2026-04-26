@@ -32,12 +32,15 @@ class ArticleMetadataResult:
         article_id: str,
         article_type: str,
         title: str,
+        *,
+        article_url: str | None = None,
         published_at: str | None = None,
         modified_at: str | None = None,
     ) -> None:
         self.article_id = article_id
         self.article_type = article_type
         self.title = title
+        self.article_url = article_url
         self.published_at = published_at
         self.modified_at = modified_at
 
@@ -172,6 +175,53 @@ def _extract_itemprop_datetime(soup, itemprop: str) -> str | None:
     return text or None
 
 
+def _extract_canonical_article_url(article_url: str, soup) -> str | None:
+    canonical_tag = soup.find(
+        "link",
+        rel=lambda value: value and "canonical" in value,
+    )
+    if canonical_tag is not None:
+        href = canonical_tag.get("href", "").strip()
+        canonical_url = _normalize_redirect_target_url(article_url, href)
+        canonical_identity = parse_target_identity(canonical_url or "")
+        if (
+            canonical_identity is not None
+            and canonical_identity["article_type"] == "a"
+        ):
+            return canonical_url
+
+    og_url = soup.find("meta", property="og:url")
+    if og_url is None:
+        return None
+
+    return _normalize_redirect_target_url(
+        article_url,
+        og_url.get("content", "").strip(),
+    )
+
+
+def _select_scrape_identity(
+    article_url: str,
+    metadata_article_url: str | None,
+) -> dict:
+    metadata_identity = parse_target_identity(metadata_article_url or "")
+    if metadata_identity is not None and metadata_identity["article_type"] == "a":
+        return metadata_identity
+
+    input_identity = parse_target_identity(article_url)
+    if input_identity is not None and input_identity["article_type"] == "a":
+        return input_identity
+
+    if metadata_identity is not None:
+        return metadata_identity
+
+    return input_identity or {
+        "article_id": "",
+        "article_type": "",
+        "canonical_url": article_url,
+    }
+
+
 def fetch_article_metadata_record(article_url: str) -> dict:
     try:
         soup = fetch_page(article_url)
@@ -191,17 +241,18 @@ def fetch_article_metadata_record(article_url: str) -> dict:
     title_tag = soup.find("meta", property="og:title")
     title = title_tag["content"].split("とは")[0] if title_tag else "unknown"
 
-    og_url = soup.find("meta", property="og:url")
-    if og_url is None:
+    canonical_article_url = _extract_canonical_article_url(article_url, soup)
+    if canonical_article_url is None:
         raise ArticleNotFoundError(f"Article not found: {article_url}")
 
-    article_id = og_url["content"].rstrip("/").split("/")[-1]
-    parsed = urlparse(article_url)
-    article_type = parsed.path.strip("/").split("/")[0]
+    target_identity = parse_target_identity(canonical_article_url)
+    if target_identity is None:
+        raise ArticleNotFoundError(f"Article not found: {article_url}")
 
     return {
-        "article_id": article_id,
-        "article_type": article_type,
+        "article_id": target_identity["article_id"],
+        "article_type": target_identity["article_type"],
+        "article_url": target_identity["canonical_url"],
         "title": title,
         "published_at": _extract_itemprop_datetime(soup, "datePublished"),
         "modified_at": _extract_itemprop_datetime(soup, "dateModified"),
@@ -490,6 +541,7 @@ def fetch_article_metadata(article_url: str):
         record["article_id"],
         record["article_type"],
         record["title"],
+        article_url=record.get("article_url"),
         published_at=record.get("published_at"),
         modified_at=record.get("modified_at"),
     )
@@ -505,6 +557,14 @@ def run_scrape(
     try:
         metadata_result = fetch_article_metadata(article_url)
         article_id, article_type, title = metadata_result
+        metadata_article_url = getattr(metadata_result, "article_url", None)
+        canonical_identity = _select_scrape_identity(
+            article_url,
+            metadata_article_url,
+        )
+        article_id = canonical_identity["article_id"] or article_id
+        article_type = canonical_identity["article_type"] or article_type
+        canonical_article_url = canonical_identity["canonical_url"]
 
     except RedirectArticleError as exc:
         if progress_reporter is None:
@@ -548,8 +608,12 @@ def run_scrape(
             short_reason="article_not_found",
         )
 
-    display_label = _display_target_label(title, article_id, article_url)
-    target_ref = article_id or article_url
+    display_label = _display_target_label(
+        title,
+        article_id,
+        canonical_article_url,
+    )
+    target_ref = article_id or canonical_article_url
 
     if (
         progress_reporter is not None
@@ -560,7 +624,7 @@ def run_scrape(
             target_index,
             target_total,
             display_label,
-            article_url,
+            canonical_article_url,
         )
 
     if article_id in DENYLIST_ARTICLE_IDS:
@@ -587,7 +651,7 @@ def run_scrape(
         )
 
     max_saved_res_no = get_max_saved_res_no(article_id, article_type)
-    bbs_base_url = build_bbs_base_url(article_url)
+    bbs_base_url = build_bbs_base_url(canonical_article_url)
 
     if max_saved_res_no is None:
         responses, interrupted, cap_reached = collect_all_responses(
@@ -650,14 +714,14 @@ def run_scrape(
         if progress_reporter is None:
             print(
                 f"BBS fetch interrupted; saving partial responses "
-                f"({len(responses)} items) for: {article_url}"
+                f"({len(responses)} items) for: {canonical_article_url}"
             )
     elif cap_reached and responses:
         # 取得上限に到達。その時点までの responses を保存する。
         if progress_reporter is None:
             print(
                 f"Response cap reached; saving partial responses "
-                f"({len(responses)} items) for: {article_url}"
+                f"({len(responses)} items) for: {canonical_article_url}"
             )
 
     conn = init_db()
@@ -674,7 +738,7 @@ def run_scrape(
         article_id,
         article_type,
         title,
-        article_url,
+        canonical_article_url,
         responses,
         **save_kwargs,
     )
