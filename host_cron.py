@@ -213,6 +213,7 @@ class HostCronReporter:
         self._partial_targets = 0
         self._error_refs: list[str] = []
         self._current_label: str | None = None
+        self._current_page_count = 0
 
     def emit(self, tag: str, message: str, indent_level: int = 0) -> None:
         indent = "  " * indent_level
@@ -242,6 +243,7 @@ class HostCronReporter:
         canonical_url: str,
     ) -> None:
         self._current_label = label
+        self._current_page_count = 0
         self.emit(
             "STEP",
             f"{index}/{total} title={label} url={canonical_url}",
@@ -249,11 +251,12 @@ class HostCronReporter:
         )
 
     def page_progress(self, page_url: str, collected: int, total: int) -> None:
-        self.emit(
-            "INFO",
-            f"page={page_url} collected={collected} total={total}",
-            indent_level=2,
-        )
+        # Compact normal-success page progress while preserving a visible
+        # heartbeat in host_cron output. Warning / error / interrupted /
+        # cap-reached paths still emit their full detail lines below.
+        self._current_page_count += 1
+        page_ref = page_url.rsplit("/", 1)[-1]
+        self.emit("INFO", f"[{page_ref}:OK]", indent_level=2)
 
     def later_page_interrupted(
         self,
@@ -312,6 +315,7 @@ class HostCronReporter:
             self._append_error_ref(ref)
 
         self._current_label = None
+        self._current_page_count = 0
 
     def _append_error_ref(self, ref: str) -> None:
         if ref not in self._error_refs:
