@@ -9,6 +9,7 @@ from archive_read import (
     read_article_archive,
     read_article_summaries,
 )
+from canonical_identity_merge import merge_canonical_a_identity_groups
 from cli import build_archive_export
 from target_list import (
     deactivate_target,
@@ -219,6 +220,43 @@ def export_archive_for_operator(
     print(f"Type: {article_type}")
     print(f"Format: {output_format}")
     print(f"Output: {output_path}")
+    return True
+
+
+def merge_canonical_identities_for_operator(db_path, apply=False):
+    try:
+        result = merge_canonical_a_identity_groups(db_path, apply=apply)
+    except FileNotFoundError as exc:
+        print("Canonical identity merge failed")
+        print(f"DB: {db_path}")
+        print(f"Reason: {exc}")
+        return False
+
+    print("=== CANONICAL IDENTITY MERGE ===")
+    print(f"DB: {db_path}")
+    print(f"Mode: {'apply' if apply else 'dry-run'}")
+    print(f"Duplicate Groups: {result['group_count']}")
+    print(f"Responses To Copy: {result['copied_response_count']}")
+    print(
+        "Overlapping Responses: "
+        f"{result['skipped_existing_response_count']}"
+    )
+
+    if apply:
+        print(f"Cleaned Article Rows: {result['cleaned_article_count']}")
+        print(f"Cleaned Response Rows: {result['cleaned_response_count']}")
+        print(f"Rekeyed Target Rows: {result['target_rekey_count']}")
+        print(f"Deleted Target Rows: {result['target_deleted_count']}")
+
+    for group in result["groups"]:
+        print(f"URL: {group['canonical_url']}")
+        print(
+            "Keep: "
+            f"{group['keep_identity']['article_id']} "
+            f"{group['keep_identity']['article_type']}"
+        )
+        print(f"Merge Sources: {len(group['source_identities'])}")
+
     return True
 
 

@@ -437,6 +437,32 @@ def test_main_operator_archive_export_calls_operator_helper(mock_export_archive)
     )
 
 
+@patch("main.merge_canonical_identities_for_operator")
+def test_main_operator_archive_merge_canonical_identities_calls_helper(
+    mock_merge_canonical_identities,
+):
+    mock_merge_canonical_identities.return_value = True
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "operator",
+            "archive",
+            "merge-canonical-identities",
+            "--db",
+            "archive.db",
+            "--apply",
+        ],
+    ):
+        main_module.main()
+
+    mock_merge_canonical_identities.assert_called_once_with(
+        "archive.db",
+        apply=True,
+    )
+
+
 def test_main_operator_without_required_args_exits_with_usage(capsys):
     with patch("sys.argv", ["main.py", "operator"]):
         with pytest.raises(SystemExit) as exc_info:
@@ -447,6 +473,7 @@ def test_main_operator_without_required_args_exits_with_usage(capsys):
     assert "Operator usage:" in out
     assert "operator target list" in out
     assert "operator archive export" in out
+    assert "merge-canonical-identities" in out
 
 
 @patch("main.verify_one_shot_fetch")

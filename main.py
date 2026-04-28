@@ -24,6 +24,7 @@ from operator_cli import export_archive_for_operator
 from operator_cli import inspect_archive_for_operator
 from operator_cli import inspect_target_for_operator
 from operator_cli import list_archives_for_operator, list_targets_for_operator
+from operator_cli import merge_canonical_identities_for_operator
 from operator_cli import reactivate_target_for_operator
 from operator_cli import show_scraped_res_for_operator
 from orchestrator import run_scrape
@@ -764,6 +765,10 @@ def _print_operator_usage():
         "  python main.py operator archive export <article_id> "
         "<article_type> --format txt|md [--output PATH]"
     )
+    print(
+        "  python main.py operator archive merge-canonical-identities "
+        "--db PATH [--apply]"
+    )
 
 
 def _handle_show_scraped_res(args):
@@ -959,6 +964,30 @@ def _handle_operator_archive(args):
             args[2],
             output_format,
             output_path=output_path,
+        ):
+            sys.exit(1)
+        return
+
+    if action == "merge-canonical-identities":
+        try:
+            db_path = _read_optional_flag(args, "--db")
+        except ValueError:
+            print(
+                "Usage: operator archive merge-canonical-identities "
+                "--db PATH [--apply]"
+            )
+            sys.exit(1)
+
+        if db_path is None:
+            print(
+                "Usage: operator archive merge-canonical-identities "
+                "--db PATH [--apply]"
+            )
+            sys.exit(1)
+
+        if not merge_canonical_identities_for_operator(
+            db_path,
+            apply="--apply" in args[1:],
         ):
             sys.exit(1)
         return

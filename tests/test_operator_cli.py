@@ -3,6 +3,7 @@ from operator_cli import (
     inspect_target_for_operator,
     list_archives_for_operator,
     list_targets_for_operator,
+    merge_canonical_identities_for_operator,
     show_scraped_res_for_operator,
 )
 from storage import init_db, save_to_db
@@ -136,6 +137,41 @@ def test_export_archive_for_operator_writes_requested_output_file(
     content = output_path.read_text(encoding="utf-8")
     assert "# Archive Title" in content
     assert "### Response 1" in content
+
+
+def test_merge_canonical_identities_for_operator_reports_dry_run_summary(capsys):
+    with patch(
+        "operator_cli.merge_canonical_a_identity_groups",
+        return_value={
+            "group_count": 1,
+            "copied_response_count": 2,
+            "skipped_existing_response_count": 3,
+            "cleaned_article_count": 0,
+            "cleaned_response_count": 0,
+            "target_rekey_count": 0,
+            "target_deleted_count": 0,
+            "groups": [
+                {
+                    "canonical_url": "https://dic.nicovideo.jp/a/slug-title",
+                    "keep_identity": {
+                        "article_id": "slug-title",
+                        "article_type": "a",
+                    },
+                    "source_identities": [
+                        {"article_id": "12345", "article_type": "a"}
+                    ],
+                }
+            ],
+        },
+    ) as mock_merge:
+        assert merge_canonical_identities_for_operator("archive.db") is True
+
+    mock_merge.assert_called_once_with("archive.db", apply=False)
+    out = capsys.readouterr().out
+    assert "=== CANONICAL IDENTITY MERGE ===" in out
+    assert "Mode: dry-run" in out
+    assert "Duplicate Groups: 1" in out
+    assert "Keep: slug-title a" in out
 
 
 def _seed_article(tmp_path, article_id="12345", article_type="a"):
