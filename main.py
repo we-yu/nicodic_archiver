@@ -18,6 +18,10 @@ from delete_request_feeder import (
 )
 from host_cron import HostCronReporter, compress_weekly_archives, local_now
 from host_cron import rotate_active_log
+from identity_merge import (
+    format_merge_summary_lines,
+    merge_canonical_url_identities,
+)
 from operator_cli import add_target_for_operator
 from operator_cli import deactivate_target_for_operator
 from operator_cli import export_archive_for_operator
@@ -764,6 +768,10 @@ def _print_operator_usage():
         "  python main.py operator archive export <article_id> "
         "<article_type> --format txt|md [--output PATH]"
     )
+    print(
+        "  python main.py operator merge canonical-url "
+        "--db PATH [--apply]"
+    )
 
 
 def _handle_show_scraped_res(args):
@@ -967,6 +975,49 @@ def _handle_operator_archive(args):
     sys.exit(1)
 
 
+def _handle_operator_merge(args):
+    if not args or args[0] != "canonical-url":
+        print(
+            "Usage: operator merge canonical-url --db PATH [--apply]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        db_path = _read_optional_flag(args, "--db", None)
+    except ValueError:
+        print(
+            "Usage: operator merge canonical-url --db PATH [--apply]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not db_path:
+        print(
+            "operator merge canonical-url requires an explicit --db PATH",
+            file=sys.stderr,
+        )
+        print(
+            "Refusing to use the runtime DB as an implicit default.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    apply_flag = "--apply" in args[1:]
+
+    try:
+        summary = merge_canonical_url_identities(db_path, apply=apply_flag)
+    except FileNotFoundError as exc:
+        print(f"DB path does not exist: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as exc:
+        print(f"Invalid input: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    for line in format_merge_summary_lines(db_path, summary):
+        print(line)
+
+
 def _handle_operator_cli(args):
     if len(args) < 2:
         _print_operator_usage()
@@ -978,6 +1029,9 @@ def _handle_operator_cli(args):
         return
     if area == "archive":
         _handle_operator_archive(args[1:])
+        return
+    if area == "merge":
+        _handle_operator_merge(args[1:])
         return
 
     _print_operator_usage()

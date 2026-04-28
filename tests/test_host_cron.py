@@ -129,11 +129,18 @@ def test_host_cron_reporter_emits_run_block_and_error_summary():
     text = stream.getvalue()
     assert "[RUN] START 2026-04-09 07:00:00" in text
     assert "  [STEP] 1/2 title=UNIX url=https://dic.nicovideo.jp/a/694740" in text
+    # Normal-success per-page INFO lines are intentionally compacted out
+    # of host_cron output. Warning / error detail (later_page_interrupted)
+    # below is still emitted with its INFO detail line.
     assert (
         "    [INFO] page=https://dic.nicovideo.jp/b/a/694740/1- "
-        "collected=30 total=30" in text
-    )
+        "collected=30 total=30"
+    ) not in text
     assert "  [WARN] FamilyMart later_page_interrupted" in text
+    assert (
+        "    [INFO] page=https://dic.nicovideo.jp/b/a/218285/31- "
+        "status=404 saved_partial=30"
+    ) in text
     assert "[RUN] END 2026-04-09 07:00:09 status=partial_failure" in text
     assert "[SUMMARY] targets=2 ok=1 fail=1 duration=9s" in text
     assert "[ERROR SUMMARY] count=1 refs=218285" in text
