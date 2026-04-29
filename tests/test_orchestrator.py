@@ -8,17 +8,23 @@ from bs4 import BeautifulSoup
 from orchestrator import (
     ArticleMetadataResult,
     ArticleNotFoundError,
+    DEFAULT_BBS_RESPONSES_PER_PAGE,
     DEFAULT_SCRAPE_PAGE_DELAY_SECONDS,
     QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP,
     RedirectArticleError,
     build_bbs_base_url,
+    build_bbs_page_url,
     fetch_article_metadata_record,
     fetch_article_metadata,
     collect_all_responses,
     drain_queue_requests,
     extract_redirect_target_url,
+    get_bbs_responses_per_page,
+    get_containing_page_start,
+    get_next_page_start,
     get_scrape_delay_seconds,
     get_max_saved_res_no,
+    is_terminal_bbs_page,
     is_redirect_article_page,
     load_saved_responses,
     run_scrape,
@@ -442,6 +448,20 @@ def test_get_scrape_delay_seconds_defaults_to_five_when_unset():
         assert get_scrape_delay_seconds() == 5.0
 
 
+def test_get_bbs_responses_per_page_defaults_to_thirty_when_unset():
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_bbs_responses_per_page() == 30
+
+
+def test_get_bbs_responses_per_page_uses_valid_env_value():
+    with patch.dict(
+        os.environ,
+        {"BBS_RESPONSES_PER_PAGE": "50"},
+        clear=True,
+    ):
+        assert get_bbs_responses_per_page() == 50
+
+
 def test_get_scrape_delay_seconds_uses_valid_env_value():
     with patch.dict(
         os.environ,
@@ -464,6 +484,38 @@ def test_get_scrape_delay_seconds_falls_back_for_invalid_values(raw_value):
         assert get_scrape_delay_seconds() == DEFAULT_SCRAPE_PAGE_DELAY_SECONDS
 
 
+@pytest.mark.parametrize("raw_value", ["", "abc", "0", "-1"])
+def test_get_bbs_responses_per_page_falls_back_for_invalid_values(raw_value):
+    with patch.dict(
+        os.environ,
+        {"BBS_RESPONSES_PER_PAGE": raw_value},
+        clear=True,
+    ):
+        assert get_bbs_responses_per_page() == DEFAULT_BBS_RESPONSES_PER_PAGE
+
+
+def test_get_containing_page_start_rounds_to_bbs_boundary():
+    assert get_containing_page_start(22384, 30) == 22381
+    assert get_containing_page_start(38805, 30) == 38791
+
+
+def test_get_next_page_start_advances_by_page_size():
+    assert get_next_page_start(22381, 30) == 22411
+    assert get_next_page_start(38791, 30) == 38821
+
+
+def test_build_bbs_page_url_uses_boundary_start():
+    assert (
+        build_bbs_page_url("https://dic.nicovideo.jp/b/a/12345/", 61)
+        == "https://dic.nicovideo.jp/b/a/12345/61-"
+    )
+
+
+def test_is_terminal_bbs_page_detects_partial_page():
+    assert is_terminal_bbs_page([{"res_no": 1}], 30) is True
+    assert is_terminal_bbs_page([{"res_no": n} for n in range(30)], 30) is False
+
+
 @patch("orchestrator.time.sleep")
 @patch("orchestrator.parse_responses")
 @patch("orchestrator.fetch_page")
@@ -472,18 +524,18 @@ def test_collect_all_responses_stops_on_empty_page(
 ):
     mock_fetch.return_value = MagicMock()
     mock_parse.side_effect = [
-        [{"res_no": 1}, {"res_no": 2}],
+        [{"res_no": n} for n in range(1, 31)],
         [],
     ]
     result, interrupted, cap_reached = collect_all_responses(
         "https://dic.nicovideo.jp/b/a/12345/"
     )
-    assert result == [{"res_no": 1}, {"res_no": 2}]
+    assert result == [{"res_no": n} for n in range(1, 31)]
     assert interrupted is False
     assert cap_reached is False
     assert mock_fetch.call_count == 2
     mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/1-")
-    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/3-")
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/31-")
     mock_sleep.assert_called_once_with(5.0)
 
 
@@ -495,24 +547,25 @@ def test_collect_all_responses_resumes_from_anchor_and_filters_existing_first_pa
 ):
     mock_fetch.return_value = MagicMock()
     mock_parse.side_effect = [
-        [{"res_no": 4}, {"res_no": 5}],
-        [{"res_no": 6}],
-        [],
+        [{"res_no": n} for n in range(31, 61)],
+        [{"res_no": 61}],
     ]
 
     result, interrupted, cap_reached = collect_all_responses(
         "https://dic.nicovideo.jp/b/a/12345/",
-        start=4,
-        max_saved_res_no=4,
+        start=34,
+        max_saved_res_no=34,
     )
 
-    assert result == [{"res_no": 5}, {"res_no": 6}]
+    assert result == [
+        {"res_no": n} for n in range(35, 61)
+    ] + [{"res_no": 61}]
     assert interrupted is False
     assert cap_reached is False
-    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/4-")
-    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/6-")
-    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/7-")
-    assert mock_sleep.call_count == 2
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/31-")
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/61-")
+    assert mock_fetch.call_count == 2
+    mock_sleep.assert_called_once_with(5.0)
 
 
 @patch("orchestrator.time.sleep")
@@ -523,21 +576,74 @@ def test_collect_all_responses_resume_can_return_zero_new_without_failure(
 ):
     mock_fetch.return_value = MagicMock()
     mock_parse.side_effect = [
-        [{"res_no": 4}],
-        [],
+        [{"res_no": n} for n in range(31, 35)],
     ]
 
     result, interrupted, cap_reached = collect_all_responses(
         "https://dic.nicovideo.jp/b/a/12345/",
-        start=4,
-        max_saved_res_no=4,
+        start=34,
+        max_saved_res_no=34,
     )
 
     assert result == []
     assert interrupted is False
     assert cap_reached is False
-    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/4-")
-    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/5-")
+    mock_fetch.assert_called_once_with("https://dic.nicovideo.jp/b/a/12345/31-")
+    mock_sleep.assert_not_called()
+
+
+@patch("orchestrator.time.sleep")
+@patch("orchestrator.parse_responses")
+@patch("orchestrator.fetch_page")
+def test_collect_all_responses_stops_after_partial_terminal_page(
+    mock_fetch, mock_parse, mock_sleep
+):
+    mock_fetch.return_value = MagicMock()
+    mock_parse.return_value = [
+        {"res_no": n} for n in range(22381, 22386)
+    ]
+
+    result, interrupted, cap_reached = collect_all_responses(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        start=22384,
+        max_saved_res_no=22384,
+    )
+
+    assert result == [{"res_no": 22385}]
+    assert interrupted is False
+    assert cap_reached is False
+    mock_fetch.assert_called_once_with(
+        "https://dic.nicovideo.jp/b/a/12345/22381-"
+    )
+    mock_sleep.assert_not_called()
+
+
+@patch("orchestrator.time.sleep")
+@patch("orchestrator.parse_responses")
+@patch("orchestrator.fetch_page")
+def test_collect_all_responses_resume_uses_next_page_boundary(
+    mock_fetch, mock_parse, mock_sleep
+):
+    mock_fetch.return_value = MagicMock()
+    mock_parse.side_effect = [
+        [{"res_no": n} for n in range(38791, 38821)],
+        [{"res_no": 38821}],
+    ]
+
+    result, interrupted, cap_reached = collect_all_responses(
+        "https://dic.nicovideo.jp/b/a/12345/",
+        start=38805,
+        max_saved_res_no=38805,
+    )
+
+    assert result == [
+        {"res_no": n} for n in range(38806, 38821)
+    ] + [{"res_no": 38821}]
+    assert interrupted is False
+    assert cap_reached is False
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/38791-")
+    mock_fetch.assert_any_call("https://dic.nicovideo.jp/b/a/12345/38821-")
+    assert mock_fetch.call_count == 2
     mock_sleep.assert_called_once_with(5.0)
 
 
@@ -605,13 +711,13 @@ def test_collect_all_responses_sets_interrupted_on_later_page_error(
         MagicMock(),
         RuntimeError("temporary network issue"),
     ]
-    mock_parse.return_value = [{"res_no": 1}]
+    mock_parse.return_value = [{"res_no": n} for n in range(1, 31)]
 
     result, interrupted, cap_reached = collect_all_responses(
         "https://dic.nicovideo.jp/b/a/12345/"
     )
 
-    assert result == [{"res_no": 1}]
+    assert result == [{"res_no": n} for n in range(1, 31)]
     assert interrupted is True
     assert cap_reached is False
     assert mock_fetch.call_count == 2
@@ -626,9 +732,10 @@ def test_collect_all_responses_stops_at_cap_and_sets_cap_reached(
     mock_fetch, mock_parse, mock_sleep
 ):
     mock_fetch.return_value = MagicMock()
+
     mock_parse.side_effect = [
-        [{"res_no": 1}, {"res_no": 2}],
-        [{"res_no": 3}, {"res_no": 4}],
+        [{"res_no": n} for n in range(1, 31)],
+        [{"res_no": 31}, {"res_no": 32}],
     ]
     result, interrupted, cap_reached = collect_all_responses(
         "https://dic.nicovideo.jp/b/a/12345/"
@@ -637,8 +744,8 @@ def test_collect_all_responses_stops_at_cap_and_sets_cap_reached(
     assert result == [{"res_no": 1}, {"res_no": 2}, {"res_no": 3}]
     assert interrupted is False
     assert cap_reached is True
-    assert mock_fetch.call_count == 2
-    mock_sleep.assert_called_once_with(5.0)
+    assert mock_fetch.call_count == 1
+    mock_sleep.assert_not_called()
 
 
 @patch("orchestrator.time.sleep")
@@ -650,18 +757,24 @@ def test_collect_all_responses_uses_configured_sleep_delay(
     mock_sleep,
 ):
     mock_fetch.return_value = MagicMock()
-    mock_parse.side_effect = [[{"res_no": 1}], []]
+    mock_parse.side_effect = [
+        [{"res_no": n} for n in range(1, 31)],
+        [],
+    ]
 
     with patch.dict(
         os.environ,
-        {"SCRAPE_PAGE_DELAY_SECONDS": "2.5"},
+        {
+            "SCRAPE_PAGE_DELAY_SECONDS": "2.5",
+            "BBS_RESPONSES_PER_PAGE": "30",
+        },
         clear=True,
     ):
         result, interrupted, cap_reached = collect_all_responses(
             "https://dic.nicovideo.jp/b/a/12345/"
         )
 
-    assert result == [{"res_no": 1}]
+    assert result == [{"res_no": n} for n in range(1, 31)]
     assert interrupted is False
     assert cap_reached is False
     mock_sleep.assert_called_once_with(2.5)

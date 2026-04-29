@@ -22,7 +22,7 @@ QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP = 10_800
 # 仮置き。known high-volume article を skip するための seed。
 DENYLIST_ARTICLE_IDS = frozenset({"480340", "237789"})
 
-BBS_PAGE_SIZE = 30
+DEFAULT_BBS_RESPONSES_PER_PAGE = 30
 DEFAULT_SCRAPE_PAGE_DELAY_SECONDS = 5.0
 
 
@@ -112,9 +112,45 @@ def get_scrape_delay_seconds() -> float:
     return delay_seconds
 
 
-def get_containing_page_start(res_no: int) -> int:
+def get_bbs_responses_per_page() -> int:
+    raw_value = os.environ.get("BBS_RESPONSES_PER_PAGE")
+    if raw_value is None:
+        return DEFAULT_BBS_RESPONSES_PER_PAGE
+
+    try:
+        page_size = int(raw_value)
+    except (TypeError, ValueError):
+        return DEFAULT_BBS_RESPONSES_PER_PAGE
+
+    if page_size <= 0:
+        return DEFAULT_BBS_RESPONSES_PER_PAGE
+
+    return page_size
+
+
+def get_containing_page_start(
+    res_no: int,
+    page_size: int | None = None,
+) -> int:
     """Return the BBS page start that contains the given response number."""
-    return ((res_no - 1) // BBS_PAGE_SIZE) * BBS_PAGE_SIZE + 1
+    effective_page_size = page_size or get_bbs_responses_per_page()
+    return ((res_no - 1) // effective_page_size) * effective_page_size + 1
+
+
+def get_next_page_start(
+    current_page_start: int,
+    page_size: int | None = None,
+) -> int:
+    effective_page_size = page_size or get_bbs_responses_per_page()
+    return current_page_start + effective_page_size
+
+
+def build_bbs_page_url(bbs_base_url: str, page_start: int) -> str:
+    return f"{bbs_base_url}{page_start}-"
+
+
+def is_terminal_bbs_page(raw_page_responses: list[dict], page_size: int) -> bool:
+    return len(raw_page_responses) < page_size
 
 
 class ArticleNotFoundError(RuntimeError):
@@ -444,15 +480,15 @@ def collect_all_responses(
     """
 
     all_responses = []
-    next_start = start
+    page_size = get_bbs_responses_per_page()
+    current_page_start = get_containing_page_start(start, page_size)
     interrupted = False
     cap_reached = False
     first_request = True
     effective_cap = response_cap if response_cap is not None else RESPONSE_CAP
 
     while True:
-
-        page_url = f"{bbs_base_url}{next_start}-"
+        page_url = build_bbs_page_url(bbs_base_url, current_page_start)
         if progress_reporter is None:
             print("Fetching:", page_url)
 
@@ -520,7 +556,13 @@ def collect_all_responses(
                 len(all_responses),
             )
 
-        next_start += len(raw_page_responses)
+        if is_terminal_bbs_page(raw_page_responses, page_size):
+            break
+
+        current_page_start = get_next_page_start(
+            current_page_start,
+            page_size,
+        )
         first_request = False
 
         # 過度アクセス回避
@@ -660,7 +702,10 @@ def run_scrape(
             progress_reporter=progress_reporter,
         )
     else:
-        resume_start = get_containing_page_start(max_saved_res_no)
+        resume_start = get_containing_page_start(
+            max_saved_res_no,
+            get_bbs_responses_per_page(),
+        )
         if progress_reporter is None:
             print(
                 f"Saved article detected; resuming from max_saved_res_no="

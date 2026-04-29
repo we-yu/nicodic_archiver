@@ -59,6 +59,7 @@ Expected keys:
 - `LOCAL_UID`
 - `LOCAL_GID`
 - `SCRAPE_PAGE_DELAY_SECONDS`
+- `BBS_RESPONSES_PER_PAGE`
 
 The file is intentionally local-only and should not be committed. Use the
 tracked template as a starting point:
@@ -72,6 +73,10 @@ host UID/GID to reduce common permission mismatches.
 `SCRAPE_PAGE_DELAY_SECONDS` controls the delay between BBS page fetches during
 scrape pagination. If it is unset or invalid, the application falls back to
 `5.0` seconds.
+
+`BBS_RESPONSES_PER_PAGE` controls the BBS page boundary size used for resume
+and later-page progression. If it is unset or invalid, the application falls
+back to `30` responses per page.
 
 ## Host UID/GID Handling
 
