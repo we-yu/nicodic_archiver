@@ -447,6 +447,44 @@ def test_main_operator_without_required_args_exits_with_usage(capsys):
     assert "Operator usage:" in out
     assert "operator target list" in out
     assert "operator archive export" in out
+    assert "registered-articles" in out
+
+
+@patch("main.export_registered_articles_csv_for_operator")
+def test_main_operator_registered_articles_export_csv(mock_export):
+    mock_export.return_value = True
+
+    with patch(
+        "sys.argv",
+        ["main.py", "operator", "registered-articles", "export-csv"],
+    ):
+        main_module.main()
+
+    mock_export.assert_called_once_with(output_path=None)
+
+
+@patch("main.export_registered_articles_csv_for_operator")
+def test_main_operator_registered_articles_export_csv_with_output(
+    mock_export,
+    tmp_path,
+):
+    mock_export.return_value = True
+    out_file = str(tmp_path / "out.csv")
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "operator",
+            "registered-articles",
+            "export-csv",
+            "--output",
+            out_file,
+        ],
+    ):
+        main_module.main()
+
+    mock_export.assert_called_once_with(output_path=out_file)
 
 
 @patch("main.verify_one_shot_fetch")

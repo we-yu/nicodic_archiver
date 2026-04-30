@@ -1,5 +1,9 @@
+import csv
+from io import StringIO
+
 from operator_cli import (
     export_archive_for_operator,
+    export_registered_articles_csv_for_operator,
     inspect_target_for_operator,
     list_archives_for_operator,
     list_targets_for_operator,
@@ -250,3 +254,80 @@ def test_show_scraped_res_for_operator_returns_false_for_missing_id(
     assert result is False
     _, err = capsys.readouterr()
     assert "not found" in err
+
+
+def _seed_articles(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "12345",
+            "a",
+            "管理者テスト記事",
+            "https://dic.nicovideo.jp/a/12345",
+            [
+                {
+                    "res_no": 1,
+                    "poster": "Alice",
+                    "posted_at": "2025-01-01 00:00:00",
+                    "text": "テスト",
+                }
+            ],
+        )
+    finally:
+        conn.close()
+
+
+def test_export_registered_articles_csv_for_operator_writes_to_stdout(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _seed_articles(tmp_path, monkeypatch)
+
+    result = export_registered_articles_csv_for_operator(output_path=None)
+
+    assert result is True
+    out, _ = capsys.readouterr()
+    rows = list(csv.DictReader(StringIO(out)))
+    assert len(rows) == 1
+    assert rows[0]["article_id"] == "12345"
+    assert rows[0]["title"] == "管理者テスト記事"
+
+
+def test_export_registered_articles_csv_for_operator_writes_to_file(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _seed_articles(tmp_path, monkeypatch)
+    out_file = tmp_path / "export.csv"
+
+    result = export_registered_articles_csv_for_operator(
+        output_path=str(out_file)
+    )
+
+    assert result is True
+    assert out_file.is_file()
+    content = out_file.read_text(encoding="utf-8")
+    rows = list(csv.DictReader(StringIO(content)))
+    assert rows[0]["article_id"] == "12345"
+    _, err = capsys.readouterr()
+    assert "written" in err.lower()
+
+
+def test_export_registered_articles_csv_for_operator_no_db_returns_true(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.chdir(tmp_path)
+
+    result = export_registered_articles_csv_for_operator(output_path=None)
+
+    assert result is True
+    out, _ = capsys.readouterr()
+    lines = out.strip().splitlines()
+    assert len(lines) == 1
+    assert "article_id" in lines[0]

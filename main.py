@@ -25,6 +25,7 @@ from identity_merge import (
 from operator_cli import add_target_for_operator
 from operator_cli import deactivate_target_for_operator
 from operator_cli import export_archive_for_operator
+from operator_cli import export_registered_articles_csv_for_operator
 from operator_cli import inspect_archive_for_operator
 from operator_cli import inspect_target_for_operator
 from operator_cli import list_archives_for_operator, list_targets_for_operator
@@ -772,6 +773,10 @@ def _print_operator_usage():
         "  python main.py operator merge canonical-url "
         "--db PATH [--apply]"
     )
+    print(
+        "  python main.py operator registered-articles export-csv "
+        "[--output PATH]"
+    )
 
 
 def _handle_show_scraped_res(args):
@@ -1033,7 +1038,26 @@ def _handle_operator_cli(args):
     if area == "merge":
         _handle_operator_merge(args[1:])
         return
+    if area == "registered-articles":
+        _handle_operator_registered_articles(args[1:])
+        return
 
+    _print_operator_usage()
+    sys.exit(1)
+
+
+def _handle_operator_registered_articles(args):
+    if not args:
+        _print_operator_usage()
+        sys.exit(1)
+    action = args[0]
+    if action == "export-csv":
+        output_path = _read_optional_flag(args, "--output", None)
+        if not export_registered_articles_csv_for_operator(
+            output_path=output_path
+        ):
+            sys.exit(1)
+        return
     _print_operator_usage()
     sys.exit(1)
 

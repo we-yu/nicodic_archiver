@@ -1,8 +1,10 @@
 import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 from archive_read import (
+    export_registered_articles_csv,
     get_saved_article_export,
     get_saved_article_summary_by_exact_title,
     get_saved_article_summary_by_id,
@@ -223,10 +225,14 @@ def export_archive_for_operator(
 
 
 def _admin_export_filename(article_id, article_type, title, fmt):
-    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (title or "").strip())
-    safe = re.sub(r"\s+", " ", safe).strip(" .")
-    safe = safe or "article"
-    return f"{article_id}{article_type}_{safe}.{fmt}"
+    decoded_id = unquote(article_id)
+    safe_id = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", decoded_id.strip())
+    safe_id = re.sub(r"\s+", " ", safe_id).strip(" .") or "article"
+    safe_t = re.sub(
+        r'[<>:"/\\|?*\x00-\x1f]', "_", (title or "").strip()
+    )
+    safe_t = re.sub(r"\s+", " ", safe_t).strip(" .") or "article"
+    return f"{safe_id}{article_type}_{safe_t}.{fmt}"
 
 
 def show_scraped_res_for_operator(
@@ -268,4 +274,23 @@ def show_scraped_res_for_operator(
     )
     print(f"ok: {filename}", file=sys.stderr)
     sys.stdout.write(export["content"])
+    return True
+
+
+def export_registered_articles_csv_for_operator(output_path=None):
+    """Export all registered articles to CSV for internal operator use.
+
+    Writes CSV to stdout when output_path is None, or to the given
+    file path otherwise.  This is the all-records internal CLI route
+    and is separate from the user-facing web CSV (current-page only).
+    """
+    csv_text = export_registered_articles_csv()
+    if output_path is None:
+        sys.stdout.write(csv_text)
+        return True
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(csv_text, encoding="utf-8")
+    print("Registered articles CSV written.", file=sys.stderr)
+    print(f"Output: {output_path}", file=sys.stderr)
     return True

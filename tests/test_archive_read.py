@@ -4,6 +4,8 @@ import sqlite3
 from unittest.mock import patch
 
 from archive_read import (
+    REGISTERED_ARTICLE_COLUMNS,
+    export_registered_articles_csv,
     get_saved_article_export,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
@@ -11,6 +13,7 @@ from archive_read import (
     get_saved_article_txt,
     has_saved_article,
     list_registered_articles,
+    query_registered_articles,
     write_scrape_targets_txt,
 )
 from storage import init_db, save_to_db
@@ -437,6 +440,8 @@ def test_list_registered_articles_returns_expected_columns(
     assert row["saved_response_count"] == 1
     assert row["latest_scraped_max_res_no"] == 1
     assert "last_scraped_at" in row
+    assert row["article_id"] == "12345"
+    assert "created_at" in row
 
 
 def test_list_registered_articles_returns_empty_list_when_no_db(
@@ -479,3 +484,266 @@ def test_write_scrape_targets_txt_empty_when_no_db(
     assert artifact.is_file()
     content = artifact.read_text(encoding="utf-8")
     assert "count: 0" in content
+
+
+def test_query_registered_articles_returns_paginated_result(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = query_registered_articles(per_page=100, page=1)
+
+    assert result["total"] == 1
+    assert result["page"] == 1
+    assert result["per_page"] == 100
+    assert len(result["rows"]) == 1
+    row = result["rows"][0]
+    assert row["article_id"] == "12345"
+    assert row["article_type"] == "a"
+    assert row["title"] == "First Title"
+    assert row["saved_response_count"] == 1
+
+
+def test_query_registered_articles_default_sort_is_created_at_desc(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = query_registered_articles()
+
+    assert result["total"] >= 1
+    assert result["rows"][0]["article_id"] == "12345"
+
+
+def test_query_registered_articles_filters_by_search_title(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = query_registered_articles(search="First")
+
+    assert result["total"] == 1
+    assert result["rows"][0]["title"] == "First Title"
+
+
+def test_query_registered_articles_filters_by_search_article_id(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = query_registered_articles(search="12345")
+
+    assert result["total"] == 1
+    assert result["rows"][0]["article_id"] == "12345"
+
+
+def test_query_registered_articles_no_match_returns_empty(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = query_registered_articles(search="zzz_no_match_xyz")
+
+    assert result["total"] == 0
+    assert result["rows"] == []
+
+
+def test_query_registered_articles_paginate_false_returns_all(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = query_registered_articles(paginate=False)
+
+    assert result["total"] == 1
+    assert len(result["rows"]) == 1
+
+
+def test_query_registered_articles_invalid_sort_falls_back(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = query_registered_articles(sort_by="__invalid__")
+
+    assert result["total"] == 1
+
+
+def test_query_registered_articles_no_db_returns_empty(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    result = query_registered_articles()
+
+    assert result["rows"] == []
+    assert result["total"] == 0
+
+
+def test_registered_article_columns_keys_are_consistent():
+    keys = [col["key"] for col in REGISTERED_ARTICLE_COLUMNS]
+    assert "article_id" in keys
+    assert "article_type" in keys
+    assert "title" in keys
+    assert "canonical_url" in keys
+    assert "created_at" in keys
+    assert "saved_response_count" in keys
+    assert "last_scraped_at" in keys
+    headers = [col["csv_header"] for col in REGISTERED_ARTICLE_COLUMNS]
+    assert len(headers) == len(set(headers)), "csv_header values must be unique"
+
+
+def test_export_registered_articles_csv_returns_csv_with_header(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    csv_text = export_registered_articles_csv()
+
+    reader = list(csv.DictReader(StringIO(csv_text)))
+    assert len(reader) == 1
+    assert reader[0]["article_id"] == "12345"
+    assert reader[0]["title"] == "First Title"
+    assert reader[0]["article_type"] == "a"
+
+
+def test_export_registered_articles_csv_no_db_returns_header_only(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    csv_text = export_registered_articles_csv()
+
+    lines = csv_text.strip().splitlines()
+    assert len(lines) == 1
+    assert "article_id" in lines[0]
+
+
+def test_txt_archive_decodes_url_encoded_article_id(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    encoded_id = "%E3%81%9F%E3%81%A4%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF"
+    try:
+        save_to_db(
+            conn,
+            encoded_id,
+            "a",
+            "たつきショック",
+            "https://dic.nicovideo.jp/a/%E3%81%9F%E3%81%A4"
+            "%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF",
+            [{"res_no": 1, "poster": "X", "posted_at": "2025-01-01",
+              "text": "test"}],
+        )
+    finally:
+        conn.close()
+
+    from archive_read import get_saved_article_export
+    result = get_saved_article_export(encoded_id, "a", "txt")
+
+    assert result["found"]
+    assert "ID: たつきショック" in result["content"]
+    assert f"ID: {encoded_id}" not in result["content"]
+
+
+# --- Registered Articles: URL-encoded article_id display decoding ---
+
+_ENCODED_JP = (
+    "%E3%81%82%E3%81%8B%E3%82%8A%E5%85%88%E7%94%9F"
+)
+_DECODED_JP = "あかり先生"
+
+
+def _seed_encoded_article(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            _ENCODED_JP,
+            "a",
+            _DECODED_JP,
+            f"https://dic.nicovideo.jp/a/{_ENCODED_JP}",
+            [
+                {
+                    "res_no": 1,
+                    "id_hash": "x1",
+                    "poster_name": "Bob",
+                    "posted_at": "2025-06-01 00:00",
+                    "content": "hello",
+                    "content_html": "<p>hello</p>",
+                }
+            ],
+        )
+    finally:
+        conn.close()
+
+
+def test_list_registered_articles_decodes_url_encoded_article_id(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_encoded_article(tmp_path, monkeypatch)
+
+    articles = list_registered_articles()
+
+    assert len(articles) == 1
+    assert articles[0]["article_id"] == _DECODED_JP
+    assert articles[0]["canonical_url"] == (
+        f"https://dic.nicovideo.jp/a/{_ENCODED_JP}"
+    )
+
+
+def test_query_registered_articles_decodes_url_encoded_article_id(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_encoded_article(tmp_path, monkeypatch)
+
+    result = query_registered_articles()
+
+    assert result["total"] == 1
+    assert result["rows"][0]["article_id"] == _DECODED_JP
+    assert result["rows"][0]["canonical_url"] == (
+        f"https://dic.nicovideo.jp/a/{_ENCODED_JP}"
+    )
+
+
+def test_query_registered_articles_search_by_raw_encoded_id_still_works(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_encoded_article(tmp_path, monkeypatch)
+
+    result = query_registered_articles(search=_ENCODED_JP)
+
+    assert result["total"] == 1
+    assert result["rows"][0]["article_id"] == _DECODED_JP
+
+
+def test_export_registered_articles_csv_decodes_url_encoded_article_id(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_encoded_article(tmp_path, monkeypatch)
+
+    csv_text = export_registered_articles_csv()
+
+    reader = list(csv.DictReader(StringIO(csv_text)))
+    assert len(reader) == 1
+    assert reader[0]["article_id"] == _DECODED_JP
+    assert reader[0]["canonical_url"] == (
+        f"https://dic.nicovideo.jp/a/{_ENCODED_JP}"
+    )
