@@ -8,7 +8,10 @@ from uuid import uuid4
 from wsgiref.simple_server import make_server
 
 from archive_read import (
+    REGISTERED_ARTICLE_DEFAULT_PER_PAGE,
     get_saved_article_export,
+    get_registered_article_listing,
+    get_registered_articles_csv,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
     list_registered_articles,
@@ -105,6 +108,11 @@ def _normalize_download_format(requested_format: str | None) -> str:
     return DEFAULT_DOWNLOAD_FORMAT
 
 
+def _human_article_id(value: str | None) -> str:
+    text = (value or "").strip()
+    return text if text.isdigit() else "unavailable"
+
+
 def _humanize_title(value: str | None) -> str:
     text = (value or "").strip()
     if not text:
@@ -133,31 +141,15 @@ def _ascii_download_fallback(article_id: str, article_type: str) -> str:
     return f"{article_id}{article_type}_article"
 
 
-def _build_download_filename(
-    article_id: str,
-    article_type: str,
-    title: str | None,
-    requested_format: str,
-) -> str:
-    safe_title = _sanitize_download_filename_title(title or "")
-    return f"{article_id}{article_type}_{safe_title}.{requested_format}"
-
-
 def _build_content_disposition(
-    article_id: str,
+    filename: str,
     article_type: str,
-    title: str | None,
-    requested_format: str,
 ) -> str:
-    utf8_filename = _build_download_filename(
-        article_id,
-        article_type,
-        title,
-        requested_format,
-    )
-    ascii_filename = (
-        f"{_ascii_download_fallback(article_id, article_type)}.{requested_format}"
-    )
+    utf8_filename = filename
+    ascii_filename = f"archive_{article_type}.txt"
+    if "." in filename:
+        extension = filename.rsplit(".", maxsplit=1)[1]
+        ascii_filename = f"archive_{article_type}.{extension}"
     encoded = quote(utf8_filename, safe="")
     return (
         f'attachment; filename="{ascii_filename}"; '
@@ -620,7 +612,7 @@ def _render_message_area(
                 ),
                 _render_result_detail(
                     UI_TEXTS["field_labels"]["article_id"],
-                    result["article_id"],
+                    _human_article_id(result["article_id"]),
                 ),
                 _render_result_detail(
                     UI_TEXTS["field_labels"]["url"],
@@ -664,7 +656,7 @@ def _render_message_area(
                 ),
                 _render_result_detail(
                     UI_TEXTS["field_labels"]["article_id"],
-                    result["article_id"],
+                    _human_article_id(result["article_id"]),
                 ),
                 _render_result_detail(
                     UI_TEXTS["field_labels"]["url"],
@@ -813,8 +805,20 @@ def _render_page(
     .message-area.error .status-line {{ color: var(--error); }}
     .followup-note {{ color: var(--muted); }}
     .download-frame {{ display: none; width: 0; height: 0; border: 0; }}
-    .list-link-line {{ margin: 0 0 16px; font-size: 0.9rem; }}
-    .list-link {{ color: var(--accent); }}
+        .list-link-line {{ margin: 0 0 16px; font-size: 0.9rem; }}
+        .list-link {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 42px;
+            padding: 0 16px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: rgba(15, 118, 110, 0.08);
+            color: var(--accent);
+            font-weight: 700;
+            text-decoration: none;
+        }}
     @media (max-width: 640px) {{
       main {{ padding: 24px 14px 36px; }}
       .panel {{ padding: 18px; }}
@@ -904,25 +908,138 @@ def _render_page(
     return html.encode("utf-8")
 
 
-def _render_registered_list_page() -> bytes:
-    articles = list_registered_articles()
+def _registered_query_string(params: dict) -> str:
+    cleaned = {
+        key: value
+        for key, value in params.items()
+        if value not in {None, ""}
+    }
+    return urlencode(cleaned)
+
+
+def _registered_link(listing: dict, **overrides) -> str:
+    params = {
+        "q": listing["query"],
+        "sort_by": listing["sort_by"],
+        "sort_dir": listing["sort_dir"],
+        "page": listing["page"],
+        "per_page": listing["per_page"],
+    }
+    params.update(overrides)
+    return _registered_query_string(params)
+
+
+def _toggle_sort_dir(listing: dict, sort_by: str) -> str:
+    if listing["sort_by"] != sort_by:
+        return "asc"
+    return "asc" if listing["sort_dir"] == "desc" else "desc"
+
+
+def _render_registered_cell(column_key: str, row: dict) -> str:
+    value = row.get(column_key)
+    if column_key == "canonical_url":
+        return (
+            f'<a href="{escape(value or "")}" target="_blank" '
+            f'rel="noopener noreferrer">{escape(value or "")}</a>'
+        )
+    if column_key == "article_id_display":
+        return escape(value or "—")
+    if value is None or value == "":
+        return ""
+    return escape(str(value))
+
+
+def _render_pagination(listing: dict) -> str:
+    if listing["total_pages"] <= 1:
+        return ""
+
+    page = listing["page"]
+    total_pages = listing["total_pages"]
+    links = []
+    controls = [
+        ("First", 1, page > 1),
+        ("Prev", max(1, page - 1), page > 1),
+        ("Next", min(total_pages, page + 1), page < total_pages),
+        ("Last", total_pages, page < total_pages),
+    ]
+    for label, target_page, enabled in controls:
+        if enabled:
+            links.append(
+                (
+                    '<a class="pager-link" '
+                    f'href="/registered?{_registered_link(listing, page=target_page)}">'
+                    f"{escape(label)}</a>"
+                )
+            )
+        else:
+            links.append(f'<span class="pager-link disabled">{escape(label)}</span>')
+
+    return (
+        '<nav class="pager" aria-label="Registered Articles pagination">'
+        + "".join(links)
+        + f'<span class="pager-status">Page {page} / {total_pages}</span>'
+        + "</nav>"
+    )
+
+
+def _render_sort_headers(listing: dict) -> str:
+    header_parts = []
+    for column in listing["columns"]:
+        sort_key = column["key"].replace("_display", "")
+        if sort_key not in listing["sort_allowlist"]:
+            header_parts.append(f"<th>{escape(column['label'])}</th>")
+            continue
+        header_parts.append(
+            (
+                '<th><a class="sort-link" '
+                f'href="/registered?{_registered_link(listing, sort_by=sort_key, sort_dir=_toggle_sort_dir(listing, sort_key), page=1)}">'
+                f'{escape(column["label"])}'
+                '</a></th>'
+            )
+        )
+    return "".join(header_parts)
+
+
+def _render_per_page_options(listing: dict) -> str:
+    option_parts = []
+    for size in listing["allowed_per_page"]:
+        selected = " selected" if size == listing["per_page"] else ""
+        option_parts.append(
+            f'<option value="{size}"{selected}>{size}</option>'
+        )
+    return "".join(option_parts)
+
+
+def _render_registered_list_page(query_params: dict) -> bytes:
+    listing = get_registered_article_listing(
+        query=query_params.get("q"),
+        sort_by=query_params.get("sort_by"),
+        sort_dir=query_params.get("sort_dir"),
+        page=query_params.get("page"),
+        per_page=query_params.get("per_page"),
+    )
     rows_html_parts = []
-    for row in articles:
-        max_res = row["latest_scraped_max_res_no"]
-        max_res_text = str(max_res) if max_res is not None else ""
-        last_scraped = row.get("last_scraped_at") or ""
+    for row in listing["rows"]:
+        row_class = " pending" if row["is_pending_initial_scrape"] else ""
         rows_html_parts.append(
-            "<tr>"
-            f"<td>{escape(row['article_type'])}</td>"
-            f"<td>{escape(row['title'])}</td>"
-            f"<td>{escape(row['canonical_url'])}</td>"
-            f"<td>{escape(str(row['saved_response_count']))}</td>"
-            f"<td>{escape(max_res_text)}</td>"
-            f"<td>{escape(last_scraped)}</td>"
+            f'<tr class="registered-row{row_class}">'
+            + "".join(
+                f"<td>{_render_registered_cell(column['key'], row)}</td>"
+                for column in listing["columns"]
+            )
             "</tr>"
         )
+    if not rows_html_parts:
+        rows_html_parts.append(
+            '<tr><td colspan="8">No registered articles found.</td></tr>'
+        )
     rows_html = "".join(rows_html_parts)
-    total = len(articles)
+    total = listing["total_count"]
+    search_value = escape(listing["query"])
+    export_query = _registered_link(listing)
+    pagination = _render_pagination(listing)
+    sort_headers = _render_sort_headers(listing)
+    per_page_options = _render_per_page_options(listing)
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -952,33 +1069,82 @@ def _render_registered_list_page() -> bytes:
       padding: 8px 12px;
       border-bottom: 1px solid #e8dfc8;
       word-break: break-word;
+            vertical-align: top;
     }}
     th {{ background: #f0e9d8; font-weight: 700; }}
     tr:last-child td {{ border-bottom: none; }}
+        .registered-row.pending td {{ background: rgba(146, 64, 14, 0.08); }}
+        .toolbar {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: end;
+            margin: 0 0 16px;
+        }}
+        .toolbar label {{ display: grid; gap: 6px; font-size: 0.9rem; }}
+        .toolbar input, .toolbar select {{
+            min-height: 40px;
+            padding: 8px 10px;
+            border: 1px solid #d9ccb4;
+            border-radius: 10px;
+            background: #fff;
+            font: inherit;
+        }}
+        .toolbar button, .toolbar .export-link, .pager-link, .top-link {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 40px;
+            padding: 0 14px;
+            border-radius: 999px;
+            border: 1px solid #d9ccb4;
+            background: rgba(15, 118, 110, 0.08);
+            color: #0f766e;
+            text-decoration: none;
+            font-weight: 700;
+        }}
+        .toolbar button {{ cursor: pointer; }}
+        .pager {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }}
+        .pager-link.disabled {{ color: #9ca3af; background: #f5f5f5; }}
+        .pager-status {{ align-self: center; color: #6b7280; margin-left: 4px; }}
+        .sort-link {{ color: inherit; text-decoration: none; }}
+        .legend {{ color: #6b7280; font-size: 0.9rem; margin: 12px 0 0; }}
     a {{ color: #0f766e; }}
   </style>
 </head>
 <body>
   <h1>Registered Articles</h1>
   <p class="meta">
-    Count: {total} &mdash;
-    <a href="/" target="_self">&larr; Top</a>
+        Count: {total} &mdash;
+        <a href="/" target="_self" class="top-link">&larr; Top</a>
   </p>
+    <form method="get" action="/registered" class="toolbar">
+        <label>
+            Search title / article_id
+            <input type="text" name="q" value="{search_value}">
+        </label>
+        <label>
+            Per page
+            <select name="per_page">{per_page_options}</select>
+        </label>
+        <input type="hidden" name="sort_by" value="{escape(listing['sort_by'])}">
+        <input type="hidden" name="sort_dir" value="{escape(listing['sort_dir'])}">
+        <input type="hidden" name="page" value="1">
+        <button type="submit">Apply</button>
+        <a class="export-link" href="/registered.csv?{export_query}">Download CSV</a>
+    </form>
   <table>
     <thead>
       <tr>
-        <th>Type</th>
-        <th>Title</th>
-        <th>Canonical URL</th>
-        <th>Saved Responses</th>
-        <th>Max Res No</th>
-        <th>Last Scraped</th>
+                {sort_headers}
       </tr>
     </thead>
     <tbody>
 {rows_html}
     </tbody>
   </table>
+    {pagination}
+    <p class="legend">Highlighted rows are registered but have not completed the first scrape yet.</p>
 </body>
 </html>
 """
@@ -1111,11 +1277,8 @@ def create_app(
                     (
                         "Content-Disposition",
                         _build_content_disposition(
-                            article_id,
+                            export_result.get("filename") or "archive.txt",
                             article_type,
-                            export_result.get("title")
-                            or query.get("resolved_title"),
-                            requested_format,
                         ),
                     ),
                     ("Content-Length", str(len(body))),
@@ -1124,7 +1287,7 @@ def create_app(
             return [body]
 
         if method == "GET" and path == "/registered":
-            body = _render_registered_list_page()
+            body = _render_registered_list_page(_read_query_params(environ))
             start_response(
                 "200 OK",
                 [
@@ -1134,7 +1297,33 @@ def create_app(
             )
             return [body]
 
-        if path not in {"/", "/download", "/registered"}:
+        if method == "GET" and path == "/registered.csv":
+            query = _read_query_params(environ)
+            csv_result = get_registered_articles_csv(
+                query=query.get("q"),
+                sort_by=query.get("sort_by"),
+                sort_dir=query.get("sort_dir"),
+                page=query.get("page"),
+                per_page=query.get("per_page"),
+            )
+            body = csv_result["content"].encode("utf-8")
+            start_response(
+                "200 OK",
+                [
+                    ("Content-Type", "text/csv; charset=utf-8"),
+                    (
+                        "Content-Disposition",
+                        _build_content_disposition(
+                            csv_result["filename"],
+                            "registered",
+                        ),
+                    ),
+                    ("Content-Length", str(len(body))),
+                ],
+            )
+            return [body]
+
+        if path not in {"/", "/download", "/registered", "/registered.csv"}:
             body = b"Not Found"
             start_response(
                 "404 Not Found",

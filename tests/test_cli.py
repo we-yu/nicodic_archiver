@@ -114,8 +114,8 @@ def test_export_article_outputs_txt_for_saved_article(tmp_path, monkeypatch, cap
 
     out = capsys.readouterr().out
     assert "=== ARTICLE META ===" in out
-    assert "ID: 12345" in out
-    assert "Type: a" in out
+    assert "Article ID: 12345" in out
+    assert "Article Type: a" in out
     assert "Title: First Title" in out
     assert "=== RESPONSES ===" in out
     assert "1 Alice 2025-01-01 00:00 ID: abc123" in out
@@ -152,14 +152,14 @@ def test_list_articles_uses_summary_read_seam(mock_read_summaries, capsys):
     assert "12345 a | title=First Title" in out
 
 
-@patch("cli.get_saved_article_txt")
-def test_export_article_uses_archive_read_seam(mock_get_saved_article_txt, capsys):
-    mock_get_saved_article_txt.return_value = {
+@patch("cli.get_saved_article_export")
+def test_export_article_uses_archive_read_seam(mock_get_saved_article_export, capsys):
+    mock_get_saved_article_export.return_value = {
         "found": True,
         "content": (
             "=== ARTICLE META ===\n"
-            "ID: 12345\n"
-            "Type: a\n"
+            "Article ID: 12345\n"
+            "Article Type: a\n"
             "Title: First Title\n"
             "=== RESPONSES ===\n"
             "1 Alice 2025-01-01 00:00 ID: abc123\n"
@@ -168,11 +168,12 @@ def test_export_article_uses_archive_read_seam(mock_get_saved_article_txt, capsy
         ),
         "article_id": "12345",
         "article_type": "a",
+        "format": "txt",
     }
 
     assert export_article("12345", "a", "txt") is True
 
-    mock_get_saved_article_txt.assert_called_once_with("12345", "a")
+    mock_get_saved_article_export.assert_called_once_with("12345", "a", "txt")
     out = capsys.readouterr().out
     assert "Title: First Title" in out
     assert "Hello" in out

@@ -437,6 +437,30 @@ def test_main_operator_archive_export_calls_operator_helper(mock_export_archive)
     )
 
 
+@patch("main.export_registered_articles_csv_for_operator")
+def test_main_operator_archive_export_registered_csv_calls_helper(
+    mock_export_registered_csv,
+):
+    mock_export_registered_csv.return_value = True
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "operator",
+            "archive",
+            "export-registered-csv",
+            "--output",
+            "registered.csv",
+        ],
+    ):
+        main_module.main()
+
+    mock_export_registered_csv.assert_called_once_with(
+        output_path="registered.csv",
+    )
+
+
 def test_main_operator_without_required_args_exits_with_usage(capsys):
     with patch("sys.argv", ["main.py", "operator"]):
         with pytest.raises(SystemExit) as exc_info:
@@ -447,6 +471,7 @@ def test_main_operator_without_required_args_exits_with_usage(capsys):
     assert "Operator usage:" in out
     assert "operator target list" in out
     assert "operator archive export" in out
+    assert "export-registered-csv" in out
 
 
 @patch("main.verify_one_shot_fetch")

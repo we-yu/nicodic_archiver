@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from archive_read import (
+    get_all_registered_articles_csv,
     get_saved_article_export,
     get_saved_article_summary_by_exact_title,
     get_saved_article_summary_by_id,
@@ -222,11 +223,21 @@ def export_archive_for_operator(
     return True
 
 
-def _admin_export_filename(article_id, article_type, title, fmt):
-    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (title or "").strip())
-    safe = re.sub(r"\s+", " ", safe).strip(" .")
-    safe = safe or "article"
-    return f"{article_id}{article_type}_{safe}.{fmt}"
+def export_registered_articles_csv_for_operator(output_path=None):
+    export_result = get_all_registered_articles_csv()
+
+    if output_path is None:
+        print(export_result["content"], end="")
+        return True
+
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(export_result["content"], encoding="utf-8")
+
+    print("Registered articles CSV written")
+    print(f"Rows: {export_result['row_count']}")
+    print(f"Output: {output_path}")
+    return True
 
 
 def show_scraped_res_for_operator(
@@ -262,10 +273,7 @@ def show_scraped_res_for_operator(
         )
         return False
 
-    title = export.get("title") or summary.get("title") or ""
-    filename = _admin_export_filename(
-        article_id, article_type, title, requested_format
-    )
+    filename = export.get("filename") or "article.txt"
     print(f"ok: {filename}", file=sys.stderr)
     sys.stdout.write(export["content"])
     return True

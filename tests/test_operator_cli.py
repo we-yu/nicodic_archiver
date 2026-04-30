@@ -1,4 +1,5 @@
 from operator_cli import (
+    export_registered_articles_csv_for_operator,
     export_archive_for_operator,
     inspect_target_for_operator,
     list_archives_for_operator,
@@ -237,6 +238,54 @@ def test_show_scraped_res_for_operator_returns_false_for_missing_title(
     assert result is False
     _, err = capsys.readouterr()
     assert "not found" in err
+
+
+def test_export_registered_articles_csv_for_operator_writes_all_rows(
+    tmp_path,
+    capsys,
+):
+    output_path = tmp_path / "exports" / "registered.csv"
+
+    with patch(
+        "operator_cli.get_all_registered_articles_csv",
+        return_value={
+            "content": "Title,Article ID\nFoo,12345\n",
+            "row_count": 1,
+            "filename": "registered_articles_all.csv",
+        },
+    ) as mock_export:
+        assert export_registered_articles_csv_for_operator(str(output_path)) is True
+
+    mock_export.assert_called_once_with()
+    out = capsys.readouterr().out
+    assert "Registered articles CSV written" in out
+    assert output_path.read_text(encoding="utf-8") == "Title,Article ID\nFoo,12345\n"
+
+
+def test_show_scraped_res_for_operator_uses_export_filename_from_archive_read(
+    capsys,
+):
+    with patch(
+        "operator_cli.get_saved_article_summary_by_exact_title",
+        return_value={
+            "found": True,
+            "article_id": "12345",
+            "article_type": "a",
+            "title": "管理者向けテスト記事",
+        },
+    ):
+        with patch(
+            "operator_cli.get_saved_article_export",
+            return_value={
+                "found": True,
+                "content": "body",
+                "filename": "12345a_管理者向けテスト記事.txt",
+            },
+        ):
+            assert show_scraped_res_for_operator("管理者向けテスト記事") is True
+
+    _, err = capsys.readouterr()
+    assert "12345a_管理者向けテスト記事.txt" in err
 
 
 def test_show_scraped_res_for_operator_returns_false_for_missing_id(

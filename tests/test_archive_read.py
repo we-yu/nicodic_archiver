@@ -4,6 +4,8 @@ import sqlite3
 from unittest.mock import patch
 
 from archive_read import (
+    get_registered_article_listing,
+    get_registered_articles_csv,
     get_saved_article_export,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
@@ -13,13 +15,19 @@ from archive_read import (
     list_registered_articles,
     write_scrape_targets_txt,
 )
-from storage import init_db, save_to_db
+from storage import init_db, register_target, save_to_db
 
 
 def _seed_archive(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     conn = init_db()
     try:
+        register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
         save_to_db(
             conn,
             "12345",
@@ -70,6 +78,8 @@ def test_get_saved_article_txt_returns_content_for_existing_article(
     assert result["article_type"] == "a"
     assert "=== ARTICLE META ===" in result["content"]
     assert "Title: First Title" in result["content"]
+    assert "Article ID: 12345" in result["content"]
+    assert "Canonical URL: https://dic.nicovideo.jp/a/12345" in result["content"]
     assert "1 Alice 2025-01-01 00:00 ID: abc123" in result["content"]
     assert "Created:" not in result["content"]
 
@@ -120,6 +130,7 @@ def test_get_saved_article_export_returns_markdown_for_existing_article(
     assert result["found"] is True
     assert result["format"] == "md"
     assert "# First Title" in result["content"]
+    assert "- Article ID: 12345" in result["content"]
     assert "## Responses" in result["content"]
     assert "### 1" in result["content"]
 
@@ -139,8 +150,9 @@ def test_get_saved_article_export_returns_csv_rows_with_stable_header(
         {
             "article_id": "12345",
             "article_type": "a",
+            "storage_article_key": "12345",
             "article_title": "First Title",
-            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "canonical_url": "https://dic.nicovideo.jp/a/12345",
             "res_no": "1",
             "poster_name": "Alice",
             "poster_id": "abc123",
@@ -431,12 +443,173 @@ def test_list_registered_articles_returns_expected_columns(
 
     assert len(articles) == 1
     row = articles[0]
+    assert row["article_id"] == "12345"
+    assert row["article_id_display"] == "12345"
     assert row["article_type"] == "a"
     assert row["title"] == "First Title"
     assert row["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
     assert row["saved_response_count"] == 1
     assert row["latest_scraped_max_res_no"] == 1
     assert "last_scraped_at" in row
+    assert row["created_at"]
+    assert row["is_pending_initial_scrape"] is False
+
+
+def test_get_registered_article_listing_defaults_to_recently_registered_first(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
+        register_target(
+            conn,
+            "99999",
+            "a",
+            "https://dic.nicovideo.jp/a/99999",
+        )
+        conn.execute(
+            "UPDATE target SET created_at=? WHERE article_id=? AND article_type='a'",
+            ("2026-01-01 00:00:00", "12345"),
+        )
+        conn.execute(
+            "UPDATE target SET created_at=? WHERE article_id=? AND article_type='a'",
+            ("2026-01-02 00:00:00", "99999"),
+        )
+        save_to_db(
+            conn,
+            "12345",
+            "a",
+            "First Title",
+            "https://dic.nicovideo.jp/a/12345",
+            [],
+        )
+        save_to_db(
+            conn,
+            "99999",
+            "a",
+            "Second Title",
+            "https://dic.nicovideo.jp/a/99999",
+            [],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    listing = get_registered_article_listing()
+
+    assert [row["article_id"] for row in listing["rows"]] == ["99999", "12345"]
+    assert listing["sort_by"] == "created_at"
+    assert listing["sort_dir"] == "desc"
+
+
+def test_get_registered_article_listing_filters_sorts_and_pages(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        for article_id, title in (("200", "Beta"), ("100", "Alpha")):
+            register_target(
+                conn,
+                article_id,
+                "a",
+                f"https://dic.nicovideo.jp/a/{article_id}",
+            )
+            save_to_db(
+                conn,
+                article_id,
+                "a",
+                title,
+                f"https://dic.nicovideo.jp/a/{article_id}",
+                [{"res_no": 1, "content": title, "content_html": f"<p>{title}</p>"}],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    listing = get_registered_article_listing(
+        query="a",
+        sort_by="title",
+        sort_dir="asc",
+        page=1,
+        per_page=100,
+    )
+
+    assert [row["title"] for row in listing["rows"]] == ["Alpha", "Beta"]
+    csv_result = get_registered_articles_csv(
+        query="a",
+        sort_by="title",
+        sort_dir="asc",
+        page=1,
+        per_page=100,
+    )
+    assert "Title,Article ID,Type,Canonical URL" in csv_result["content"]
+
+
+def test_list_registered_articles_marks_pending_first_scrape_rows(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "pending-title",
+            "a",
+            "https://dic.nicovideo.jp/a/pending-title",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    row = list_registered_articles()[0]
+    assert row["article_id_display"] == ""
+    assert row["is_pending_initial_scrape"] is True
+
+
+def test_get_saved_article_export_uses_human_facing_identity_contract_for_slug(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "%E3%81%9F%E3%81%A4%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF",
+            "a",
+            "https://dic.nicovideo.jp/a/%E3%81%9F%E3%81%A4%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF",
+        )
+        save_to_db(
+            conn,
+            "%E3%81%9F%E3%81%A4%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF",
+            "a",
+            "たつきショック",
+            "https://dic.nicovideo.jp/a/%E3%81%9F%E3%81%A4%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF",
+            [],
+        )
+    finally:
+        conn.close()
+
+    result = get_saved_article_export(
+        "%E3%81%9F%E3%81%A4%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF",
+        "a",
+        "txt",
+    )
+
+    assert "Article ID: unavailable" in result["content"]
+    assert "Storage Key: たつきショック" in result["content"]
+    assert result["filename"].endswith(".txt")
+    assert "%E3%81%9F" not in result["filename"]
 
 
 def test_list_registered_articles_returns_empty_list_when_no_db(

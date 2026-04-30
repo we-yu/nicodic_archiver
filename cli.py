@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from archive_read import get_saved_article_txt, read_article_archive
+from archive_read import get_saved_article_export, read_article_archive
 from archive_read import read_article_summaries
 
 
@@ -45,24 +45,8 @@ def _render_md_archive(archive):
 def build_archive_export(article_id, article_type, output_format):
     """Return one saved archive in the requested export format."""
 
-    if output_format == "txt":
-        txt_result = get_saved_article_txt(article_id, article_type)
-        if not txt_result["found"]:
-            return {
-                "found": False,
-                "content": None,
-                "article_id": article_id,
-                "article_type": article_type,
-                "format": output_format,
-            }
-
-        return {
-            "found": True,
-            "content": txt_result["content"],
-            "article_id": article_id,
-            "article_type": article_type,
-            "format": output_format,
-        }
+    if output_format in {"txt", "md", "csv"}:
+        return get_saved_article_export(article_id, article_type, output_format)
 
     archive = read_article_archive(article_id, article_type)
     if not archive:
@@ -73,16 +57,6 @@ def build_archive_export(article_id, article_type, output_format):
             "article_type": article_type,
             "format": output_format,
         }
-
-    if output_format == "md":
-        return {
-            "found": True,
-            "content": _render_md_archive(archive),
-            "article_id": article_id,
-            "article_type": article_type,
-            "format": output_format,
-        }
-
     return {
         "found": True,
         "content": None,

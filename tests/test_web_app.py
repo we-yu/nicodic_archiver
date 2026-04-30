@@ -724,6 +724,7 @@ def test_download_endpoint_returns_txt_and_logs_download(tmp_path):
             "article_id": "12345",
             "article_type": "a",
             "title": "たつきショック",
+            "filename": "12345a_たつきショック.txt",
             "format": "txt",
         },
     ):
@@ -744,7 +745,7 @@ def test_download_endpoint_returns_txt_and_logs_download(tmp_path):
     assert response["status"] == "200 OK"
     headers = _header_map(response)
     assert headers["Content-Type"] == "text/plain; charset=utf-8"
-    assert "filename=\"12345a_article.txt\"" in headers[
+    assert "filename=\"archive_a.txt\"" in headers[
         "Content-Disposition"
     ]
     assert "filename*=UTF-8''12345a_%E3%81%9F%E3%81%A4" in headers[
@@ -769,6 +770,7 @@ def test_download_endpoint_returns_csv_content_type(tmp_path):
             "article_id": "12345",
             "article_type": "a",
             "title": "たつきショック",
+            "filename": "12345a_たつきショック.csv",
             "format": "csv",
         },
     ):
@@ -785,7 +787,7 @@ def test_download_endpoint_returns_csv_content_type(tmp_path):
     assert response["status"] == "200 OK"
     headers = _header_map(response)
     assert headers["Content-Type"] == "text/csv; charset=utf-8"
-    assert "filename=\"12345a_article.csv\"" in headers[
+    assert "filename=\"archive_a.csv\"" in headers[
         "Content-Disposition"
     ]
 
@@ -838,36 +840,102 @@ def test_top_page_includes_registered_list_link():
     assert response["status"] == "200 OK"
     assert 'href="/registered"' in response["body"]
     assert 'target="_blank"' in response["body"]
+    assert 'class="list-link"' in response["body"]
     assert "登録済み記事一覧" in response["body"]
 
 
 def test_registered_page_renders_html_table_with_expected_columns():
     with patch(
-        "web_app.list_registered_articles",
-        return_value=[
-            {
-                "article_type": "a",
-                "title": "テスト記事",
-                "canonical_url": "https://dic.nicovideo.jp/a/12345",
-                "saved_response_count": 42,
-                "latest_scraped_max_res_no": 50,
-                "last_scraped_at": "2026-01-01T00:00:00+00:00",
-            }
-        ],
+        "web_app.get_registered_article_listing",
+        return_value={
+            "rows": [
+                {
+                    "article_id": "12345",
+                    "article_id_display": "12345",
+                    "article_type": "a",
+                    "title": "テスト記事",
+                    "canonical_url": "https://dic.nicovideo.jp/a/12345",
+                    "saved_response_count": 42,
+                    "latest_scraped_max_res_no": 50,
+                    "last_scraped_at": "2026-01-01T00:00:00+00:00",
+                    "created_at": "2025-01-01 00:00:00",
+                    "is_pending_initial_scrape": False,
+                }
+            ],
+            "total_count": 1,
+            "page": 1,
+            "per_page": 100,
+            "total_pages": 1,
+            "sort_by": "created_at",
+            "sort_dir": "desc",
+            "query": "",
+            "columns": (
+                {"key": "title", "label": "Title"},
+                {"key": "article_id_display", "label": "Article ID"},
+                {"key": "article_type", "label": "Type"},
+                {"key": "canonical_url", "label": "Canonical URL"},
+                {"key": "saved_response_count", "label": "Saved Responses"},
+                {"key": "latest_scraped_max_res_no", "label": "Max Res No"},
+                {"key": "last_scraped_at", "label": "Last Scraped"},
+                {"key": "created_at", "label": "Registered At"},
+            ),
+            "allowed_per_page": (100, 200, 500, 1000),
+            "sort_allowlist": (
+                "title",
+                "article_id",
+                "created_at",
+                "saved_response_count",
+                "latest_scraped_max_res_no",
+                "last_scraped_at",
+            ),
+        },
     ):
         response = _run_wsgi_request("GET", path="/registered")
 
     assert response["status"] == "200 OK"
     assert "<table" in response["body"]
     assert "テスト記事" in response["body"]
+    assert ">12345<" in response["body"]
     assert "https://dic.nicovideo.jp/a/12345" in response["body"]
     assert ">42<" in response["body"]
     assert ">50<" in response["body"]
     assert "2026-01-01T00:00:00+00:00" in response["body"]
+    assert "Download CSV" in response["body"]
 
 
 def test_registered_page_renders_empty_table_when_no_articles():
-    with patch("web_app.list_registered_articles", return_value=[]):
+    with patch(
+        "web_app.get_registered_article_listing",
+        return_value={
+            "rows": [],
+            "total_count": 0,
+            "page": 1,
+            "per_page": 100,
+            "total_pages": 1,
+            "sort_by": "created_at",
+            "sort_dir": "desc",
+            "query": "",
+            "columns": (
+                {"key": "title", "label": "Title"},
+                {"key": "article_id_display", "label": "Article ID"},
+                {"key": "article_type", "label": "Type"},
+                {"key": "canonical_url", "label": "Canonical URL"},
+                {"key": "saved_response_count", "label": "Saved Responses"},
+                {"key": "latest_scraped_max_res_no", "label": "Max Res No"},
+                {"key": "last_scraped_at", "label": "Last Scraped"},
+                {"key": "created_at", "label": "Registered At"},
+            ),
+            "allowed_per_page": (100, 200, 500, 1000),
+            "sort_allowlist": (
+                "title",
+                "article_id",
+                "created_at",
+                "saved_response_count",
+                "latest_scraped_max_res_no",
+                "last_scraped_at",
+            ),
+        },
+    ):
         response = _run_wsgi_request("GET", path="/registered")
 
     assert response["status"] == "200 OK"
@@ -876,28 +944,96 @@ def test_registered_page_renders_empty_table_when_no_articles():
 
 
 def test_registered_page_lists_multiple_articles():
-    articles = [
-        {
-            "article_type": "a",
-            "title": "記事A",
-            "canonical_url": "https://dic.nicovideo.jp/a/1",
-            "saved_response_count": 10,
-            "latest_scraped_max_res_no": 10,
-            "last_scraped_at": None,
+    with patch(
+        "web_app.get_registered_article_listing",
+        return_value={
+            "rows": [
+                {
+                    "article_id": "1",
+                    "article_id_display": "1",
+                    "article_type": "a",
+                    "title": "記事A",
+                    "canonical_url": "https://dic.nicovideo.jp/a/1",
+                    "saved_response_count": 10,
+                    "latest_scraped_max_res_no": 10,
+                    "last_scraped_at": None,
+                    "created_at": "2025-01-01 00:00:00",
+                    "is_pending_initial_scrape": False,
+                },
+                {
+                    "article_id": "slug-b",
+                    "article_id_display": "",
+                    "article_type": "a",
+                    "title": "記事B",
+                    "canonical_url": "https://dic.nicovideo.jp/a/2",
+                    "saved_response_count": 0,
+                    "latest_scraped_max_res_no": None,
+                    "last_scraped_at": None,
+                    "created_at": "2025-01-02 00:00:00",
+                    "is_pending_initial_scrape": True,
+                },
+            ],
+            "total_count": 2,
+            "page": 1,
+            "per_page": 100,
+            "total_pages": 2,
+            "sort_by": "created_at",
+            "sort_dir": "desc",
+            "query": "",
+            "columns": (
+                {"key": "title", "label": "Title"},
+                {"key": "article_id_display", "label": "Article ID"},
+                {"key": "article_type", "label": "Type"},
+                {"key": "canonical_url", "label": "Canonical URL"},
+                {"key": "saved_response_count", "label": "Saved Responses"},
+                {"key": "latest_scraped_max_res_no", "label": "Max Res No"},
+                {"key": "last_scraped_at", "label": "Last Scraped"},
+                {"key": "created_at", "label": "Registered At"},
+            ),
+            "allowed_per_page": (100, 200, 500, 1000),
+            "sort_allowlist": (
+                "title",
+                "article_id",
+                "created_at",
+                "saved_response_count",
+                "latest_scraped_max_res_no",
+                "last_scraped_at",
+            ),
         },
-        {
-            "article_type": "id",
-            "title": "記事B",
-            "canonical_url": "https://dic.nicovideo.jp/id/2",
-            "saved_response_count": 5,
-            "latest_scraped_max_res_no": None,
-            "last_scraped_at": None,
-        },
-    ]
-    with patch("web_app.list_registered_articles", return_value=articles):
+    ):
         response = _run_wsgi_request("GET", path="/registered")
 
     assert response["status"] == "200 OK"
     assert "記事A" in response["body"]
     assert "記事B" in response["body"]
     assert "Count: 2" in response["body"]
+    assert "registered-row pending" in response["body"]
+    assert "Page 1 / 2" in response["body"]
+
+
+def test_registered_csv_route_uses_current_listing_query_params():
+    with patch(
+        "web_app.get_registered_articles_csv",
+        return_value={
+            "content": "Title,Article ID\n記事A,1\n",
+            "listing": {},
+            "filename": "registered_articles_current_page.csv",
+        },
+    ) as mock_csv:
+        response = _run_wsgi_request(
+            "GET",
+            path="/registered.csv",
+            query_string="q=%E8%A8%98&sort_by=title&sort_dir=asc&page=2&per_page=200",
+        )
+
+    mock_csv.assert_called_once_with(
+        query="記事",
+        sort_by="title",
+        sort_dir="asc",
+        page="2",
+        per_page="200",
+    )
+    assert response["status"] == "200 OK"
+    headers = _header_map(response)
+    assert headers["Content-Type"] == "text/csv; charset=utf-8"
+    assert "registered_articles_current_page.csv" in headers["Content-Disposition"]
