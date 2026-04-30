@@ -3,8 +3,51 @@ from datetime import datetime, timezone
 from io import StringIO
 import sqlite3
 from pathlib import Path
+from urllib.parse import unquote
 
 from storage import DEFAULT_DB_PATH
+
+# --- Registered Articles query configuration ---
+
+# Allowed sort columns; validated on every request (server-side sort).
+REGISTERED_SORT_ALLOWLIST = frozenset({
+    "title",
+    "article_id",
+    "created_at",
+    "saved_response_count",
+    "latest_scraped_max_res_no",
+    "last_scraped_at",
+})
+
+# Search target columns. Add entries here to extend user-facing search
+# without scattering conditions across query/render code.
+REGISTERED_SEARCH_COLUMNS = ("title", "article_id")
+
+DEFAULT_REGISTERED_SORT_BY = "created_at"
+DEFAULT_REGISTERED_SORT_ORDER = "desc"
+DEFAULT_REGISTERED_PER_PAGE = 100
+ALLOWED_REGISTERED_PER_PAGE = (100, 200, 500, 1000)
+
+# Single-source column definition — web table headers and CSV headers
+# both derive from this list. Update here to change both at once.
+REGISTERED_ARTICLE_COLUMNS = [
+    {"key": "article_id", "label": "Article ID",
+     "csv_header": "article_id"},
+    {"key": "article_type", "label": "Type",
+     "csv_header": "article_type"},
+    {"key": "title", "label": "Title",
+     "csv_header": "title"},
+    {"key": "canonical_url", "label": "Canonical URL",
+     "csv_header": "canonical_url"},
+    {"key": "created_at", "label": "Created At",
+     "csv_header": "created_at"},
+    {"key": "saved_response_count", "label": "Saved Responses",
+     "csv_header": "saved_response_count"},
+    {"key": "latest_scraped_max_res_no", "label": "Max Res No",
+     "csv_header": "latest_scraped_max_res_no"},
+    {"key": "last_scraped_at", "label": "Last Scraped",
+     "csv_header": "last_scraped_at"},
+]
 
 
 def _open_archive_read_conn() -> sqlite3.Connection | None:
@@ -348,9 +391,10 @@ def _article_date_line(archive) -> str | None:
 
 
 def _render_txt_archive(archive):
+    display_id = unquote(archive['article_id'])
     lines = [
         "=== ARTICLE META ===",
-        f"ID: {archive['article_id']}",
+        f"ID: {display_id}",
         f"Type: {archive['article_type']}",
         f"Title: {archive['title']}",
         f"URL: {archive['url']}",
@@ -390,10 +434,11 @@ def _escape_md_response_text(content_text):
 
 
 def _render_md_archive(archive):
+    display_id = unquote(archive['article_id'])
     lines = [
         f"# {archive['title']}",
         "",
-        f"- ID: {archive['article_id']}",
+        f"- ID: {display_id}",
         f"- Type: {archive['article_type']}",
         f"- URL: {archive['url']}",
     ]
@@ -683,6 +728,7 @@ def list_registered_articles():
                 a.article_type,
                 a.title,
                 a.canonical_url,
+                a.created_at,
                 COUNT(r.id) AS saved_response_count,
                 MAX(r.res_no) AS latest_scraped_max_res_no
                 {scraped_at_sel}
@@ -694,7 +740,8 @@ def list_registered_articles():
                 a.article_id,
                 a.article_type,
                 a.title,
-                a.canonical_url
+                a.canonical_url,
+                a.created_at
                 {scraped_at_grp}
             ORDER BY
                 a.created_at ASC, a.article_id ASC, a.article_type ASC
@@ -708,9 +755,11 @@ def list_registered_articles():
 
     return [
         {
+            "article_id": unquote(article_id or ""),
             "article_type": article_type,
             "title": title or "",
             "canonical_url": canonical_url or "",
+            "created_at": created_at or "",
             "saved_response_count": saved_response_count,
             "latest_scraped_max_res_no": latest_scraped_max_res_no,
             "last_scraped_at": last_scraped_at,
@@ -720,11 +769,182 @@ def list_registered_articles():
             article_type,
             title,
             canonical_url,
+            created_at,
             saved_response_count,
             latest_scraped_max_res_no,
             last_scraped_at,
         ) in rows
     ]
+
+
+def _registered_sql_schema(conn):
+    """Return (has_scraped_at, scraped_sel, scraped_grp) for articles."""
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(articles)")
+    cols = {row[1] for row in cur.fetchall()}
+    has = "latest_scraped_at" in cols
+    sel = (
+        ", a.latest_scraped_at AS last_scraped_at"
+        if has
+        else ", NULL AS last_scraped_at"
+    )
+    grp = ", a.latest_scraped_at" if has else ""
+    return has, sel, grp
+
+
+def _registered_sort_sql_expr(sort_by):
+    """Return SQL ORDER BY expression for a validated sort_by key."""
+    _map = {
+        "title": "a.title",
+        "article_id": "a.article_id",
+        "created_at": "a.created_at",
+        "saved_response_count": "saved_response_count",
+        "latest_scraped_max_res_no": "latest_scraped_max_res_no",
+        "last_scraped_at": "last_scraped_at",
+    }
+    return _map.get(sort_by, "a.created_at")
+
+
+def _registered_row_to_dict(row):
+    (
+        article_id,
+        article_type,
+        title,
+        canonical_url,
+        created_at,
+        saved_response_count,
+        latest_scraped_max_res_no,
+        last_scraped_at,
+    ) = row
+    return {
+        "article_id": unquote(article_id or ""),
+        "article_type": article_type or "",
+        "title": title or "",
+        "canonical_url": canonical_url or "",
+        "created_at": created_at or "",
+        "saved_response_count": saved_response_count,
+        "latest_scraped_max_res_no": latest_scraped_max_res_no,
+        "last_scraped_at": last_scraped_at,
+    }
+
+
+def query_registered_articles(
+    *,
+    sort_by=DEFAULT_REGISTERED_SORT_BY,
+    sort_order=DEFAULT_REGISTERED_SORT_ORDER,
+    search=None,
+    page=1,
+    per_page=DEFAULT_REGISTERED_PER_PAGE,
+    paginate=True,
+):
+    """Query registered articles with sort, search, and pagination.
+
+    Returns:
+        {"rows": [...], "total": int, "page": int, "per_page": int}
+
+    Set paginate=False to return all matching rows without LIMIT/OFFSET;
+    that is the internal all-records export route.
+    """
+    if sort_by not in REGISTERED_SORT_ALLOWLIST:
+        sort_by = DEFAULT_REGISTERED_SORT_BY
+    order_dir = "ASC" if sort_order == "asc" else "DESC"
+    conn = _open_archive_read_conn()
+    if conn is None:
+        return {"rows": [], "total": 0, "page": page, "per_page": per_page}
+
+    try:
+        _has_scraped, scraped_sel, scraped_grp = _registered_sql_schema(conn)
+        sort_expr = _registered_sort_sql_expr(sort_by)
+
+        where_sql = ""
+        where_params: list = []
+        if search:
+            conds = [
+                f"a.{col} LIKE ?" for col in REGISTERED_SEARCH_COLUMNS
+            ]
+            where_sql = "WHERE (" + " OR ".join(conds) + ")"
+            where_params = [
+                f"%{search}%" for _ in REGISTERED_SEARCH_COLUMNS
+            ]
+
+        count_sql = f"SELECT COUNT(*) FROM articles AS a {where_sql}"
+        data_sql = f"""
+            SELECT
+                a.article_id,
+                a.article_type,
+                a.title,
+                a.canonical_url,
+                a.created_at,
+                COUNT(r.id) AS saved_response_count,
+                MAX(r.res_no) AS latest_scraped_max_res_no
+                {scraped_sel}
+            FROM articles AS a
+            LEFT JOIN responses AS r
+                ON a.article_id = r.article_id
+                AND a.article_type = r.article_type
+            {where_sql}
+            GROUP BY
+                a.article_id, a.article_type, a.title,
+                a.canonical_url, a.created_at{scraped_grp}
+            ORDER BY
+                {sort_expr} {order_dir},
+                a.article_id ASC, a.article_type ASC
+        """
+
+        cur = conn.cursor()
+        cur.execute(count_sql, where_params)
+        total = cur.fetchone()[0]
+
+        if paginate:
+            offset = (page - 1) * per_page
+            cur.execute(
+                data_sql + " LIMIT ? OFFSET ?",
+                where_params + [per_page, offset],
+            )
+        else:
+            cur.execute(data_sql, where_params)
+
+        rows = [_registered_row_to_dict(r) for r in cur.fetchall()]
+    except sqlite3.OperationalError:
+        return {"rows": [], "total": 0, "page": page, "per_page": per_page}
+    finally:
+        conn.close()
+
+    return {"rows": rows, "total": total, "page": page, "per_page": per_page}
+
+
+def _render_registered_list_csv(rows):
+    """Render registered article rows as CSV using shared column def."""
+    output = StringIO()
+    headers = [col["csv_header"] for col in REGISTERED_ARTICLE_COLUMNS]
+    writer = csv.DictWriter(output, fieldnames=headers)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({
+            col["csv_header"]: str(row.get(col["key"]) or "")
+            for col in REGISTERED_ARTICLE_COLUMNS
+        })
+    return output.getvalue()
+
+
+def export_registered_articles_csv(
+    sort_by=DEFAULT_REGISTERED_SORT_BY,
+    sort_order=DEFAULT_REGISTERED_SORT_ORDER,
+    search=None,
+):
+    """Export all registered articles as CSV for internal CLI use.
+
+    All-records route (no pagination). For the user-facing web CSV
+    (current-page only), use query_registered_articles() +
+    _render_registered_list_csv() via web_app.py.
+    """
+    result = query_registered_articles(
+        sort_by=sort_by,
+        sort_order=sort_order,
+        search=search,
+        paginate=False,
+    )
+    return _render_registered_list_csv(result["rows"])
 
 
 def write_scrape_targets_txt(data_dir="data"):

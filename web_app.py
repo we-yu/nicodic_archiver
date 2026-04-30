@@ -8,10 +8,17 @@ from uuid import uuid4
 from wsgiref.simple_server import make_server
 
 from archive_read import (
+    ALLOWED_REGISTERED_PER_PAGE,
+    DEFAULT_REGISTERED_PER_PAGE,
+    DEFAULT_REGISTERED_SORT_BY,
+    DEFAULT_REGISTERED_SORT_ORDER,
+    REGISTERED_ARTICLE_COLUMNS,
+    REGISTERED_SORT_ALLOWLIST,
+    _render_registered_list_csv,
     get_saved_article_export,
     get_saved_article_summary,
     get_saved_article_summary_by_exact_title,
-    list_registered_articles,
+    query_registered_articles,
 )
 from article_resolver import resolve_article_input
 from target_list import register_target_url
@@ -129,8 +136,24 @@ def _sanitize_download_filename_title(value: str) -> str:
     return text or "article"
 
 
+def _sanitize_article_id_for_filename(article_id: str) -> str:
+    """Decode URL-encoded article_id and sanitize for filename prefix."""
+    decoded = unquote(article_id)
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", decoded)
+    safe = re.sub(r"\s+", " ", safe).strip(" .")
+    return safe or "article"
+
+
 def _ascii_download_fallback(article_id: str, article_type: str) -> str:
-    return f"{article_id}{article_type}_article"
+    """Return ASCII-safe fallback filename (RFC 5987 non-supporting browsers)."""
+    decoded = unquote(article_id)
+    try:
+        decoded.encode("ascii")
+        ascii_id = re.sub(r'[<>:"/\\|?*\x00-\x1f\s]', "_", decoded)
+        ascii_id = ascii_id.strip("_") or "article"
+    except UnicodeEncodeError:
+        ascii_id = "article"
+    return f"{ascii_id}{article_type}_article"
 
 
 def _build_download_filename(
@@ -139,8 +162,9 @@ def _build_download_filename(
     title: str | None,
     requested_format: str,
 ) -> str:
+    safe_id = _sanitize_article_id_for_filename(article_id)
     safe_title = _sanitize_download_filename_title(title or "")
-    return f"{article_id}{article_type}_{safe_title}.{requested_format}"
+    return f"{safe_id}{article_type}_{safe_title}.{requested_format}"
 
 
 def _build_content_disposition(
@@ -813,8 +837,18 @@ def _render_page(
     .message-area.error .status-line {{ color: var(--error); }}
     .followup-note {{ color: var(--muted); }}
     .download-frame {{ display: none; width: 0; height: 0; border: 0; }}
-    .list-link-line {{ margin: 0 0 16px; font-size: 0.9rem; }}
-    .list-link {{ color: var(--accent); }}
+    .list-link-line {{ margin: 0 0 16px; }}
+    .list-btn {{
+      display: inline-block;
+      padding: 7px 18px;
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.9rem;
+      background: transparent;
+    }}
+    .list-btn:hover {{ background: rgba(15, 118, 110, 0.08); }}
     @media (max-width: 640px) {{
       main {{ padding: 24px 14px 36px; }}
       .panel {{ padding: 18px; }}
@@ -828,7 +862,7 @@ def _render_page(
       <h1>{escape(UI_TEXTS['heading'])}</h1>
       <p class=\"lede\">{escape(UI_TEXTS['lede'])}</p>
       <p class=\"list-link-line\">
-        <a href=\"/registered\" target=\"_blank\" class=\"list-link\">
+        <a href=\"/registered\" target=\"_blank\" class=\"list-btn\">
           登録済み記事一覧
         </a>
       </p>
@@ -904,25 +938,211 @@ def _render_page(
     return html.encode("utf-8")
 
 
-def _render_registered_list_page() -> bytes:
-    articles = list_registered_articles()
-    rows_html_parts = []
-    for row in articles:
-        max_res = row["latest_scraped_max_res_no"]
-        max_res_text = str(max_res) if max_res is not None else ""
-        last_scraped = row.get("last_scraped_at") or ""
-        rows_html_parts.append(
-            "<tr>"
-            f"<td>{escape(row['article_type'])}</td>"
-            f"<td>{escape(row['title'])}</td>"
-            f"<td>{escape(row['canonical_url'])}</td>"
-            f"<td>{escape(str(row['saved_response_count']))}</td>"
-            f"<td>{escape(max_res_text)}</td>"
-            f"<td>{escape(last_scraped)}</td>"
-            "</tr>"
+def _normalize_registered_sort_by(value: str) -> str:
+    if value in REGISTERED_SORT_ALLOWLIST:
+        return value
+    return DEFAULT_REGISTERED_SORT_BY
+
+
+def _normalize_registered_sort_order(value: str) -> str:
+    return "asc" if value == "asc" else DEFAULT_REGISTERED_SORT_ORDER
+
+
+def _normalize_registered_per_page(value: str) -> int:
+    try:
+        n = int(value)
+    except (ValueError, TypeError):
+        return DEFAULT_REGISTERED_PER_PAGE
+    if n in ALLOWED_REGISTERED_PER_PAGE:
+        return n
+    return DEFAULT_REGISTERED_PER_PAGE
+
+
+def _build_registered_url(
+    sort_by: str,
+    sort_order: str,
+    q: str,
+    page: int,
+    per_page: int,
+) -> str:
+    params: dict = {
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+        "page": str(page),
+        "per_page": str(per_page),
+    }
+    if q:
+        params["q"] = q
+    return "/registered?" + urlencode(params)
+
+
+def _registered_sort_header_cell(
+    col: dict,
+    sort_by: str,
+    sort_order: str,
+    q: str,
+    page: int,
+    per_page: int,
+) -> str:
+    key = col["key"]
+    label = escape(col["label"])
+    if key not in REGISTERED_SORT_ALLOWLIST:
+        return f"<th>{label}</th>"
+    if sort_by == key:
+        next_order = "asc" if sort_order == "desc" else "desc"
+        ind = " &#9660;" if sort_order == "desc" else " &#9650;"
+    else:
+        next_order = "desc"
+        ind = ""
+    url = escape(_build_registered_url(key, next_order, q, page, per_page))
+    return (
+        f'<th><a href="{url}" class="sort-link">'
+        f"{label}{ind}</a></th>"
+    )
+
+
+def _registered_row_html(row: dict) -> str:
+    unscrapped = (row.get("saved_response_count") or 0) == 0
+    cls = ' class="not-scraped"' if unscrapped else ""
+    cells = []
+    for col in REGISTERED_ARTICLE_COLUMNS:
+        key = col["key"]
+        val = row.get(key)
+        if key == "canonical_url" and val:
+            safe_url = escape(str(val))
+            cell = (
+                f'<td><a href="{safe_url}" target="_blank"'
+                f' rel="noopener noreferrer"'
+                f' class="ext-link">{safe_url}</a></td>'
+            )
+        elif val is None:
+            cell = "<td></td>"
+        else:
+            cell = f"<td>{escape(str(val))}</td>"
+        cells.append(cell)
+    return f"<tr{cls}>{''.join(cells)}</tr>"
+
+
+def _registered_pagination_html(
+    page: int,
+    total_pages: int,
+    sort_by: str,
+    sort_order: str,
+    q: str,
+    per_page: int,
+) -> str:
+    def _purl(p: int) -> str:
+        return escape(
+            _build_registered_url(sort_by, sort_order, q, p, per_page)
         )
-    rows_html = "".join(rows_html_parts)
-    total = len(articles)
+
+    parts = []
+    if page <= 1:
+        parts.append('<span class="page-btn disabled">First</span>')
+        parts.append('<span class="page-btn disabled">Prev</span>')
+    else:
+        parts.append(
+            f'<a class="page-btn" href="{_purl(1)}">First</a>'
+        )
+        parts.append(
+            f'<a class="page-btn" href="{_purl(page - 1)}">Prev</a>'
+        )
+    parts.append(
+        f'<span class="page-info">Page {page} / {total_pages}</span>'
+    )
+    if page >= total_pages:
+        parts.append('<span class="page-btn disabled">Next</span>')
+        parts.append('<span class="page-btn disabled">Last</span>')
+    else:
+        parts.append(
+            f'<a class="page-btn" href="{_purl(page + 1)}">Next</a>'
+        )
+        parts.append(
+            f'<a class="page-btn" href="{_purl(total_pages)}">Last</a>'
+        )
+    return (
+        '<nav class="pagination">' + "".join(parts) + "</nav>"
+    )
+
+
+def _render_registered_list_page(query_params: dict) -> bytes:
+    sort_by = _normalize_registered_sort_by(
+        query_params.get("sort_by", "")
+    )
+    sort_order = _normalize_registered_sort_order(
+        query_params.get("sort_order", "")
+    )
+    search = query_params.get("q", "").strip()
+    per_page = _normalize_registered_per_page(
+        query_params.get("per_page", "")
+    )
+    try:
+        page = max(1, int(query_params.get("page", "1") or "1"))
+    except (ValueError, TypeError):
+        page = 1
+
+    result = query_registered_articles(
+        sort_by=sort_by,
+        sort_order=sort_order,
+        search=search,
+        page=page,
+        per_page=per_page,
+    )
+    rows = result["rows"]
+    total = result["total"]
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+
+    # Build header cells
+    header_cells = "".join(
+        _registered_sort_header_cell(
+            col, sort_by, sort_order, search, page, per_page
+        )
+        for col in REGISTERED_ARTICLE_COLUMNS
+    )
+    rows_html = "".join(_registered_row_html(r) for r in rows)
+    pagination = _registered_pagination_html(
+        page, total_pages, sort_by, sort_order, search, per_page
+    )
+
+    # Showing meta line
+    if total == 0:
+        showing = "Count: 0"
+    else:
+        start = (page - 1) * per_page + 1
+        end = min(page * per_page, total)
+        showing = (
+            f"Count: {total} &mdash; Showing {start}&ndash;{end}"
+        )
+
+    search_esc = escape(search)
+    sort_by_esc = escape(sort_by)
+    sort_ord_esc = escape(sort_order)
+    per_page_str = str(per_page)
+
+    csv_params = urlencode({
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+        "q": search,
+        "page": str(page),
+        "per_page": per_page_str,
+    })
+    csv_url = escape(f"/registered/csv?{csv_params}")
+
+    clear_link = ""
+    if search:
+        cl_url = escape(
+            _build_registered_url(sort_by, sort_order, "", 1, per_page)
+        )
+        clear_link = f' <a href="{cl_url}" class="clear-link">Clear</a>'
+
+    per_page_opts = "".join(
+        f'<option value="{n}"'
+        + (" selected" if n == per_page else "")
+        + f">{n}</option>"
+        for n in ALLOWED_REGISTERED_PER_PAGE
+    )
+
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -938,7 +1158,59 @@ def _render_registered_list_page() -> bytes:
       color: #1f2430;
     }}
     h1 {{ margin: 0 0 8px; font-size: 1.8rem; }}
-    .meta {{ color: #6b7280; margin: 0 0 20px; font-size: 0.9rem; }}
+    .meta {{ color: #6b7280; margin: 0 0 12px; font-size: 0.9rem; }}
+    .controls {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 12px;
+    }}
+    .search-form {{
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }}
+    .search-form input[type="text"] {{
+      padding: 5px 10px;
+      border: 1px solid #d9ccb4;
+      border-radius: 6px;
+      font: inherit;
+      min-width: 180px;
+    }}
+    button, .btn {{
+      padding: 5px 14px;
+      border: 0;
+      border-radius: 6px;
+      background: #0f766e;
+      color: #fff;
+      font: inherit;
+      cursor: pointer;
+      text-decoration: none;
+    }}
+    button:hover, .btn:hover {{ background: #0d6560; }}
+    .clear-link {{
+      color: #6b7280;
+      font-size: 0.88rem;
+      text-decoration: none;
+    }}
+    .clear-link:hover {{ text-decoration: underline; }}
+    select.per-page {{
+      padding: 4px 8px;
+      border: 1px solid #d9ccb4;
+      border-radius: 6px;
+      font: inherit;
+    }}
+    .csv-link {{
+      padding: 5px 12px;
+      border: 1px solid #0f766e;
+      border-radius: 6px;
+      color: #0f766e;
+      text-decoration: none;
+      font-size: 0.9rem;
+      background: transparent;
+    }}
+    .csv-link:hover {{ background: rgba(15, 118, 110, 0.08); }}
     table {{
       border-collapse: collapse;
       width: 100%;
@@ -954,31 +1226,73 @@ def _render_registered_list_page() -> bytes:
       word-break: break-word;
     }}
     th {{ background: #f0e9d8; font-weight: 700; }}
+    th a.sort-link {{
+      color: #1f2430;
+      text-decoration: none;
+      white-space: nowrap;
+    }}
+    th a.sort-link:hover {{ text-decoration: underline; }}
     tr:last-child td {{ border-bottom: none; }}
+    tr.not-scraped td {{ background: #fff8e6; }}
     a {{ color: #0f766e; }}
+    .ext-link {{ word-break: break-all; }}
+    .pagination {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 16px;
+    }}
+    .page-btn {{
+      padding: 4px 10px;
+      border: 1px solid #d9ccb4;
+      border-radius: 6px;
+      color: #0f766e;
+      text-decoration: none;
+      font-size: 0.9rem;
+    }}
+    .page-btn.disabled {{
+      color: #aaa;
+      border-color: #e0d8c8;
+      pointer-events: none;
+    }}
+    .page-info {{ font-size: 0.9rem; color: #6b7280; }}
   </style>
 </head>
 <body>
   <h1>Registered Articles</h1>
   <p class="meta">
-    Count: {total} &mdash;
+    {showing} &mdash;
     <a href="/" target="_self">&larr; Top</a>
   </p>
+  <div class="controls">
+    <form method="get" action="/registered" class="search-form">
+      <input type="hidden" name="sort_by" value="{sort_by_esc}">
+      <input type="hidden" name="sort_order" value="{sort_ord_esc}">
+      <input type="hidden" name="per_page" value="{per_page_str}">
+      <input type="text" name="q" value="{search_esc}"
+             placeholder="Search title or article ID&hellip;">
+      <button type="submit">Search</button>{clear_link}
+    </form>
+    <form method="get" action="/registered">
+      <input type="hidden" name="q" value="{search_esc}">
+      <input type="hidden" name="sort_by" value="{sort_by_esc}">
+      <input type="hidden" name="sort_order" value="{sort_ord_esc}">
+      <input type="hidden" name="page" value="1">
+      <select name="per_page" class="per-page"
+              onchange="this.form.submit()">{per_page_opts}</select>
+    </form>
+    <a href="{csv_url}" class="csv-link">&#8595; CSV (this page)</a>
+  </div>
   <table>
     <thead>
-      <tr>
-        <th>Type</th>
-        <th>Title</th>
-        <th>Canonical URL</th>
-        <th>Saved Responses</th>
-        <th>Max Res No</th>
-        <th>Last Scraped</th>
-      </tr>
+      <tr>{header_cells}</tr>
     </thead>
     <tbody>
 {rows_html}
     </tbody>
   </table>
+  {pagination}
 </body>
 </html>
 """
@@ -1124,7 +1438,8 @@ def create_app(
             return [body]
 
         if method == "GET" and path == "/registered":
-            body = _render_registered_list_page()
+            query = _read_query_params(environ)
+            body = _render_registered_list_page(query)
             start_response(
                 "200 OK",
                 [
@@ -1134,7 +1449,52 @@ def create_app(
             )
             return [body]
 
-        if path not in {"/", "/download", "/registered"}:
+        if method == "GET" and path == "/registered/csv":
+            query = _read_query_params(environ)
+            sort_by = _normalize_registered_sort_by(
+                query.get("sort_by", "")
+            )
+            sort_order = _normalize_registered_sort_order(
+                query.get("sort_order", "")
+            )
+            search = query.get("q", "").strip()
+            per_page = _normalize_registered_per_page(
+                query.get("per_page", "")
+            )
+            try:
+                csv_page = max(
+                    1, int(query.get("page", "1") or "1")
+                )
+            except (ValueError, TypeError):
+                csv_page = 1
+            csv_result = query_registered_articles(
+                sort_by=sort_by,
+                sort_order=sort_order,
+                search=search,
+                page=csv_page,
+                per_page=per_page,
+            )
+            csv_text = _render_registered_list_csv(
+                csv_result["rows"]
+            )
+            csv_body = csv_text.encode("utf-8")
+            fname = f"registered_articles_p{csv_page}.csv"
+            start_response(
+                "200 OK",
+                [
+                    ("Content-Type", "text/csv; charset=utf-8"),
+                    (
+                        "Content-Disposition",
+                        f'attachment; filename="{fname}"',
+                    ),
+                    ("Content-Length", str(len(csv_body))),
+                ],
+            )
+            return [csv_body]
+
+        if path not in {
+            "/", "/download", "/registered", "/registered/csv"
+        }:
             body = b"Not Found"
             start_response(
                 "404 Not Found",

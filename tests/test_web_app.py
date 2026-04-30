@@ -841,19 +841,42 @@ def test_top_page_includes_registered_list_link():
     assert "登録済み記事一覧" in response["body"]
 
 
+def _mock_query_result(rows):
+    """Build a query_registered_articles return value for mocking."""
+    return {
+        "rows": rows,
+        "total": len(rows),
+        "page": 1,
+        "per_page": 100,
+    }
+
+
+def _make_reg_row(
+    article_id="12345",
+    article_type="a",
+    title="テスト記事",
+    canonical_url="https://dic.nicovideo.jp/a/12345",
+    saved_response_count=42,
+    latest_scraped_max_res_no=50,
+    last_scraped_at="2026-01-01T00:00:00+00:00",
+    created_at="2026-01-01T00:00:00+00:00",
+):
+    return {
+        "article_id": article_id,
+        "article_type": article_type,
+        "title": title,
+        "canonical_url": canonical_url,
+        "saved_response_count": saved_response_count,
+        "latest_scraped_max_res_no": latest_scraped_max_res_no,
+        "last_scraped_at": last_scraped_at,
+        "created_at": created_at,
+    }
+
+
 def test_registered_page_renders_html_table_with_expected_columns():
     with patch(
-        "web_app.list_registered_articles",
-        return_value=[
-            {
-                "article_type": "a",
-                "title": "テスト記事",
-                "canonical_url": "https://dic.nicovideo.jp/a/12345",
-                "saved_response_count": 42,
-                "latest_scraped_max_res_no": 50,
-                "last_scraped_at": "2026-01-01T00:00:00+00:00",
-            }
-        ],
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
     ):
         response = _run_wsgi_request("GET", path="/registered")
 
@@ -864,10 +887,75 @@ def test_registered_page_renders_html_table_with_expected_columns():
     assert ">42<" in response["body"]
     assert ">50<" in response["body"]
     assert "2026-01-01T00:00:00+00:00" in response["body"]
+    assert "12345" in response["body"]
+
+
+def test_registered_page_shows_article_id_column():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row(article_id="99887")]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert ">99887<" in response["body"]
+    assert "Article ID" in response["body"]
+
+
+def test_registered_page_canonical_url_is_clickable_link():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert 'href="https://dic.nicovideo.jp/a/12345"' in response["body"]
+    assert 'target="_blank"' in response["body"]
+
+
+def test_registered_page_highlights_not_scraped_rows():
+    unscrapped = _make_reg_row(
+        title="未スクレイプ",
+        saved_response_count=0,
+        latest_scraped_max_res_no=None,
+        last_scraped_at=None,
+    )
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([unscrapped]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert "not-scraped" in response["body"]
+
+
+def test_registered_page_scraped_rows_have_no_special_class():
+    scraped = _make_reg_row(saved_response_count=5)
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([scraped]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert 'class="not-scraped"' not in response["body"]
+
+
+def test_registered_page_shows_sort_links_in_headers():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert "sort_by=title" in response["body"]
+    assert "sort_by=created_at" in response["body"]
+    assert "sort_by=article_id" in response["body"]
 
 
 def test_registered_page_renders_empty_table_when_no_articles():
-    with patch("web_app.list_registered_articles", return_value=[]):
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([]),
+    ):
         response = _run_wsgi_request("GET", path="/registered")
 
     assert response["status"] == "200 OK"
@@ -877,27 +965,70 @@ def test_registered_page_renders_empty_table_when_no_articles():
 
 def test_registered_page_lists_multiple_articles():
     articles = [
-        {
-            "article_type": "a",
-            "title": "記事A",
-            "canonical_url": "https://dic.nicovideo.jp/a/1",
-            "saved_response_count": 10,
-            "latest_scraped_max_res_no": 10,
-            "last_scraped_at": None,
-        },
-        {
-            "article_type": "id",
-            "title": "記事B",
-            "canonical_url": "https://dic.nicovideo.jp/id/2",
-            "saved_response_count": 5,
-            "latest_scraped_max_res_no": None,
-            "last_scraped_at": None,
-        },
+        _make_reg_row(
+            article_id="1",
+            article_type="a",
+            title="記事A",
+            canonical_url="https://dic.nicovideo.jp/a/1",
+            saved_response_count=10,
+            latest_scraped_max_res_no=10,
+            last_scraped_at=None,
+        ),
+        _make_reg_row(
+            article_id="2",
+            article_type="id",
+            title="記事B",
+            canonical_url="https://dic.nicovideo.jp/id/2",
+            saved_response_count=5,
+            latest_scraped_max_res_no=None,
+            last_scraped_at=None,
+        ),
     ]
-    with patch("web_app.list_registered_articles", return_value=articles):
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result(articles),
+    ):
         response = _run_wsgi_request("GET", path="/registered")
 
     assert response["status"] == "200 OK"
     assert "記事A" in response["body"]
     assert "記事B" in response["body"]
     assert "Count: 2" in response["body"]
+
+
+def test_registered_page_csv_download_returns_csv_content_type():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered/csv")
+
+    assert response["status"] == "200 OK"
+    headers = _header_map(response)
+    assert "text/csv" in headers["Content-Type"]
+    assert "article_id" in response["body"]
+    assert "テスト記事" in response["body"]
+
+
+def test_registered_page_csv_contains_all_column_headers():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered/csv")
+
+    first_line = response["body"].splitlines()[0]
+    assert "article_id" in first_line
+    assert "article_type" in first_line
+    assert "title" in first_line
+    assert "canonical_url" in first_line
+
+
+def test_registered_csv_includes_csv_download_link_on_page():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert "/registered/csv" in response["body"]
