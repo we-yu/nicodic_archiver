@@ -11,6 +11,27 @@ from pathlib import Path
 DEFAULT_DB_PATH = "data/nicodic.db"
 
 
+def validate_saved_article_identity(article_id, article_type):
+    """Validate archive storage identity for canonical /a/ saves.
+
+    Archive rows for canonical article pages must keep article_type="a" while
+    storing the numeric NicoNicoPedia article ID as digits-only text.
+    Legacy article_type="id" rows remain readable and are not migrated here.
+    """
+
+    if article_type != "a":
+        return str(article_id)
+
+    if not isinstance(article_id, str):
+        raise ValueError("saved canonical article_id must be a digits-only string")
+
+    normalized_article_id = article_id.strip()
+    if not normalized_article_id or not normalized_article_id.isdigit():
+        raise ValueError("saved canonical article_id must be a digits-only string")
+
+    return normalized_article_id
+
+
 def _target_row_to_entry(row):
     return {
         "id": row[0],
@@ -194,6 +215,7 @@ def save_to_db(
     """
 
     cur = conn.cursor()
+    article_id = validate_saved_article_identity(article_id, article_type)
 
     # 記事メタ保存
     cur.execute("""

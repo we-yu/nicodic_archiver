@@ -6,6 +6,8 @@ These tests run in a temp working directory so production `data/` is untouched.
 import json
 import sqlite3
 
+import pytest
+
 import storage
 from storage import (
     append_scrape_run_observation,
@@ -21,6 +23,7 @@ from storage import (
     save_json,
     save_to_db,
     set_target_active_state,
+    validate_saved_article_identity,
 )
 
 
@@ -161,6 +164,32 @@ def test_save_to_db_persists_bounded_article_metadata(tmp_path, monkeypatch):
             "2025-02-03T04:05:06+09:00",
             "2026-03-04T05:06:07+09:00",
         )
+    finally:
+        conn.close()
+
+
+def test_validate_saved_article_identity_rejects_slug_for_canonical_a():
+    with pytest.raises(ValueError, match="digits-only string"):
+        validate_saved_article_identity("%E3%81%82", "a")
+
+
+def test_save_to_db_rejects_non_numeric_article_id_for_canonical_a(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    try:
+        with pytest.raises(ValueError, match="digits-only string"):
+            save_to_db(
+                conn,
+                "%E3%81%82",
+                "a",
+                "Some Title",
+                "https://dic.nicovideo.jp/a/%E3%81%82",
+                [],
+            )
     finally:
         conn.close()
 

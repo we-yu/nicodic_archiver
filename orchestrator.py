@@ -12,6 +12,7 @@ from storage import (
     init_db,
     list_queue_requests,
     save_to_db,
+    validate_saved_article_identity,
 )
 from target_list import parse_target_identity
 
@@ -236,6 +237,25 @@ def _extract_canonical_article_url(article_url: str, soup) -> str | None:
     )
 
 
+def _extract_numeric_article_id_from_metadata(soup) -> str | None:
+    og_url = soup.find("meta", property="og:url")
+    if og_url is None:
+        return None
+
+    candidate_url = og_url.get("content", "").strip()
+    identity = parse_target_identity(candidate_url)
+    if identity is None:
+        return None
+    if identity["article_type"] != "id":
+        return None
+
+    article_id = identity["article_id"]
+    if not article_id or not article_id.isdigit():
+        return None
+
+    return article_id
+
+
 def _select_scrape_identity(
     article_url: str,
     metadata_article_url: str | None,
@@ -256,6 +276,24 @@ def _select_scrape_identity(
         "article_type": "",
         "canonical_url": article_url,
     }
+
+
+def _resolve_storage_identity(
+    metadata_article_id: str,
+    metadata_article_type: str,
+    canonical_identity: dict,
+) -> tuple[str, str, str]:
+    article_type = canonical_identity["article_type"] or metadata_article_type
+    canonical_article_url = canonical_identity["canonical_url"]
+    article_id = metadata_article_id
+
+    if article_type == "a":
+        article_id = validate_saved_article_identity(
+            metadata_article_id,
+            article_type,
+        )
+
+    return article_id, article_type, canonical_article_url
 
 
 def fetch_article_metadata_record(article_url: str) -> dict:
@@ -285,8 +323,14 @@ def fetch_article_metadata_record(article_url: str) -> dict:
     if target_identity is None:
         raise ArticleNotFoundError(f"Article not found: {article_url}")
 
+    numeric_article_id = _extract_numeric_article_id_from_metadata(soup)
+    if target_identity["article_type"] == "a" and numeric_article_id is None:
+        raise ValueError(
+            "Could not extract numeric article_id for canonical article save"
+        )
+
     return {
-        "article_id": target_identity["article_id"],
+        "article_id": numeric_article_id or target_identity["article_id"],
         "article_type": target_identity["article_type"],
         "article_url": target_identity["canonical_url"],
         "title": title,
@@ -598,15 +642,17 @@ def run_scrape(
 ) -> ScrapeResult:
     try:
         metadata_result = fetch_article_metadata(article_url)
-        article_id, article_type, title = metadata_result
+        metadata_article_id, metadata_article_type, title = metadata_result
         metadata_article_url = getattr(metadata_result, "article_url", None)
         canonical_identity = _select_scrape_identity(
             article_url,
             metadata_article_url,
         )
-        article_id = canonical_identity["article_id"] or article_id
-        article_type = canonical_identity["article_type"] or article_type
-        canonical_article_url = canonical_identity["canonical_url"]
+        article_id, article_type, canonical_article_url = _resolve_storage_identity(
+            metadata_article_id,
+            metadata_article_type,
+            canonical_identity,
+        )
 
     except RedirectArticleError as exc:
         if progress_reporter is None:

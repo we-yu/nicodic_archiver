@@ -51,7 +51,8 @@ def test_fetch_article_metadata_mocked():
     html = """
     <html><head>
     <meta property="og:title" content="Fooとは">
-    <meta property="og:url" content="https://dic.nicovideo.jp/a/12345">
+    <link rel="canonical" href="https://dic.nicovideo.jp/a/foo">
+    <meta property="og:url" content="https://dic.nicovideo.jp/id/12345">
     <meta itemprop="datePublished" content="2024-01-02T03:04:05+09:00">
     <meta itemprop="dateModified" content="2025-02-03T04:05:06+09:00">
     </head></html>
@@ -70,7 +71,8 @@ def test_fetch_article_metadata_record_reads_article_dates():
     html = """
     <html><head>
     <meta property="og:title" content="Fooとは">
-    <meta property="og:url" content="https://dic.nicovideo.jp/a/12345">
+    <link rel="canonical" href="https://dic.nicovideo.jp/a/foo">
+    <meta property="og:url" content="https://dic.nicovideo.jp/id/12345">
     <meta itemprop="datePublished" content="2024-01-02T03:04:05+09:00">
     <meta itemprop="dateModified" content="2025-02-03T04:05:06+09:00">
     </head></html>
@@ -85,7 +87,7 @@ def test_fetch_article_metadata_record_reads_article_dates():
     assert record == {
         "article_id": "12345",
         "article_type": "a",
-        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_url": "https://dic.nicovideo.jp/a/foo",
         "title": "Foo",
         "published_at": "2024-01-02T03:04:05+09:00",
         "modified_at": "2025-02-03T04:05:06+09:00",
@@ -109,7 +111,7 @@ def test_fetch_article_metadata_record_prefers_canonical_a_over_og_id():
         )
 
     assert record == {
-        "article_id": "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93",
+        "article_id": "5364158",
         "article_type": "a",
         "article_url": (
             "https://dic.nicovideo.jp/a/"
@@ -130,7 +132,7 @@ def test_fetch_article_metadata_preserves_canonical_article_url():
     with patch(
         "orchestrator.fetch_article_metadata_record",
         return_value={
-            "article_id": "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93",
+            "article_id": "5364158",
             "article_type": "a",
             "article_url": canonical_url,
             "title": "おそ松さん",
@@ -141,6 +143,24 @@ def test_fetch_article_metadata_preserves_canonical_article_url():
         result = fetch_article_metadata("https://dic.nicovideo.jp/id/5364158")
 
     assert result.article_url == canonical_url
+
+
+def test_fetch_article_metadata_record_rejects_missing_numeric_id_for_canonical_a():
+    html = """
+    <html><head>
+    <meta property="og:title" content="Fooとは">
+    <link rel="canonical" href="https://dic.nicovideo.jp/a/foo">
+    <meta property="og:url" content="https://dic.nicovideo.jp/a/foo">
+    </head></html>
+    """
+    soup = BeautifulSoup(html, "lxml")
+
+    with patch("orchestrator.fetch_page", return_value=soup):
+        with pytest.raises(
+            ValueError,
+            match="Could not extract numeric article_id",
+        ):
+            fetch_article_metadata_record("https://dic.nicovideo.jp/a/foo")
 
 
 def test_run_scrape_respects_existing_fetch_metadata_patch_seam():
@@ -312,10 +332,33 @@ def test_run_scrape_persists_final_canonical_a_identity_at_save_boundary():
                             run_scrape(article_url)
 
     save_args = mock_save_db.call_args.args
-    assert save_args[1] == "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93"
+    assert save_args[1] == "5364158"
     assert save_args[2] == "a"
     assert save_args[4] == canonical_url
     assert save_args[5] == responses
+
+
+def test_run_scrape_rejects_non_numeric_saved_identity_for_canonical_a():
+    article_url = "https://dic.nicovideo.jp/id/5364158"
+    canonical_url = (
+        "https://dic.nicovideo.jp/a/"
+        "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93"
+    )
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=ArticleMetadataResult(
+            "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93",
+            "a",
+            "おそ松さん",
+            article_url=canonical_url,
+        ),
+    ):
+        with pytest.raises(
+            ValueError,
+            match="digits-only string",
+        ):
+            run_scrape(article_url)
 
 
 def test_run_scrape_does_not_write_json_artifact(tmp_path, monkeypatch):
