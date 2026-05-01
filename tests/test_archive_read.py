@@ -637,16 +637,31 @@ def test_txt_archive_decodes_url_encoded_article_id(
     conn = init_db()
     encoded_id = "%E3%81%9F%E3%81%A4%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF"
     try:
-        save_to_db(
-            conn,
-            encoded_id,
-            "a",
-            "たつきショック",
+        # Legacy / regression simulation: older DBs may have url-encoded
+        # slug values stored as articles.article_id for article_type='a'.
+        # New saves must reject that at the save boundary, so we seed rows
+        # directly here to keep read behavior covered.
+        canonical_url = (
             "https://dic.nicovideo.jp/a/%E3%81%9F%E3%81%A4"
-            "%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF",
-            [{"res_no": 1, "poster": "X", "posted_at": "2025-01-01",
-              "text": "test"}],
+            "%E3%81%8D%E3%82%B7%E3%83%A7%E3%83%83%E3%82%AF"
         )
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO articles (article_id, article_type, title, canonical_url)
+            VALUES (?, ?, ?, ?)
+            """,
+            (encoded_id, "a", "たつきショック", canonical_url),
+        )
+        cur.execute(
+            """
+            INSERT INTO responses
+            (article_id, article_type, res_no, content_text)
+            VALUES (?, ?, ?, ?)
+            """,
+            (encoded_id, "a", 1, "test"),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -670,23 +685,35 @@ def _seed_encoded_article(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     conn = init_db()
     try:
-        save_to_db(
-            conn,
-            _ENCODED_JP,
-            "a",
-            _DECODED_JP,
-            f"https://dic.nicovideo.jp/a/{_ENCODED_JP}",
-            [
-                {
-                    "res_no": 1,
-                    "id_hash": "x1",
-                    "poster_name": "Bob",
-                    "posted_at": "2025-06-01 00:00",
-                    "content": "hello",
-                    "content_html": "<p>hello</p>",
-                }
-            ],
+        # Seed a legacy slug-identity row directly (save_to_db rejects now).
+        canonical_url = f"https://dic.nicovideo.jp/a/{_ENCODED_JP}"
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO articles (article_id, article_type, title, canonical_url)
+            VALUES (?, ?, ?, ?)
+            """,
+            (_ENCODED_JP, "a", _DECODED_JP, canonical_url),
         )
+        cur.execute(
+            """
+            INSERT INTO responses
+            (article_id, article_type, res_no, id_hash, poster_name, posted_at,
+             content_text, content_html)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _ENCODED_JP,
+                "a",
+                1,
+                "x1",
+                "Bob",
+                "2025-06-01 00:00",
+                "hello",
+                "<p>hello</p>",
+            ),
+        )
+        conn.commit()
     finally:
         conn.close()
 

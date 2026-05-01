@@ -109,7 +109,7 @@ def test_fetch_article_metadata_record_prefers_canonical_a_over_og_id():
         )
 
     assert record == {
-        "article_id": "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93",
+        "article_id": "5364158",
         "article_type": "a",
         "article_url": (
             "https://dic.nicovideo.jp/a/"
@@ -130,7 +130,7 @@ def test_fetch_article_metadata_preserves_canonical_article_url():
     with patch(
         "orchestrator.fetch_article_metadata_record",
         return_value={
-            "article_id": "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93",
+            "article_id": "5364158",
             "article_type": "a",
             "article_url": canonical_url,
             "title": "おそ松さん",
@@ -258,7 +258,7 @@ def test_run_scrape_uses_canonical_article_url_for_bbs_collection():
         "orchestrator.fetch_article_metadata",
         return_value=ArticleMetadataResult(
             "5364158",
-            "id",
+            "a",
             "おそ松さん",
             article_url=canonical_url,
         ),
@@ -295,7 +295,7 @@ def test_run_scrape_persists_final_canonical_a_identity_at_save_boundary():
         "orchestrator.fetch_article_metadata",
         return_value=ArticleMetadataResult(
             "5364158",
-            "id",
+            "a",
             "おそ松さん",
             article_url=canonical_url,
         ),
@@ -312,10 +312,35 @@ def test_run_scrape_persists_final_canonical_a_identity_at_save_boundary():
                             run_scrape(article_url)
 
     save_args = mock_save_db.call_args.args
-    assert save_args[1] == "%E3%81%8A%E3%81%9D%E6%9D%BE%E3%81%95%E3%82%93"
+    assert save_args[1] == "5364158"
     assert save_args[2] == "a"
     assert save_args[4] == canonical_url
     assert save_args[5] == responses
+
+
+def test_run_scrape_rejects_non_numeric_article_id_for_canonical_save():
+    article_url = "https://dic.nicovideo.jp/a/some-slug"
+    canonical_url = "https://dic.nicovideo.jp/a/some-slug"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=ArticleMetadataResult(
+            "some-slug",
+            "a",
+            "Title",
+            article_url=canonical_url,
+        ),
+    ):
+        with patch("orchestrator.init_db") as mock_init:
+            with patch("orchestrator.save_to_db") as mock_save:
+                with pytest.raises(
+                    ValueError,
+                    match=r"digits-only",
+                ):
+                    run_scrape(article_url)
+
+    mock_init.assert_not_called()
+    mock_save.assert_not_called()
 
 
 def test_run_scrape_does_not_write_json_artifact(tmp_path, monkeypatch):
