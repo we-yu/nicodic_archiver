@@ -11,6 +11,26 @@ from pathlib import Path
 DEFAULT_DB_PATH = "data/nicodic.db"
 
 
+def validate_saved_article_identity(article_id: str, article_type: str) -> None:
+    """
+    Validate saved archive identity at the persistence boundary.
+
+    For canonical NicoNicoPedia article rows (article_type='a'), the saved
+    article_id must be a non-empty digits-only string (numeric article ID),
+    never a URL-encoded '/a/<slug>' value.
+    """
+    if article_type != "a":
+        return
+    if not isinstance(article_id, str):
+        raise ValueError("saved article_id must be a string for article_type='a'")
+    if not article_id:
+        raise ValueError("saved article_id must be non-empty for article_type='a'")
+    if not article_id.isdigit():
+        raise ValueError(
+            "saved article_id must be digits-only for article_type='a'"
+        )
+
+
 def _target_row_to_entry(row):
     return {
         "id": row[0],
@@ -193,6 +213,7 @@ def save_to_db(
     INSERT OR IGNORE で重複回避。
     """
 
+    validate_saved_article_identity(article_id, article_type)
     cur = conn.cursor()
 
     # 記事メタ保存

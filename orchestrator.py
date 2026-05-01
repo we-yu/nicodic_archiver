@@ -12,6 +12,7 @@ from storage import (
     init_db,
     list_queue_requests,
     save_to_db,
+    validate_saved_article_identity,
 )
 from target_list import parse_target_identity
 
@@ -179,6 +180,8 @@ _LOCATION_REPLACE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_OG_URL_ID_RE = re.compile(r"/id/([0-9]+)(?:/|$)")
+
 
 def _extract_page_title(soup) -> str:
     meta_title = soup.find("meta", property="og:title")
@@ -209,6 +212,38 @@ def _extract_itemprop_datetime(soup, itemprop: str) -> str | None:
 
     text = tag.get_text(" ", strip=True)
     return text or None
+
+
+def _extract_numeric_article_id(soup, canonical_article_url: str) -> str:
+    """
+    Extract a numeric NicoNicoPedia article ID for storage identity.
+
+    Prefers og:url '/id/<digits>' when present. As a bounded fallback,
+    accepts canonical '/a/<digits>' (numeric-only) but refuses slug values.
+    """
+    og_url = soup.find("meta", property="og:url")
+    og_content = og_url.get("content", "").strip() if og_url else ""
+    if og_content:
+        match = _OG_URL_ID_RE.search(og_content)
+        if match is not None:
+            numeric_id = match.group(1)
+            if numeric_id and numeric_id.isdigit():
+                return numeric_id
+
+    canonical_identity = parse_target_identity(canonical_article_url)
+    if canonical_identity is None:
+        raise ArticleNotFoundError(
+            f"Article not found: {canonical_article_url}"
+        )
+
+    candidate = canonical_identity["article_id"]
+    if candidate and candidate.isdigit():
+        return candidate
+
+    raise ValueError(
+        "Unable to extract numeric article ID from page metadata; "
+        "refusing to fall back to slug identity."
+    )
 
 
 def _extract_canonical_article_url(article_url: str, soup) -> str | None:
@@ -285,9 +320,15 @@ def fetch_article_metadata_record(article_url: str) -> dict:
     if target_identity is None:
         raise ArticleNotFoundError(f"Article not found: {article_url}")
 
+    if target_identity["article_type"] != "a":
+        raise ArticleNotFoundError(f"Article not found: {article_url}")
+
+    numeric_article_id = _extract_numeric_article_id(soup, canonical_article_url)
+    validate_saved_article_identity(numeric_article_id, "a")
+
     return {
-        "article_id": target_identity["article_id"],
-        "article_type": target_identity["article_type"],
+        "article_id": numeric_article_id,
+        "article_type": "a",
         "article_url": target_identity["canonical_url"],
         "title": title,
         "published_at": _extract_itemprop_datetime(soup, "datePublished"),
@@ -604,9 +645,8 @@ def run_scrape(
             article_url,
             metadata_article_url,
         )
-        article_id = canonical_identity["article_id"] or article_id
-        article_type = canonical_identity["article_type"] or article_type
         canonical_article_url = canonical_identity["canonical_url"]
+        validate_saved_article_identity(article_id, article_type)
 
     except RedirectArticleError as exc:
         if progress_reporter is None:
