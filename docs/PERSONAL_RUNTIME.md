@@ -60,6 +60,8 @@ Expected keys:
 - `LOCAL_GID`
 - `SCRAPE_PAGE_DELAY_SECONDS`
 - `BBS_RESPONSES_PER_PAGE`
+- `SOFT_TERMINATE_FILE`
+- `ONESHOT_LIMIT_DURATION_SECONDS`
 
 The file is intentionally local-only and should not be committed. Use the
 tracked template as a starting point:
@@ -77,6 +79,15 @@ scrape pagination. If it is unset or invalid, the application falls back to
 `BBS_RESPONSES_PER_PAGE` controls the BBS page boundary size used for resume
 and later-page progression. If it is unset or invalid, the application falls
 back to `30` responses per page.
+
+`SOFT_TERMINATE_FILE` controls the file-based stop-after-current flag path.
+If it is unset or empty, the runtime uses
+`runtime/control/stop_after_current`.
+
+`ONESHOT_LIMIT_DURATION_SECONDS` bounds one batch / periodic-one-shot run by
+elapsed wall-clock time. If it is unset, empty, invalid, non-finite,
+negative, or `0`, the limit is disabled. A positive value such as `3600`
+stops only at an article boundary after the current article finishes.
 
 ## Host UID/GID Handling
 
@@ -281,10 +292,41 @@ Useful environment overrides for external schedulers:
 - `COMPOSE_SERVICE_NAME` defaults to `personal_runtime`
 - `LOCK_DIR_PATH` defaults to `runtime/logs/periodic_once.lock`
 - `RUNTIME_LOCAL_ENV_FILE` defaults to `.env.runtime.local`
+- `SOFT_TERMINATE_FILE` defaults to `runtime/control/stop_after_current`
+- `ONESHOT_LIMIT_DURATION_SECONDS` is disabled unless set to a positive value
 
 Example scheduler-facing invocation shape:
 
 `TARGET_DB_PATH=/app/data/nicodic.db ./runtime/periodic_once.sh`
+
+## Controlled Stop For One Shots
+
+Request a soft stop after the current article finishes:
+
+`mkdir -p runtime/control && : > runtime/control/stop_after_current`
+
+Remove the flag after the run has stopped or before the next run starts:
+
+`rm -f runtime/control/stop_after_current`
+
+When the flag is present before the first target, the run exits cleanly before
+starting any target. When the flag appears during an article scrape, the
+current article is allowed to finish and the run stops before the next target.
+This does not interrupt an in-flight page fetch or DB write.
+
+To bound one periodic-once or batch shot by elapsed duration, set a positive
+number of seconds, for example:
+
+`ONESHOT_LIMIT_DURATION_SECONDS=3600 ./runtime/periodic_once.sh`
+
+The duration timer starts when the one-shot / batch run begins. The limit is
+checked only before the first target and after each target completes, so the
+current article is still allowed to finish.
+
+The periodic wrapper reloads `.env.runtime.local` on each invocation and passes
+these bounded-run controls into the container process. A container or process
+that was already running older code will not retroactively gain this feature;
+the stop file affects only processes that have loaded this code.
 
 List saved articles:
 
