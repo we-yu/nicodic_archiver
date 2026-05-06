@@ -9,7 +9,10 @@ services:
       BATCH_LOG_DIR: /runtime/logs/batch_runs
       TARGET_DB_PATH: /app/data/nicodic.db
       SCRAPE_PAGE_DELAY_SECONDS: ${SCRAPE_PAGE_DELAY_SECONDS:-5.0}
+      SOFT_TERMINATE_FILE: ${SOFT_TERMINATE_FILE:-runtime/control/stop_after_current}
+      ONESHOT_LIMIT_DURATION_SECONDS: ${ONESHOT_LIMIT_DURATION_SECONDS:-}
     volumes:
+      - ./runtime/control:/app/runtime/control
       - ./runtime/targets:/runtime/targets
       - ./runtime/data:/app/data
       - ./runtime/logs:/runtime/logs
@@ -29,4 +32,3 @@ services:
         "--target-db-path",
         "/app/data/nicodic.db",
       ]
-

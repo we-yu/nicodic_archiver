@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 import uuid
@@ -55,6 +56,7 @@ from web_app import serve_web_app
 
 
 DEFAULT_TARGET_DB_PATH = os.environ.get("TARGET_DB_PATH", "data/nicodic.db")
+DEFAULT_SOFT_TERMINATE_FILE = "runtime/control/stop_after_current"
 
 # Telemetry only: set True around run_batch_scrape from run_periodic_scrape.
 _inside_periodic_batch: bool = False
@@ -221,6 +223,8 @@ def _append_batch_run_end(
     ended_at: str,
     duration_seconds: int,
     total_targets: int,
+    processed_targets: int,
+    remaining_targets: int,
     success_targets: int,
     failed_targets: int,
     final_status: str,
@@ -234,11 +238,152 @@ def _append_batch_run_end(
             f"  ended_at={ended_at}",
             f"  duration_seconds={duration_seconds}",
             f"  total_targets={total_targets}",
+            f"  processed_targets={processed_targets}",
+            f"  remaining_targets={remaining_targets}",
             f"  success_targets={success_targets}",
             f"  failed_targets={failed_targets}",
             f"  final_status={final_status}",
         ],
     )
+
+
+def _soft_terminate_flag_path() -> Path:
+    configured = os.environ.get("SOFT_TERMINATE_FILE", "").strip()
+    if configured:
+        return Path(configured)
+    return Path(DEFAULT_SOFT_TERMINATE_FILE)
+
+
+def _oneshot_limit_duration_seconds() -> float | None:
+    raw_value = os.environ.get("ONESHOT_LIMIT_DURATION_SECONDS")
+    if raw_value is None:
+        return None
+
+    text = raw_value.strip()
+    if not text:
+        return None
+
+    try:
+        limit_seconds = float(text)
+    except ValueError:
+        return None
+
+    if not math.isfinite(limit_seconds) or limit_seconds <= 0:
+        return None
+
+    return limit_seconds
+
+
+def _format_seconds_value(value: float) -> str:
+    text = f"{value:.3f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _check_controlled_stop(
+    total_targets: int,
+    processed_targets: int,
+    shot_started_monotonic: float,
+) -> dict | None:
+    remaining_targets = total_targets - processed_targets
+    if remaining_targets <= 0:
+        return None
+
+    flag_path = _soft_terminate_flag_path()
+    if flag_path.exists():
+        return {
+            "kind": "soft_terminate",
+            "processed_targets": processed_targets,
+            "remaining_targets": remaining_targets,
+            "flag_path": str(flag_path),
+        }
+
+    limit_seconds = _oneshot_limit_duration_seconds()
+    if limit_seconds is None:
+        return None
+
+    elapsed_seconds = max(time.monotonic() - shot_started_monotonic, 0.0)
+    if elapsed_seconds < limit_seconds:
+        return None
+
+    return {
+        "kind": "duration_limit",
+        "processed_targets": processed_targets,
+        "remaining_targets": remaining_targets,
+        "limit_seconds": limit_seconds,
+        "elapsed_seconds": elapsed_seconds,
+    }
+
+
+def _append_batch_controlled_stop(log_path: Path, stop_reason: dict) -> None:
+    lines = [
+        "CONTROLLED_STOP",
+        f"  reason={stop_reason['kind']}",
+        f"  processed_targets={stop_reason['processed_targets']}",
+        f"  remaining_targets={stop_reason['remaining_targets']}",
+    ]
+
+    if stop_reason["kind"] == "soft_terminate":
+        lines.append(f"  flag_path={stop_reason['flag_path']}")
+    else:
+        lines.append(
+            "  limit_seconds="
+            f"{_format_seconds_value(stop_reason['limit_seconds'])}"
+        )
+        lines.append(
+            "  elapsed_seconds="
+            f"{_format_seconds_value(stop_reason['elapsed_seconds'])}"
+        )
+
+    if stop_reason["processed_targets"] > 0:
+        lines.append("  current_article_finished=yes")
+    else:
+        lines.append("  current_article_finished=no_current_article")
+    _append_batch_log_lines(log_path, lines)
+
+
+def _emit_controlled_stop(progress_reporter, stop_reason: dict) -> None:
+    processed_targets = stop_reason["processed_targets"]
+    remaining_targets = stop_reason["remaining_targets"]
+    if stop_reason["kind"] == "soft_terminate":
+        if processed_targets == 0:
+            message = (
+                "controlled stop requested before the first target "
+                f"via {stop_reason['flag_path']} "
+                f"(processed={processed_targets} "
+                f"remaining={remaining_targets})"
+            )
+        else:
+            message = (
+                "controlled stop requested via "
+                f"{stop_reason['flag_path']}; current article was "
+                "allowed to finish "
+                f"(processed={processed_targets} "
+                f"remaining={remaining_targets})"
+            )
+    else:
+        if processed_targets == 0:
+            message = (
+                "duration limit reached before the first target "
+                f"(limit={_format_seconds_value(stop_reason['limit_seconds'])}s "
+                f"elapsed={_format_seconds_value(stop_reason['elapsed_seconds'])}s "
+                f"remaining={remaining_targets})"
+            )
+        else:
+            message = (
+                "duration limit reached; current article was allowed "
+                "to finish "
+                f"(limit={_format_seconds_value(stop_reason['limit_seconds'])}s "
+                f"elapsed={_format_seconds_value(stop_reason['elapsed_seconds'])}s "
+                f"processed={processed_targets} "
+                f"remaining={remaining_targets})"
+            )
+
+    if progress_reporter is None:
+        print(f"[CONTROLLED STOP] {message}")
+        return
+
+    if hasattr(progress_reporter, "emit"):
+        progress_reporter.emit("INFO", message, indent_level=1)
 
 
 def _append_delete_request_feed_summary(log_path: Path, summary: dict) -> None:
@@ -272,6 +417,7 @@ def run_batch_scrape(
 
     run_id = uuid.uuid4().hex[:12]
     started_at = datetime.now(timezone.utc).isoformat()
+    shot_started_monotonic = time.monotonic()
     archive_db_path = _telemetry_archive_db_path()
     log_dir = Path(os.environ.get("BATCH_LOG_DIR", "data/batch_runs"))
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -313,7 +459,18 @@ def run_batch_scrape(
     _append_delete_request_feed_summary(log_path, delete_request_feed_summary)
 
     failed_targets = 0
+    controlled_stop: dict | None = None
     for idx, target in enumerate(targets, start=1):
+        controlled_stop = _check_controlled_stop(
+            len(targets),
+            idx - 1,
+            shot_started_monotonic,
+        )
+        if controlled_stop is not None:
+            _append_batch_controlled_stop(log_path, controlled_stop)
+            _emit_controlled_stop(progress_reporter, controlled_stop)
+            break
+
         if progress_reporter is None:
             print(f"[{idx}/{len(targets)}] Scraping: {target}")
         identity = parse_target_identity(target)
@@ -579,9 +736,15 @@ def run_batch_scrape(
 
     ended_at = datetime.now(timezone.utc).isoformat()
     total_targets = len(targets)
+    processed_targets = total_targets
+    remaining_targets = 0
+    if controlled_stop is not None:
+        processed_targets = controlled_stop["processed_targets"]
+        remaining_targets = controlled_stop["remaining_targets"]
+
     if failed_targets == 0:
         final_status = "success"
-    elif failed_targets == total_targets:
+    elif failed_targets == processed_targets:
         final_status = "failure"
     else:
         final_status = "partial_failure"
@@ -602,7 +765,9 @@ def run_batch_scrape(
         ended_at,
         duration_seconds,
         total_targets,
-        total_targets - failed_targets,
+        processed_targets,
+        remaining_targets,
+        max(processed_targets - failed_targets, 0),
         failed_targets,
         final_status,
     )

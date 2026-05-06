@@ -1156,6 +1156,247 @@ def test_main_batch_without_path_exits_with_usage(capsys):
     assert "Usage: batch <target_db_path>" in out
 
 
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch("main.list_active_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.run_scrape")
+def test_run_batch_scrape_soft_terminate_before_first_target(
+    mock_run_scrape,
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    stop_file = tmp_path / "stop_after_current"
+    stop_file.write_text("", encoding="utf-8")
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("SOFT_TERMINATE_FILE", str(stop_file))
+
+    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    mock_run_scrape.assert_not_called()
+
+    out = capsys.readouterr().out
+    assert "[CONTROLLED STOP]" in out
+    assert "before the first target" in out
+    assert "remaining=2" in out
+
+    logs = list(Path(tmp_path).glob("batch_*.log"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert "CONTROLLED_STOP" in text
+    assert "  reason=soft_terminate" in text
+    assert f"  flag_path={stop_file}" in text
+    assert "  processed_targets=0" in text
+    assert "  remaining_targets=2" in text
+    assert "  failed_targets=0" in text
+    assert "  final_status=success" in text
+
+
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch("main.list_active_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+def test_run_batch_scrape_soft_terminate_after_current_target(
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    stop_file = tmp_path / "stop_after_current"
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("SOFT_TERMINATE_FILE", str(stop_file))
+
+    def run_scrape_with_stop(target):
+        stop_file.write_text("", encoding="utf-8")
+        return ScrapeResult(
+            True,
+            "ok",
+            article_title="First Title",
+            collected_response_count=12,
+            observed_max_res_no=12,
+        )
+
+    with patch("main.run_scrape", side_effect=run_scrape_with_stop) as mock_run:
+        final_status, failed_targets = main_module.run_batch_scrape("targets.db")
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    assert mock_run.call_count == 1
+
+    out = capsys.readouterr().out
+    assert "[OK] https://dic.nicovideo.jp/a/1" in out
+    assert "current article was allowed to finish" in out
+    assert "processed=1 remaining=1" in out
+
+    logs = list(Path(tmp_path).glob("batch_*.log"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert "  reason=soft_terminate" in text
+    assert "  processed_targets=1" in text
+    assert "  remaining_targets=1" in text
+    assert "  current_article_finished=yes" in text
+    assert "  success_targets=1" in text
+    assert "  failed_targets=0" in text
+    assert "  final_status=success" in text
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [None, "", "abc", "0", "-5", "nan", "inf"],
+)
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch("main.list_active_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch(
+    "main.run_scrape",
+    side_effect=[
+        ScrapeResult(True, "ok", article_title="First Title"),
+        ScrapeResult(True, "ok", article_title="Second Title"),
+    ],
+)
+def test_run_batch_scrape_duration_limit_disabled_values_keep_compatibility(
+    mock_run_scrape,
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    raw_value,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    if raw_value is None:
+        monkeypatch.delenv("ONESHOT_LIMIT_DURATION_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("ONESHOT_LIMIT_DURATION_SECONDS", raw_value)
+
+    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    assert mock_run_scrape.call_count == 2
+
+
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch("main.list_active_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.time.monotonic", side_effect=[0.0, 0.0, 5.0])
+@patch(
+    "main.run_scrape",
+    return_value=ScrapeResult(
+        True,
+        "ok",
+        article_title="First Title",
+        collected_response_count=12,
+        observed_max_res_no=12,
+    ),
+)
+def test_run_batch_scrape_duration_limit_stops_after_current_target(
+    mock_run_scrape,
+    mock_monotonic,
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("ONESHOT_LIMIT_DURATION_SECONDS", "5")
+
+    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    mock_run_scrape.assert_called_once_with("https://dic.nicovideo.jp/a/1")
+    assert mock_monotonic.call_count == 3
+
+    out = capsys.readouterr().out
+    assert "[CONTROLLED STOP] duration limit reached" in out
+    assert "current article was allowed to finish" in out
+    assert "limit=5s elapsed=5s processed=1 remaining=1" in out
+
+    logs = list(Path(tmp_path).glob("batch_*.log"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert "  reason=duration_limit" in text
+    assert "  limit_seconds=5" in text
+    assert "  elapsed_seconds=5" in text
+    assert "  processed_targets=1" in text
+    assert "  remaining_targets=1" in text
+    assert "  failed_targets=0" in text
+    assert "  final_status=success" in text
+
+
 @patch("main.run_periodic_once")
 def test_main_periodic_once_calls_run_periodic_once(mock_run_periodic_once):
     with patch("sys.argv", ["main.py", "periodic-once", "targets.db"]):
