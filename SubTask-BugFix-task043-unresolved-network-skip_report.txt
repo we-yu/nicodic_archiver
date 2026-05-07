@@ -1,0 +1,86 @@
+Editor AI model: GitHub Copilot / GPT-5.4
+
+Summary of changes:
+- Added bounded network retry support to tools/repair_slug_article_identity.py.
+- Added explicit unresolved network abort-or-skip handling.
+- Added human-readable unresolved report output support.
+- Extended legacy detection to numeric-only /a/<slug> article_id cases.
+- Aligned legacy summary counts with numeric-only slug detection.
+- Normalized article title to the decoded numeric slug when applying repair.
+- Added focused tests for retry, skip, report, and numeric slug flows.
+- Made numeric-only slug target assertions order-independent where SQL uses
+  ORDER BY article_id string ordering.
+
+Files changed:
+- tools/repair_slug_article_identity.py
+- tests/test_repair_slug_article_identity.py
+- SubTask-BugFix-task043-unresolved-network-skip_report.txt
+
+CLI options added:
+- --network-retries N
+- --network-retry-delay-seconds SECONDS
+- --skip-unresolved
+- --unresolved-report PATH
+
+Retry behavior:
+- Retries apply only to metadata fetches performed by this repair tool.
+- Default retries are bounded: 2 additional retries with 1.0 second delay.
+- Negative retry counts and negative retry delays are rejected.
+- No infinite retry behavior was added.
+
+Skip unresolved behavior:
+- Without --skip-unresolved, unresolved network metadata failures raise an
+  error after retries and abort the run.
+- With --skip-unresolved, unresolved groups are recorded and skipped while
+  other resolvable groups continue.
+- In apply mode, skipped unresolved groups are not modified.
+- Summary output now includes unresolved and skipped group counts.
+
+Unresolved report behavior:
+- When unresolved groups exist and --unresolved-report PATH is provided, the
+  tool writes a stable human-readable text report.
+- The report includes canonical_url, legacy article_id, article_type, reason,
+  error summary, attempts made, and existing numeric IDs.
+- If no unresolved groups exist, no report file is written.
+
+Numeric-only slug handling:
+- The tool now detects article_type='a' rows whose canonical_url is
+  /a/<digits> and whose stored article_id matches that numeric slug.
+- Legacy counts for articles, responses, and target rows now use the same
+  numeric-slug detection rules.
+- Such groups resolve through the same metadata path used for legacy slug
+  repairs.
+- Repairs preserve article_type='a' and the canonical /a/<slug> URL.
+- The tool does not rewrite canonical_url into /a/<numeric_id> and does not
+  create article_type='id' rows.
+- Numeric slug groups are only modified when the resolved numeric article ID
+  differs from the stored legacy article_id.
+- When metadata returns an /id/<digits> article URL, that resolved numeric ID
+  takes precedence over a legacy digits-only /a/<slug> article_id value.
+- When applying a numeric slug repair, the normalized article row title is
+  updated to the decoded canonical slug.
+- If the resolved numeric ID matches the stored value, apply mode leaves the
+  group untouched.
+
+Tests / validation performed:
+- VS Code diagnostics check on tools/repair_slug_article_identity.py: no
+  errors.
+- VS Code diagnostics check on tests/test_repair_slug_article_identity.py: no
+  errors.
+- Long-line check on touched files for lines over 88 characters: no matches.
+- Numeric-only slug target assertions now validate exact row content without
+  depending on lexicographic article_id ordering.
+
+Validation that could not be run:
+- Focused pytest execution for tests/test_repair_slug_article_identity.py was
+  attempted twice, but the terminal tool execution was skipped, so executable
+  test results are not available from this task.
+
+Runtime DB statement:
+- Runtime DB was not modified by this task.
+
+Production apply statement:
+- TASK043 production apply was not performed.
+
+Large rehearsal DB statement:
+- Large rehearsal DB files were not deleted by this task.
