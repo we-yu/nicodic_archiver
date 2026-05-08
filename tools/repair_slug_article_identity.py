@@ -128,6 +128,7 @@ def _resolve_numeric_article_id_from_network(
     *,
     network_retries: int,
     network_retry_delay_seconds: float,
+    require_id_url_proof: bool = False,
 ) -> dict:
     attempts = 0
     max_attempts = network_retries + 1
@@ -143,18 +144,22 @@ def _resolve_numeric_article_id_from_network(
             metadata_article_url = (record.get("article_url") or "").strip()
             metadata_identity = parse_target_identity(metadata_article_url)
             article_id = ""
+            has_id_url_proof = False
             if metadata_identity is not None:
                 metadata_id = (metadata_identity.get("article_id") or "").strip()
                 if (
                     metadata_identity.get("article_type") == "id"
                     and _is_digits_only(metadata_id)
                 ):
+                    has_id_url_proof = True
                     article_id = metadata_id
 
-            if not article_id:
+            if not article_id and not require_id_url_proof:
                 article_id = (record.get("article_id") or "").strip()
 
-            if _is_digits_only(article_id):
+            if _is_digits_only(article_id) and (
+                has_id_url_proof or not require_id_url_proof
+            ):
                 return {
                     "numeric_id": article_id,
                     "attempts": attempts,
@@ -178,15 +183,7 @@ def _resolve_numeric_article_id_from_network(
     }
 
 
-def _list_slug_article_groups(conn: sqlite3.Connection) -> list[dict]:
-    """
-    Return groups keyed by canonical_url for legacy slug identities.
-
-    Group definition:
-    - articles.article_type='a'
-    - canonical_url is present
-    - at least one articles.article_id is non-digits (legacy slug identity)
-    """
+def _load_group_rows_from_articles(conn: sqlite3.Connection) -> dict[str, list[dict]]:
     cur = conn.cursor()
     cur.execute(
         """
@@ -210,8 +207,73 @@ def _list_slug_article_groups(conn: sqlite3.Connection) -> list[dict]:
                 "article_type": article_type,
                 "title": title,
                 "canonical_url": canonical_url,
+                "row_origin": "article",
             }
         )
+
+    return by_url
+
+
+def _append_target_only_group_rows(
+    conn: sqlite3.Connection,
+    by_url: dict[str, list[dict]],
+) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT article_id, article_type, canonical_url, is_active
+        FROM target
+        WHERE article_type='a'
+              AND canonical_url IS NOT NULL
+              AND canonical_url <> ''
+        ORDER BY canonical_url ASC, article_id ASC
+        """
+    )
+
+    for article_id, article_type, canonical_url, is_active in cur.fetchall():
+        key = _canonical_url_key(canonical_url)
+        if key is None:
+            continue
+        by_url.setdefault(key, []).append(
+            {
+                "article_id": article_id,
+                "article_type": article_type,
+                "title": None,
+                "canonical_url": canonical_url,
+                "row_origin": "target",
+                "is_active": int(is_active),
+            }
+        )
+
+
+def _has_archive_rows(rows: list[dict]) -> bool:
+    return any(row.get("row_origin") == "article" for row in rows)
+
+
+def _requires_id_url_proof(rows: list[dict]) -> bool:
+    if _has_archive_rows(rows):
+        return False
+    return any(
+        _is_digits_only((row.get("article_id") or "").strip())
+        and _is_legacy_slug_identity(
+            row.get("article_id"),
+            row.get("canonical_url"),
+        )
+        for row in rows
+    )
+
+
+def _list_slug_article_groups(conn: sqlite3.Connection) -> list[dict]:
+    """
+    Return groups keyed by canonical_url for legacy slug identities.
+
+    Group definition:
+    - article_type='a'
+    - canonical_url is present
+    - at least one row has a legacy slug identity
+    """
+    by_url = _load_group_rows_from_articles(conn)
+    _append_target_only_group_rows(conn, by_url)
 
     groups: list[dict] = []
     for canonical_url, rows in by_url.items():
@@ -327,6 +389,7 @@ def _build_unresolved_group(
     reason: str,
     error: str,
     attempts: int,
+    has_archive_rows: bool,
 ) -> dict:
     return {
         "canonical_url": canonical_url,
@@ -339,6 +402,7 @@ def _build_unresolved_group(
         "unresolved_error": error,
         "attempts_made": attempts,
         "article_type": "a",
+        "has_archive_rows": has_archive_rows,
     }
 
 
@@ -639,6 +703,7 @@ def plan_slug_article_identity_repair(
         unresolved_reason = None
         unresolved_error = None
         title = _best_title(rows)
+        require_id_url_proof = _requires_id_url_proof(rows)
 
         if numeric_id is None:
             resolved_by = "network"
@@ -660,6 +725,7 @@ def plan_slug_article_identity_repair(
                     network_retry_delay_seconds=(
                         network_retry_delay_seconds
                     ),
+                    require_id_url_proof=require_id_url_proof,
                 )
                 numeric_id = network_result["numeric_id"]
                 attempts_made = network_result["attempts"]
@@ -680,6 +746,7 @@ def plan_slug_article_identity_repair(
                     "title": title,
                     "attempts_made": attempts_made,
                     "article_type": "a",
+                    "has_archive_rows": _has_archive_rows(rows),
                     "needs_repair": any(
                         source_id != numeric_id for source_id in sources
                     ),
@@ -696,6 +763,7 @@ def plan_slug_article_identity_repair(
             reason=unresolved_reason or resolved_by,
             error=unresolved_error or resolved_by,
             attempts=attempts_made,
+            has_archive_rows=_has_archive_rows(rows),
         )
         plan["groups"].append(unresolved_group)
         if resolved_by == "network_failed":
@@ -762,6 +830,17 @@ def apply_slug_article_identity_repair(
                 continue
 
             validate_saved_article_identity(numeric_id, "a")
+
+            if not group.get("has_archive_rows", True):
+                group["apply"]["target"] = _normalize_target_rows(
+                    conn,
+                    canonical_url=canonical_url,
+                    source_ids=sources,
+                    dest_id=numeric_id,
+                )
+                group["apply"]["status"] = "applied"
+                continue
+
             _ensure_numeric_article_row(
                 conn,
                 numeric_id=numeric_id,

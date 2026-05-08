@@ -77,6 +77,20 @@ def _build_numeric_slug_group_db(tmp_path):
     )
 
 
+def _build_target_only_numeric_slug_db(
+    tmp_path,
+    *,
+    slug_id="999",
+):
+    db_path = tmp_path / f"target-only-{slug_id}.db"
+    conn = init_db(str(db_path))
+    canonical_url = f"https://dic.nicovideo.jp/a/{slug_id}"
+
+    register_target(conn, slug_id, "a", canonical_url)
+    conn.commit()
+    return conn, str(db_path), canonical_url, slug_id
+
+
 def test_requires_explicit_db_path():
     with pytest.raises(ValueError):
         repair_slug_article_identity("")
@@ -901,3 +915,209 @@ def test_existing_legacy_non_digit_slug_behavior_still_passes(
     assert summary["groups"][0]["apply"]["status"] == "applied"
     lines = format_repair_summary_lines(db_path, summary)
     assert any("Unresolved groups: 0" in line for line in lines)
+
+
+def test_target_only_numeric_slug_is_detected_and_planned(
+    tmp_path,
+    monkeypatch,
+):
+    conn, db_path, canonical_url, legacy_id = _build_target_only_numeric_slug_db(
+        tmp_path
+    )
+    conn.close()
+
+    monkeypatch.setattr(
+        "tools.repair_slug_article_identity.fetch_article_metadata_record",
+        lambda _url: {
+            "article_id": legacy_id,
+            "article_type": "a",
+            "article_url": "https://dic.nicovideo.jp/id/4734363",
+            "title": "999",
+        },
+    )
+
+    summary = repair_slug_article_identity(
+        db_path,
+        apply=False,
+        allow_network=True,
+        network_retry_delay_seconds=0,
+    )
+
+    group = summary["groups"][0]
+    assert summary["legacy_counts"]["articles"] == 0
+    assert summary["legacy_counts"]["responses"] == 0
+    assert summary["legacy_counts"]["target"] == 1
+    assert group["canonical_url"] == canonical_url
+    assert group["source_article_ids"] == [legacy_id]
+    assert group["existing_numeric_article_ids"] == []
+    assert group["resolved_numeric_article_id"] == "4734363"
+    assert group["resolved_by"] == "network"
+    assert group["title"] == "999"
+
+
+def test_target_only_numeric_slug_apply_normalizes_target_only(
+    tmp_path,
+    monkeypatch,
+):
+    conn, db_path, canonical_url, legacy_id = _build_target_only_numeric_slug_db(
+        tmp_path
+    )
+    conn.close()
+
+    monkeypatch.setattr(
+        "tools.repair_slug_article_identity.fetch_article_metadata_record",
+        lambda _url: {
+            "article_id": legacy_id,
+            "article_type": "a",
+            "article_url": "https://dic.nicovideo.jp/id/4734363",
+            "title": "999",
+        },
+    )
+
+    summary = repair_slug_article_identity(
+        db_path,
+        apply=True,
+        allow_network=True,
+        network_retry_delay_seconds=0,
+    )
+
+    assert summary["groups"][0]["apply"]["status"] == "applied"
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM articles")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT COUNT(*) FROM responses")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT article_id, article_type, canonical_url, is_active "
+            "FROM target ORDER BY article_id"
+        )
+        assert set(cur.fetchall()) == {
+            (legacy_id, "a", canonical_url, 0),
+            ("4734363", "a", canonical_url, 1),
+        }
+    finally:
+        conn.close()
+
+
+def test_target_only_numeric_slug_network_failure_skips_safely(
+    tmp_path,
+    monkeypatch,
+):
+    conn, db_path, canonical_url, legacy_id = _build_target_only_numeric_slug_db(
+        tmp_path
+    )
+    conn.close()
+
+    monkeypatch.setattr(
+        "tools.repair_slug_article_identity.fetch_article_metadata_record",
+        lambda _url: (_ for _ in ()).throw(RuntimeError("status=500")),
+    )
+
+    summary = repair_slug_article_identity(
+        db_path,
+        apply=True,
+        allow_network=True,
+        network_retries=1,
+        network_retry_delay_seconds=0,
+        skip_unresolved=True,
+    )
+
+    group = summary["groups"][0]
+    assert group["canonical_url"] == canonical_url
+    assert group["resolved_numeric_article_id"] is None
+    assert group["apply"]["status"] == "skipped"
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM articles")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT COUNT(*) FROM responses")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT article_id, article_type, canonical_url, is_active "
+            "FROM target"
+        )
+        assert cur.fetchall() == [(legacy_id, "a", canonical_url, 1)]
+    finally:
+        conn.close()
+
+
+def test_target_only_numeric_slug_without_id_url_is_unresolved(
+    tmp_path,
+    monkeypatch,
+):
+    conn, db_path, canonical_url, legacy_id = _build_target_only_numeric_slug_db(
+        tmp_path
+    )
+    conn.close()
+
+    monkeypatch.setattr(
+        "tools.repair_slug_article_identity.fetch_article_metadata_record",
+        lambda _url: {
+            "article_id": legacy_id,
+            "article_type": "a",
+            "title": "999",
+        },
+    )
+
+    summary = repair_slug_article_identity(
+        db_path,
+        apply=False,
+        allow_network=True,
+        network_retry_delay_seconds=0,
+        skip_unresolved=True,
+    )
+
+    group = summary["groups"][0]
+    assert group["canonical_url"] == canonical_url
+    assert group["resolved_numeric_article_id"] is None
+    assert group["resolved_by"] == "network_failed"
+
+
+def test_target_only_numeric_slug_4294967295_model_is_protected(
+    tmp_path,
+    monkeypatch,
+):
+    slug_id = "4294967295"
+    conn, db_path, canonical_url, legacy_id = _build_target_only_numeric_slug_db(
+        tmp_path,
+        slug_id=slug_id,
+    )
+    conn.close()
+
+    monkeypatch.setattr(
+        "tools.repair_slug_article_identity.fetch_article_metadata_record",
+        lambda _url: {
+            "article_id": legacy_id,
+            "article_type": "a",
+            "article_url": "https://dic.nicovideo.jp/id/237789",
+            "title": slug_id,
+        },
+    )
+
+    summary = repair_slug_article_identity(
+        db_path,
+        apply=True,
+        allow_network=True,
+        network_retry_delay_seconds=0,
+    )
+
+    assert summary["groups"][0]["resolved_numeric_article_id"] == "237789"
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT article_id, article_type, canonical_url, is_active "
+            "FROM target ORDER BY article_id"
+        )
+        assert set(cur.fetchall()) == {
+            (legacy_id, "a", canonical_url, 0),
+            ("237789", "a", canonical_url, 1),
+        }
+    finally:
+        conn.close()
