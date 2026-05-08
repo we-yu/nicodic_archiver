@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from io import StringIO
 import sqlite3
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 from storage import DEFAULT_DB_PATH
 
@@ -21,7 +21,7 @@ REGISTERED_SORT_ALLOWLIST = frozenset({
 
 # Search target columns. Add entries here to extend user-facing search
 # without scattering conditions across query/render code.
-REGISTERED_SEARCH_COLUMNS = ("title", "article_id")
+REGISTERED_SEARCH_COLUMNS = ("title", "article_id", "canonical_url")
 
 DEFAULT_REGISTERED_SORT_BY = "created_at"
 DEFAULT_REGISTERED_SORT_ORDER = "desc"
@@ -701,108 +701,53 @@ def get_saved_article_summary_by_id(article_id):
 
 def list_registered_articles():
     """Return per-article summary list for registered article table view."""
-
-    conn = _open_archive_read_conn()
-    if conn is None:
-        return []
-    cur = conn.cursor()
-
-    try:
-        cur.execute("PRAGMA table_info(articles)")
-        column_names = {row[1] for row in cur.fetchall()}
-        has_scraped_at = "latest_scraped_at" in column_names
-
-        if has_scraped_at:
-            scraped_at_sel = (
-                ", a.latest_scraped_at AS last_scraped_at"
-            )
-            scraped_at_grp = ", a.latest_scraped_at"
-        else:
-            scraped_at_sel = ", NULL AS last_scraped_at"
-            scraped_at_grp = ""
-
-        cur.execute(
-            f"""
-            SELECT
-                a.article_id,
-                a.article_type,
-                a.title,
-                a.canonical_url,
-                a.created_at,
-                COUNT(r.id) AS saved_response_count,
-                MAX(r.res_no) AS latest_scraped_max_res_no
-                {scraped_at_sel}
-            FROM articles AS a
-            LEFT JOIN responses AS r
-                ON a.article_id = r.article_id
-                AND a.article_type = r.article_type
-            GROUP BY
-                a.article_id,
-                a.article_type,
-                a.title,
-                a.canonical_url,
-                a.created_at
-                {scraped_at_grp}
-            ORDER BY
-                a.created_at ASC, a.article_id ASC, a.article_type ASC
-            """
-        )
-        rows = cur.fetchall()
-    except sqlite3.OperationalError:
-        return []
-    finally:
-        conn.close()
-
-    return [
-        {
-            "article_id": unquote(article_id or ""),
-            "article_type": article_type,
-            "title": title or "",
-            "canonical_url": canonical_url or "",
-            "created_at": created_at or "",
-            "saved_response_count": saved_response_count,
-            "latest_scraped_max_res_no": latest_scraped_max_res_no,
-            "last_scraped_at": last_scraped_at,
-        }
-        for (
-            article_id,
-            article_type,
-            title,
-            canonical_url,
-            created_at,
-            saved_response_count,
-            latest_scraped_max_res_no,
-            last_scraped_at,
-        ) in rows
-    ]
+    result = query_registered_articles(paginate=False)
+    return result["rows"]
 
 
-def _registered_sql_schema(conn):
-    """Return (has_scraped_at, scraped_sel, scraped_grp) for articles."""
+def _registered_has_last_scraped_column(conn):
+    """Return whether the optional articles.latest_scraped_at column exists."""
     cur = conn.cursor()
     cur.execute("PRAGMA table_info(articles)")
     cols = {row[1] for row in cur.fetchall()}
-    has = "latest_scraped_at" in cols
-    sel = (
-        ", a.latest_scraped_at AS last_scraped_at"
-        if has
-        else ", NULL AS last_scraped_at"
-    )
-    grp = ", a.latest_scraped_at" if has else ""
-    return has, sel, grp
+    return "latest_scraped_at" in cols
+
+
+def _registered_fallback_title(article_id, canonical_url):
+    parsed = urlparse(canonical_url or "")
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if path_parts:
+        fallback = unquote(path_parts[-1]).strip()
+        if fallback:
+            return fallback
+
+    fallback = unquote(article_id or "").strip()
+    if fallback:
+        return fallback
+
+    return ""
 
 
 def _registered_sort_sql_expr(sort_by):
     """Return SQL ORDER BY expression for a validated sort_by key."""
     _map = {
-        "title": "a.title",
-        "article_id": "a.article_id",
-        "created_at": "a.created_at",
+        "title": "COALESCE(NULLIF(rt.matched_title, ''), rt.target_article_id)",
+        "article_id": "rt.target_article_id",
+        "created_at": "rt.target_created_at",
         "saved_response_count": "saved_response_count",
         "latest_scraped_max_res_no": "latest_scraped_max_res_no",
         "last_scraped_at": "last_scraped_at",
     }
-    return _map.get(sort_by, "a.created_at")
+    return _map.get(sort_by, "rt.target_created_at")
+
+
+def _registered_search_sql_expr(column):
+    mapping = {
+        "title": "rt.matched_title",
+        "article_id": "rt.target_article_id",
+        "canonical_url": "rt.target_canonical_url",
+    }
+    return mapping[column]
 
 
 def _registered_row_to_dict(row):
@@ -816,13 +761,14 @@ def _registered_row_to_dict(row):
         latest_scraped_max_res_no,
         last_scraped_at,
     ) = row
+    display_title = title or _registered_fallback_title(article_id, canonical_url)
     return {
         "article_id": unquote(article_id or ""),
         "article_type": article_type or "",
-        "title": title or "",
+        "title": display_title,
         "canonical_url": canonical_url or "",
         "created_at": created_at or "",
-        "saved_response_count": saved_response_count,
+        "saved_response_count": saved_response_count or 0,
         "latest_scraped_max_res_no": latest_scraped_max_res_no,
         "last_scraped_at": last_scraped_at,
     }
@@ -853,42 +799,88 @@ def query_registered_articles(
         return {"rows": [], "total": 0, "page": page, "per_page": per_page}
 
     try:
-        _has_scraped, scraped_sel, scraped_grp = _registered_sql_schema(conn)
+        has_last_scraped = _registered_has_last_scraped_column(conn)
         sort_expr = _registered_sort_sql_expr(sort_by)
+        matched_last_scraped_expr = (
+            "COALESCE(a_exact.latest_scraped_at, a_url.latest_scraped_at)"
+            if has_last_scraped
+            else "NULL"
+        )
+        base_cte_sql = f"""
+            WITH resolved_targets AS (
+                SELECT
+                    t.article_id AS target_article_id,
+                    t.article_type AS target_article_type,
+                    t.canonical_url AS target_canonical_url,
+                    t.created_at AS target_created_at,
+                    COALESCE(a_exact.article_id, a_url.article_id)
+                        AS matched_article_id,
+                    COALESCE(a_exact.article_type, a_url.article_type)
+                        AS matched_article_type,
+                    COALESCE(a_exact.title, a_url.title)
+                        AS matched_title,
+                    {matched_last_scraped_expr} AS matched_last_scraped_at
+                FROM target AS t
+                LEFT JOIN articles AS a_exact
+                    ON t.article_id = a_exact.article_id
+                    AND t.article_type = a_exact.article_type
+                LEFT JOIN articles AS a_url
+                    ON a_exact.id IS NULL
+                    AND a_url.id = (
+                        SELECT a2.id
+                        FROM articles AS a2
+                        WHERE a2.article_type = t.article_type
+                          AND a2.canonical_url = t.canonical_url
+                        ORDER BY a2.id ASC
+                        LIMIT 1
+                    )
+                WHERE t.is_active = 1
+            )
+        """
 
-        where_sql = ""
         where_params: list = []
+        where_sql = ""
         if search:
             conds = [
-                f"a.{col} LIKE ?" for col in REGISTERED_SEARCH_COLUMNS
+                f"{_registered_search_sql_expr(col)} LIKE ?"
+                for col in REGISTERED_SEARCH_COLUMNS
             ]
             where_sql = "WHERE (" + " OR ".join(conds) + ")"
             where_params = [
                 f"%{search}%" for _ in REGISTERED_SEARCH_COLUMNS
             ]
 
-        count_sql = f"SELECT COUNT(*) FROM articles AS a {where_sql}"
-        data_sql = f"""
-            SELECT
-                a.article_id,
-                a.article_type,
-                a.title,
-                a.canonical_url,
-                a.created_at,
-                COUNT(r.id) AS saved_response_count,
-                MAX(r.res_no) AS latest_scraped_max_res_no
-                {scraped_sel}
-            FROM articles AS a
-            LEFT JOIN responses AS r
-                ON a.article_id = r.article_id
-                AND a.article_type = r.article_type
+        count_sql = base_cte_sql + f"""
+            SELECT COUNT(*)
+            FROM resolved_targets AS rt
             {where_sql}
-            GROUP BY
-                a.article_id, a.article_type, a.title,
-                a.canonical_url, a.created_at{scraped_grp}
+        """
+        data_sql = base_cte_sql + f"""
+            SELECT
+                rt.target_article_id,
+                rt.target_article_type,
+                rt.matched_title,
+                rt.target_canonical_url,
+                rt.target_created_at,
+                COALESCE(rs.saved_response_count, 0) AS saved_response_count,
+                rs.latest_scraped_max_res_no,
+                rt.matched_last_scraped_at AS last_scraped_at
+            FROM resolved_targets AS rt
+            LEFT JOIN (
+                SELECT
+                    article_id,
+                    article_type,
+                    COUNT(id) AS saved_response_count,
+                    MAX(res_no) AS latest_scraped_max_res_no
+                FROM responses
+                GROUP BY article_id, article_type
+            ) AS rs
+                ON rt.matched_article_id = rs.article_id
+                AND rt.matched_article_type = rs.article_type
+            {where_sql}
             ORDER BY
                 {sort_expr} {order_dir},
-                a.article_id ASC, a.article_type ASC
+                rt.target_article_id ASC, rt.target_article_type ASC
         """
 
         cur = conn.cursor()
@@ -921,7 +913,9 @@ def _render_registered_list_csv(rows):
     writer.writeheader()
     for row in rows:
         writer.writerow({
-            col["csv_header"]: str(row.get(col["key"]) or "")
+            col["csv_header"]: (
+                "" if row.get(col["key"]) is None else str(row.get(col["key"]))
+            )
             for col in REGISTERED_ARTICLE_COLUMNS
         })
     return output.getvalue()

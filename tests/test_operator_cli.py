@@ -9,7 +9,7 @@ from operator_cli import (
     list_targets_for_operator,
     show_scraped_res_for_operator,
 )
-from storage import init_db, save_to_db
+from storage import init_db, register_target, save_to_db
 from target_list import deactivate_target, register_target_url
 from unittest.mock import patch
 
@@ -260,6 +260,12 @@ def _seed_articles(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     conn = init_db()
     try:
+        register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
         save_to_db(
             conn,
             "12345",

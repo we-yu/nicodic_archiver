@@ -1271,7 +1271,7 @@ def _render_registered_list_page(query_params: dict) -> bytes:
       <input type="hidden" name="sort_order" value="{sort_ord_esc}">
       <input type="hidden" name="per_page" value="{per_page_str}">
       <input type="text" name="q" value="{search_esc}"
-             placeholder="Search title or article ID&hellip;">
+              placeholder="Search title, article ID, or canonical URL&hellip;">
       <button type="submit">Search</button>{clear_link}
     </form>
     <form method="get" action="/registered">
