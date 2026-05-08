@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from io import StringIO
 import sqlite3
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from storage import DEFAULT_DB_PATH
 
@@ -750,6 +750,16 @@ def _registered_search_sql_expr(column):
     return mapping[column]
 
 
+def _registered_search_variants(term):
+    """Return distinct search terms including an encoded variant."""
+    variants = []
+    for candidate in (term, quote(term, safe="")):
+        if not candidate or candidate in variants:
+            continue
+        variants.append(candidate)
+    return variants
+
+
 def _registered_row_to_dict(row):
     (
         article_id,
@@ -841,14 +851,17 @@ def query_registered_articles(
         where_params: list = []
         where_sql = ""
         if search:
-            conds = [
-                f"{_registered_search_sql_expr(col)} LIKE ?"
-                for col in REGISTERED_SEARCH_COLUMNS
-            ]
+            search_variants = _registered_search_variants(search)
+            conds = []
+            for col in REGISTERED_SEARCH_COLUMNS:
+                expr = _registered_search_sql_expr(col)
+                for _ in search_variants:
+                    conds.append(f"{expr} LIKE ?")
             where_sql = "WHERE (" + " OR ".join(conds) + ")"
-            where_params = [
-                f"%{search}%" for _ in REGISTERED_SEARCH_COLUMNS
-            ]
+            where_params = []
+            for _ in REGISTERED_SEARCH_COLUMNS:
+                for variant in search_variants:
+                    where_params.append(f"%{variant}%")
 
         count_sql = base_cte_sql + f"""
             SELECT COUNT(*)

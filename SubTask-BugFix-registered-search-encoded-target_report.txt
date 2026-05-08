@@ -1,0 +1,28 @@
+SubTask-BugFix: registered-search-encoded-target
+
+Summary
+- Registered Articles search now expands each user search term into distinct variants using the original text and urllib.parse.quote(term, safe="") when different.
+- This lets decoded Japanese searches match pending target rows whose target.article_id and target.canonical_url are stored URL-encoded.
+- Existing saved-title, raw article_id, canonical URL, and already-encoded searches remain supported.
+
+Files Touched
+- archive_read.py
+- tests/test_archive_read.py
+
+Tests Added Or Updated
+- Added regression coverage for a URL-encoded pending target found by a decoded Japanese search term.
+- Added regression coverage for the same pending target found by an already-encoded search term.
+- Added focused coverage confirming saved article title search still works after search variant expansion.
+
+Validation
+- Executable validation was not attempted here because the task explicitly disallowed running raw pytest/python commands without a human request.
+- Static editor diagnostics were checked for archive_read.py and tests/test_archive_read.py and reported no errors.
+
+Known Limitations
+- Search still relies on SQL LIKE against stored strings; this fix broadens term matching but does not introduce full Unicode normalization or kana/width normalization.
+- Multiple encoded spellings beyond urllib.parse.quote(term, safe="") are not generated.
+Reviewer Validation
+- ./validate_helix.sh: PASS on copilot and cursor.
+- Copilot: 362 passed.
+- Cursor: 359 passed.
+- Review snapshot exported with ./export_review_snapshot.sh.
