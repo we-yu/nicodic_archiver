@@ -1024,6 +1024,26 @@ def test_registered_page_csv_contains_all_column_headers():
     assert "canonical_url" in first_line
 
 
+def test_registered_page_csv_renders_pending_target_rows():
+    pending = _make_reg_row(
+        article_id="pending-slug",
+        title="pending-slug",
+        canonical_url="https://dic.nicovideo.jp/a/pending-slug",
+        saved_response_count=0,
+        latest_scraped_max_res_no=None,
+        last_scraped_at=None,
+    )
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([pending]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered/csv")
+
+    assert response["status"] == "200 OK"
+    assert "pending-slug" in response["body"]
+    assert "https://dic.nicovideo.jp/a/pending-slug" in response["body"]
+
+
 def test_registered_csv_includes_csv_download_link_on_page():
     with patch(
         "web_app.query_registered_articles",

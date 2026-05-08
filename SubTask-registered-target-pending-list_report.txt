@@ -1,0 +1,29 @@
+SubTask: registered-target-pending-list
+
+Summary
+- Registered Articles read-side was changed to list active target rows, not only saved articles.
+- Scraped targets still show saved article title, response count, max res number, and last scraped time.
+- Saved article matching now prefers exact article_id/article_type and falls back to canonical_url/article_type so slug targets can still resolve numeric saved articles.
+- Active pending targets now appear before scraping with a bounded fallback title derived from canonical URL or article_id.
+
+Files Changed
+- archive_read.py
+- web_app.py
+- tests/test_archive_read.py
+- tests/test_operator_cli.py
+- tests/test_web_app.py
+
+Behavior Notes
+- Default ordering now follows target.created_at DESC.
+- Search now covers saved title, target article_id, and canonical_url.
+- Response counts and max res values are now resolved from the matched saved article identity, not assumed from target.article_id.
+- Pending target rows preserve the existing row shape used by the Registered Articles page and CSV export.
+- Article ID display still uses URL-decoding for legacy encoded values where available.
+- CSV rendering now preserves numeric zero values as 0 instead of blank.
+
+Validation
+- Focused executable validation was attempted but skipped in this environment.
+- Static editor diagnostics were checked for archive_read.py, tests/test_archive_read.py, and tests/test_operator_cli.py and reported no errors.
+Reviewer Validation
+- ./validate_helix.sh: PASS on copilot and cursor after the identity-mismatch follow-up fix.
+- Review snapshot exported with ./export_review_snapshot.sh.

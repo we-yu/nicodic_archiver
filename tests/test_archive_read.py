@@ -16,13 +16,27 @@ from archive_read import (
     query_registered_articles,
     write_scrape_targets_txt,
 )
-from storage import init_db, save_to_db
+from storage import init_db, register_target, save_to_db
 
 
 def _seed_archive(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     conn = init_db()
     try:
+        register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+        )
+        conn.execute(
+            """
+            UPDATE target
+            SET created_at=?
+            WHERE article_id=? AND article_type=?
+            """,
+            ("2026-01-01T00:00:00+00:00", "12345", "a"),
+        )
         save_to_db(
             conn,
             "12345",
@@ -40,6 +54,83 @@ def _seed_archive(tmp_path, monkeypatch):
                 }
             ],
         )
+    finally:
+        conn.close()
+
+
+def _seed_target_slug_saved_numeric_article(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    encoded_slug = "%E3%83%86%E3%82%B9%E3%83%88%E8%A8%98%E4%BA%8B"
+    canonical_url = f"https://dic.nicovideo.jp/a/{encoded_slug}"
+    try:
+        register_target(conn, encoded_slug, "a", canonical_url)
+        conn.execute(
+            """
+            UPDATE target
+            SET created_at=?
+            WHERE article_id=? AND article_type=?
+            """,
+            ("2026-04-01T00:00:00+00:00", encoded_slug, "a"),
+        )
+        save_to_db(
+            conn,
+            "4470620",
+            "a",
+            "Saved Numeric Title",
+            canonical_url,
+            [
+                {
+                    "res_no": 1,
+                    "id_hash": "abc123",
+                    "poster_name": "Alice",
+                    "posted_at": "2025-01-01 00:00",
+                    "content": "First response",
+                    "content_html": "<p>First response</p>",
+                },
+                {
+                    "res_no": 2,
+                    "id_hash": "def456",
+                    "poster_name": "Bob",
+                    "posted_at": "2025-01-01 00:05",
+                    "content": "Second response",
+                    "content_html": "<p>Second response</p>",
+                },
+            ],
+            latest_scraped_at="2026-04-02T00:00:00+00:00",
+        )
+    finally:
+        conn.close()
+
+    return {
+        "encoded_slug": encoded_slug,
+        "decoded_slug": "テスト記事",
+        "canonical_url": canonical_url,
+        "saved_article_id": "4470620",
+    }
+
+
+def _seed_pending_target(
+    tmp_path,
+    monkeypatch,
+    article_id="pending-slug",
+    article_type="a",
+    canonical_url="https://dic.nicovideo.jp/a/pending-slug",
+    created_at="2026-02-01T00:00:00+00:00",
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(conn, article_id, article_type, canonical_url)
+        conn.execute(
+            """
+            UPDATE target
+            SET created_at=?
+            WHERE article_id=? AND article_type=?
+            """,
+            (created_at, article_id, article_type),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -517,6 +608,119 @@ def test_query_registered_articles_default_sort_is_created_at_desc(
     assert result["rows"][0]["article_id"] == "12345"
 
 
+def test_query_registered_articles_includes_active_pending_targets(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="pending-slug",
+        canonical_url="https://dic.nicovideo.jp/a/pending-slug",
+        created_at="2026-02-02T00:00:00+00:00",
+    )
+
+    result = query_registered_articles()
+
+    assert result["total"] == 2
+    assert result["rows"][0]["article_id"] == "pending-slug"
+    assert result["rows"][0]["title"] == "pending-slug"
+    assert result["rows"][0]["saved_response_count"] == 0
+    assert result["rows"][0]["latest_scraped_max_res_no"] is None
+    assert result["rows"][0]["last_scraped_at"] is None
+
+
+def test_query_registered_articles_search_finds_pending_target_by_article_id(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="pending-slug",
+        canonical_url="https://dic.nicovideo.jp/a/pending-slug",
+    )
+
+    result = query_registered_articles(search="pending-slug")
+
+    assert result["total"] == 1
+    assert result["rows"][0]["article_id"] == "pending-slug"
+
+
+def test_query_registered_articles_search_finds_pending_target_by_url(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="pending-slug",
+        canonical_url="https://dic.nicovideo.jp/a/pending-slug",
+    )
+
+    result = query_registered_articles(search="dic.nicovideo.jp/a/pending-slug")
+
+    assert result["total"] == 1
+    assert result["rows"][0]["canonical_url"] == (
+        "https://dic.nicovideo.jp/a/pending-slug"
+    )
+
+
+def test_query_registered_articles_uses_target_created_at_for_default_order(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="older-pending",
+        canonical_url="https://dic.nicovideo.jp/a/older-pending",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    conn = init_db()
+    try:
+        conn.execute(
+            """
+            UPDATE target
+            SET created_at=?
+            WHERE article_id=? AND article_type=?
+            """,
+            ("2026-03-01T00:00:00+00:00", "12345", "a"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = query_registered_articles()
+
+    assert [row["article_id"] for row in result["rows"]] == [
+        "12345",
+        "older-pending",
+    ]
+
+
+def test_query_registered_articles_matches_saved_numeric_article_by_canonical_url(
+    tmp_path,
+    monkeypatch,
+):
+    seeded = _seed_target_slug_saved_numeric_article(tmp_path, monkeypatch)
+
+    result = query_registered_articles()
+
+    assert result["total"] == 1
+    row = result["rows"][0]
+    assert row["article_id"] == seeded["decoded_slug"]
+    assert row["article_type"] == "a"
+    assert row["title"] == "Saved Numeric Title"
+    assert row["canonical_url"] == seeded["canonical_url"]
+    assert row["saved_response_count"] == 2
+    assert row["latest_scraped_max_res_no"] == 2
+    assert row["last_scraped_at"] == "2026-04-02T00:00:00+00:00"
+
+
 def test_query_registered_articles_filters_by_search_title(
     tmp_path,
     monkeypatch,
@@ -616,6 +820,26 @@ def test_export_registered_articles_csv_returns_csv_with_header(
     assert reader[0]["article_type"] == "a"
 
 
+def test_export_registered_articles_csv_includes_pending_target_rows(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="pending-slug",
+        canonical_url="https://dic.nicovideo.jp/a/pending-slug",
+    )
+
+    csv_text = export_registered_articles_csv()
+
+    reader = list(csv.DictReader(StringIO(csv_text)))
+    assert len(reader) == 1
+    assert reader[0]["article_id"] == "pending-slug"
+    assert reader[0]["title"] == "pending-slug"
+    assert reader[0]["saved_response_count"] == "0"
+
+
 def test_export_registered_articles_csv_no_db_returns_header_only(
     tmp_path,
     monkeypatch,
@@ -685,6 +909,12 @@ def _seed_encoded_article(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     conn = init_db()
     try:
+        register_target(
+            conn,
+            _ENCODED_JP,
+            "a",
+            f"https://dic.nicovideo.jp/a/{_ENCODED_JP}",
+        )
         # Seed a legacy slug-identity row directly (save_to_db rejects now).
         canonical_url = f"https://dic.nicovideo.jp/a/{_ENCODED_JP}"
         cur = conn.cursor()
