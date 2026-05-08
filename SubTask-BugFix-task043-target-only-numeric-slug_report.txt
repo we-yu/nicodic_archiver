@@ -1,0 +1,65 @@
+Editor AI model: GitHub Copilot / GPT-5.4
+
+Summary of changes:
+- Extended slug repair group detection to include target rows keyed by
+  canonical_url, including target-only numeric slug cases.
+- Added strict metadata proof handling for target-only numeric slug groups:
+  /id/<digits> metadata identity is required to resolve them.
+- Kept archive-backed repair behavior intact for existing article/response
+  groups.
+- Added focused tests for target-only numeric slug detection, apply, skip,
+  unresolved proof failures, and the /a/4294967295 -> /id/237789 model.
+
+Files changed:
+- tools/repair_slug_article_identity.py
+- tests/test_repair_slug_article_identity.py
+- SubTask-BugFix-task043-target-only-numeric-slug_report.txt
+
+Detection behavior:
+- The repair tool now groups by canonical_url using both articles and target
+  rows for article_type='a'.
+- It detects target rows whose canonical_url is /a/<digits>, whose stored
+  article_id equals that decoded digits-only slug, even when no article row
+  exists.
+- Legacy counts remain unchanged for articles/responses and continue to count
+  target legacy rows separately.
+
+Apply behavior:
+- When a target-only numeric slug group resolves, the tool keeps article_type
+  as 'a' and preserves the canonical /a/<digits-slug> URL.
+- The legacy target row is set inactive.
+- The resolved numeric target row is inserted or updated active if any legacy
+  source target row was active.
+- The tool does not create article_type='id' rows.
+- The tool does not rewrite canonical_url to /a/<numeric-id>.
+- The tool does not create articles rows or responses rows for target-only
+  groups.
+- If archive rows exist, existing article/response repair behavior still runs.
+
+Skip unresolved behavior:
+- Without --skip-unresolved, unresolved target-only numeric slug groups follow
+  the existing unresolved network abort behavior.
+- With --skip-unresolved, unresolved target-only numeric slug groups are
+  reported and skipped without modification.
+- Target-only numeric slug groups that only return the legacy digits-only slug
+  without /id/<digits> proof are treated as unresolved.
+
+Tests / validation performed:
+- VS Code diagnostics check on tools/repair_slug_article_identity.py: no
+  errors.
+- VS Code diagnostics check on tests/test_repair_slug_article_identity.py: no
+  errors.
+- Long-line check on touched files for lines over 88 characters: no matches.
+
+Validation that could not be run:
+- Focused Docker-based flake8 and pytest validation was attempted but the tool
+  execution was skipped, so executable validation results are not available.
+
+Runtime DB statement:
+- Runtime DB was not modified by this task.
+
+Production apply statement:
+- Production apply was not performed by this task.
+
+13GB rehearsal DB statement:
+- 13GB rehearsal DBs were not deleted by this task.
