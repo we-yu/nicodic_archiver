@@ -948,6 +948,29 @@ def _seed_encoded_article(tmp_path, monkeypatch):
         conn.close()
 
 
+def _seed_encoded_pending_target(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            _ENCODED_JP,
+            "a",
+            f"https://dic.nicovideo.jp/a/{_ENCODED_JP}",
+        )
+        conn.execute(
+            """
+            UPDATE target
+            SET created_at=?
+            WHERE article_id=? AND article_type=?
+            """,
+            ("2026-05-01T00:00:00+00:00", _ENCODED_JP, "a"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_list_registered_articles_decodes_url_encoded_article_id(
     tmp_path,
     monkeypatch,
@@ -988,6 +1011,43 @@ def test_query_registered_articles_search_by_raw_encoded_id_still_works(
 
     assert result["total"] == 1
     assert result["rows"][0]["article_id"] == _DECODED_JP
+
+
+def test_query_registered_articles_search_finds_encoded_pending_target_by_decoded_term(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_encoded_pending_target(tmp_path, monkeypatch)
+
+    result = query_registered_articles(search=_DECODED_JP, paginate=False)
+
+    assert result["total"] == 1
+    assert result["rows"][0]["article_id"] == _DECODED_JP
+    assert result["rows"][0]["title"] == _DECODED_JP
+
+
+def test_query_registered_articles_search_finds_encoded_pending_target_by_encoded_term(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_encoded_pending_target(tmp_path, monkeypatch)
+
+    result = query_registered_articles(search=_ENCODED_JP, paginate=False)
+
+    assert result["total"] == 1
+    assert result["rows"][0]["article_id"] == _DECODED_JP
+
+
+def test_query_registered_articles_saved_title_search_still_works_with_search_variants(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = query_registered_articles(search="First", paginate=False)
+
+    assert result["total"] == 1
+    assert result["rows"][0]["title"] == "First Title"
 
 
 def test_export_registered_articles_csv_decodes_url_encoded_article_id(
