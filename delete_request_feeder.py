@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from article_resolver import resolve_article_input
+from collection_policy import find_denylisted_article_id
 from storage import DEFAULT_DB_PATH, init_db
 from target_list import register_target_url
 
@@ -243,6 +244,7 @@ def scan_delete_request_feed(
     candidates: list[dict] = []
     accepted_candidates = 0
     skipped_invalid_candidates = 0
+    skipped_denylisted_candidates = 0
     skipped_resolution_failures = 0
     max_res_no = last_processed_res_no
 
@@ -254,6 +256,24 @@ def scan_delete_request_feed(
             normalized_input = None
             failure_kind = None
             if category in SUPPORTED_DELETE_REQUEST_URL_CATEGORIES:
+                if category == "article_id":
+                    denylisted_article_id = find_denylisted_article_id(
+                        article_url=raw_url,
+                    )
+                    if denylisted_article_id is not None:
+                        failure_kind = "denylisted"
+                        skipped_denylisted_candidates += 1
+                        candidates.append(
+                            {
+                                "res_no": res_no,
+                                "raw_url": raw_url,
+                                "category": category,
+                                "accepted": False,
+                                "normalized_input": None,
+                                "failure_kind": failure_kind,
+                            }
+                        )
+                        continue
                 try:
                     normalized_input = normalize_supported_delete_request_input(
                         raw_url,
@@ -304,6 +324,7 @@ def scan_delete_request_feed(
             "extracted_candidates": len(candidates),
             "accepted_candidates": accepted_candidates,
             "skipped_invalid_candidates": skipped_invalid_candidates,
+            "skipped_denylisted_candidates": skipped_denylisted_candidates,
             "skipped_resolution_failures": skipped_resolution_failures,
             "skipped_registration_failures": 0,
             "handed_off_candidates": 0,
@@ -346,6 +367,10 @@ def run_delete_request_feeder(
 
     handed_off_candidates = 0
     skipped_invalid_candidates = summary.get("skipped_invalid_candidates", 0)
+    skipped_denylisted_candidates = summary.get(
+        "skipped_denylisted_candidates",
+        0,
+    )
     skipped_resolution_failures = summary.get(
         "skipped_resolution_failures",
         0,
@@ -400,6 +425,9 @@ def run_delete_request_feeder(
         if register_status == "duplicate":
             duplicate_targets += 1
             continue
+        if register_status == "denylisted":
+            skipped_denylisted_candidates += 1
+            continue
 
         invalid_targets += 1
 
@@ -414,6 +442,9 @@ def run_delete_request_feeder(
     summary["skipped_invalid_candidates"] = skipped_invalid_candidates
     summary["skipped_resolution_failures"] = skipped_resolution_failures
     summary["skipped_registration_failures"] = skipped_registration_failures
+    summary["skipped_denylisted_candidates"] = (
+        skipped_denylisted_candidates
+    )
 
     if summary["checked_to_res_no"] is not None:
         save_last_processed_res_no(
@@ -448,6 +479,10 @@ def format_delete_request_feed_summary(summary: dict) -> str:
             (
                 "skipped_resolution_failures="
                 f"{summary.get('skipped_resolution_failures', 0)}"
+            ),
+            (
+                "skipped_denylisted_candidates="
+                f"{summary.get('skipped_denylisted_candidates', 0)}"
             ),
             (
                 "skipped_registration_failures="

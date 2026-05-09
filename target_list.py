@@ -1,6 +1,7 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
+from collection_policy import find_denylisted_article_id
 from http_client import resolve_id_article_url
 from storage import get_target, init_db, list_targets, mark_target_redirected
 from storage import register_target
@@ -94,6 +95,9 @@ def validate_target_url(article_url: str) -> bool:
 
 
 def register_target_url(article_url: str, target_db_path: str) -> str:
+    if find_denylisted_article_id(article_url=article_url) is not None:
+        return "denylisted"
+
     normalized_url = normalize_target_url(article_url)
     if normalized_url is None:
         return "invalid"
@@ -101,6 +105,12 @@ def register_target_url(article_url: str, target_db_path: str) -> str:
     target_identity = parse_target_identity(normalized_url)
     if target_identity is None:
         return "invalid"
+
+    if find_denylisted_article_id(
+        article_id=target_identity["article_id"],
+        article_url=target_identity["canonical_url"],
+    ) is not None:
+        return "denylisted"
 
     conn = init_db(target_db_path)
     try:
@@ -245,6 +255,7 @@ def import_targets_from_text_file(
         "processed": 0,
         "added": 0,
         "duplicate": 0,
+        "denylisted": 0,
         "reactivated": 0,
         "invalid": 0,
     }

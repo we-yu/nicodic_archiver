@@ -108,6 +108,33 @@ def test_register_target_url_rejects_unresolved_id_input(tmp_path):
     assert target_db_path.exists() is False
 
 
+def test_register_target_url_rejects_denylisted_numeric_id_input(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+
+    result = register_target_url(
+        "https://dic.nicovideo.jp/id/480340",
+        str(target_db_path),
+    )
+
+    assert result == "denylisted"
+    assert target_db_path.exists() is False
+
+
+def test_register_target_url_rejects_denylisted_canonical_slug_url(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+
+    result = register_target_url(
+        "https://dic.nicovideo.jp/a/"
+        "%3E%3E3%E3%81%8C%E7%90%86%E8%A7%A3%E3%81%A7"
+        "%E3%81%8D%E3%82%8B%E3%81%93%E3%81%A8%E3%81%8C"
+        "%E4%B8%8D%E5%B9%B8",
+        str(target_db_path),
+    )
+
+    assert result == "denylisted"
+    assert target_db_path.exists() is False
+
+
 def test_register_target_url_suppresses_duplicate_identity(tmp_path):
     target_db_path = tmp_path / "targets.db"
     register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
@@ -160,12 +187,42 @@ def test_import_targets_from_text_file_is_one_shot_and_non_automatic(tmp_path):
         "processed": 4,
         "added": 2,
         "duplicate": 1,
+        "denylisted": 0,
         "reactivated": 0,
         "invalid": 1,
     }
     assert list_active_target_urls(str(target_db_path)) == [
         "https://dic.nicovideo.jp/a/12345",
         "https://dic.nicovideo.jp/a/777-title",
+    ]
+
+
+def test_import_targets_from_text_file_reports_denylisted_skip(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+    source_file = tmp_path / "targets.txt"
+    source_file.write_text(
+        "https://dic.nicovideo.jp/id/480340\n"
+        "https://dic.nicovideo.jp/a/12345\n",
+        encoding="utf-8",
+    )
+
+    result = import_targets_from_text_file(
+        str(source_file),
+        str(target_db_path),
+    )
+
+    assert result == {
+        "source_path": str(source_file),
+        "target_db_path": str(target_db_path),
+        "processed": 2,
+        "added": 1,
+        "duplicate": 0,
+        "denylisted": 1,
+        "reactivated": 0,
+        "invalid": 0,
+    }
+    assert list_active_target_urls(str(target_db_path)) == [
+        "https://dic.nicovideo.jp/a/12345",
     ]
 
 

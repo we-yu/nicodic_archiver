@@ -663,6 +663,72 @@ def test_application_post_registers_unsaved_article_and_logs_action(tmp_path):
     assert "%E3%83%8B%E3%82%B3" not in log_text
 
 
+def test_application_post_rejects_denylisted_id_registration(tmp_path):
+    result = {
+        "status": "unsaved",
+        "input": "https://dic.nicovideo.jp/id/480340",
+        "title": ">>3が理解できることが不幸",
+        "matched_by": "article_url",
+        "article_url": "https://dic.nicovideo.jp/id/480340",
+        "article_id": "480340",
+        "article_type": "id",
+        "message": "Resolved article, but no saved archive was found yet.",
+    }
+    log_path = tmp_path / "web_action.log"
+
+    with patch("web_app.check_article_status", return_value=result):
+        with patch("web_app.register_target_url", return_value="denylisted"):
+            response = _run_wsgi_request(
+                "POST",
+                body="article_input=https%3A%2F%2Fdic.nicovideo.jp%2Fid%2F480340",
+                app=create_app(web_action_log_path=str(log_path)),
+            )
+
+    assert response["status"] == "200 OK"
+    assert "This article is excluded from archive collection." in (
+        response["body"]
+    )
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "result_status=denylisted" in log_text
+    assert "error_code=denylisted" in log_text
+
+
+def test_application_post_rejects_denylisted_slug_after_resolution(tmp_path):
+    result = {
+        "status": "unsaved",
+        "input": (
+            "https://dic.nicovideo.jp/a/"
+            "%253E%253E3%E3%81%8C%E7%90%86%E8%A7%A3%E3%81%A7"
+            "%E3%81%8D%E3%82%8B%E3%81%93%E3%81%A8%E3%81%8C"
+            "%E4%B8%8D%E5%B9%B8"
+        ),
+        "title": ">>3が理解できることが不幸",
+        "matched_by": "article_url",
+        "article_url": "https://dic.nicovideo.jp/id/480340",
+        "article_id": "480340",
+        "article_type": "id",
+        "message": "Resolved article, but no saved archive was found yet.",
+    }
+
+    with patch("web_app.check_article_status", return_value=result):
+        with patch("web_app.register_target_url", return_value="denylisted"):
+            response = _run_wsgi_request(
+                "POST",
+                body=(
+                    "article_input=https%3A%2F%2Fdic.nicovideo.jp%2Fa%2F"
+                    "%25253E%25253E3%25E3%2581%258C%25E7%2590%2586"
+                    "%25E8%25A7%25A3%25E3%2581%25A7%25E3%2581%258D"
+                    "%25E3%2582%258B%25E3%2581%2593%25E3%2581%25A8"
+                    "%25E3%2581%258C%25E4%25B8%258D%25E5%25B9%25B8"
+                ),
+            )
+
+    assert response["status"] == "200 OK"
+    assert "This article is excluded from archive collection." in (
+        response["body"]
+    )
+
+
 def test_application_post_unsaved_result_stays_200_when_log_write_fails():
     result = {
         "status": "unsaved",

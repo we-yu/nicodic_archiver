@@ -90,6 +90,30 @@ def test_main_add_target_calls_register_target_url(mock_add_target, capsys):
     assert "Added target: https://dic.nicovideo.jp/a/12345" in out
 
 
+@patch("main.register_target_url", return_value="denylisted")
+def test_main_add_target_reports_denylisted_target(mock_add_target, capsys):
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "add-target",
+            "https://dic.nicovideo.jp/id/480340",
+            "targets.db",
+        ],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_add_target.assert_called_once_with(
+        "https://dic.nicovideo.jp/id/480340",
+        "targets.db",
+    )
+    out = capsys.readouterr().out
+    assert "Target is excluded from archive collection:" in out
+    assert "https://dic.nicovideo.jp/id/480340" in out
+
+
 @patch("main.resolve_article_input")
 def test_main_resolve_article_calls_resolver_and_prints_success(
     mock_resolve_article_input,
@@ -757,6 +781,7 @@ def test_main_import_targets_reports_counts(mock_import_targets, capsys):
         "processed": 3,
         "added": 2,
         "duplicate": 1,
+        "denylisted": 4,
         "reactivated": 0,
         "invalid": 0,
     }
@@ -778,7 +803,7 @@ def test_main_import_targets_reports_counts(mock_import_targets, capsys):
     )
     out = capsys.readouterr().out
     assert "Imported 3 target line(s)" in out
-    assert "added=2 duplicate=1 reactivated=0 invalid=0" in out
+    assert "added=2 duplicate=1 reactivated=0 denylisted=4 invalid=0" in out
 
 
 def test_main_import_targets_without_required_args_exits_with_usage(capsys):

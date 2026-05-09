@@ -6,6 +6,7 @@ from delete_request_feeder import (
     append_batch_targets,
     classify_delete_request_url,
     extract_delete_request_urls,
+    format_delete_request_feed_summary,
     format_delete_request_feed_inspect_lines,
     normalize_supported_delete_request_input,
     resolve_internal_article_id_input,
@@ -325,6 +326,58 @@ def test_run_delete_request_feeder_continues_after_registration_failure(
     assert summary["queued_target_urls"] == [
         "https://dic.nicovideo.jp/a/good-three"
     ]
+
+
+def test_run_delete_request_feeder_skips_denylisted_candidate(tmp_path):
+    state_path = tmp_path / "feed_state.json"
+    responses = [
+        {
+            "res_no": 24,
+            "body": "https://dic.nicovideo.jp/id/480340",
+        }
+    ]
+
+    with patch(
+        "delete_request_feeder._load_delete_request_responses",
+        return_value=responses,
+    ), patch(
+        "delete_request_feeder.resolve_article_input",
+    ) as resolve_mock, patch(
+        "delete_request_feeder.register_target_url",
+    ) as register_mock:
+        summary = run_delete_request_feeder(
+            "targets.db",
+            archive_db_path="archive.db",
+            state_path=str(state_path),
+        )
+
+    resolve_mock.assert_not_called()
+    register_mock.assert_not_called()
+    assert summary["handed_off_candidates"] == 0
+    assert summary["registered_candidates"] == 0
+    assert summary["queued_target_urls"] == []
+    assert summary["skipped_denylisted_candidates"] == 1
+
+
+def test_format_delete_request_feed_summary_reports_denylisted_skip_count():
+    text = format_delete_request_feed_summary(
+        {
+            "checked_from_res_no": 1,
+            "checked_to_res_no": 24,
+            "responses_checked": 1,
+            "extracted_candidates": 1,
+            "processed_candidates": 0,
+            "registered_candidates": 0,
+            "handed_off_candidates": 0,
+            "skipped_invalid_candidates": 0,
+            "skipped_resolution_failures": 0,
+            "skipped_denylisted_candidates": 1,
+            "skipped_registration_failures": 0,
+            "updated_last_processed_res_no": 24,
+        }
+    )
+
+    assert "skipped_denylisted_candidates=1" in text
 
 
 def test_append_batch_targets_appends_only_new_urls_at_tail():
