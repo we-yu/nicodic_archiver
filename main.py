@@ -1546,6 +1546,12 @@ def main():
         if result == "duplicate":
             print(f"Target already exists: {sys.argv[2]}")
             return
+        if result == "denylisted":
+            print(
+                "Target is excluded from archive collection: "
+                f"{sys.argv[2]}"
+            )
+            sys.exit(1)
 
         print(f"Invalid target URL: {sys.argv[2]}")
         sys.exit(1)
@@ -1564,7 +1570,8 @@ def main():
         )
         print(
             "added={added} duplicate={duplicate} "
-            "reactivated={reactivated} invalid={invalid}".format(
+            "reactivated={reactivated} denylisted={denylisted} "
+            "invalid={invalid}".format(
                 **import_result,
             )
         )

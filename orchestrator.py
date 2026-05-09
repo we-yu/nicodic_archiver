@@ -5,6 +5,7 @@ import time
 from urllib.parse import urljoin
 from urllib.parse import urlparse
 
+from collection_policy import DENYLIST_ARTICLE_IDS
 from http_client import fetch_page
 from parser import parse_responses
 from storage import (
@@ -19,9 +20,6 @@ from target_list import parse_target_identity
 # 取得レス数の上限。未知の high-volume 記事に対する bounded protection。
 RESPONSE_CAP = 1_000_000
 QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP = 10_800
-
-# 仮置き。known high-volume article を skip するための seed。
-DENYLIST_ARTICLE_IDS = frozenset({"480340", "237789"})
 
 DEFAULT_BBS_RESPONSES_PER_PAGE = 30
 DEFAULT_SCRAPE_PAGE_DELAY_SECONDS = 5.0

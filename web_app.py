@@ -66,6 +66,7 @@ UI_TEXTS = {
     ),
     "error_messages": {
         "not_found": "Article was not found.",
+        "denylisted": "This article is excluded from archive collection.",
         "invalid_input": (
             "Enter an article name or a valid Nicopedia article URL."
         ),
@@ -292,6 +293,8 @@ def check_article_status(article_input: str) -> dict:
 
 
 def _result_error_code(result: dict) -> str:
+    if result["status"] == "denylisted":
+        return "denylisted"
     if result["status"] == "resolution_failure":
         return result.get("failure_kind", "unknown_resolution_failure")
     if result["status"] == "internal_error":
@@ -552,6 +555,25 @@ def _submit_archive_check(
                 resolved_canonical_url=check_result["article_url"],
             )
             return _build_registered_ui_result(check_result), None
+
+        if registration_status == "denylisted":
+            reference_id = _log_web_action(
+                web_action_log_path,
+                environ,
+                action_kind="registration",
+                input_value=article_input,
+                requested_format=None,
+                result_status="denylisted",
+                resolved_title=check_result["title"],
+                resolved_article_id=check_result["article_id"],
+                resolved_article_type=check_result["article_type"],
+                resolved_canonical_url=check_result["article_url"],
+                error_code="denylisted",
+            )
+            return _build_error_ui_result(
+                {"status": "denylisted"},
+                reference_id,
+            ), None
 
         failure_result = {
             "status": "internal_error",

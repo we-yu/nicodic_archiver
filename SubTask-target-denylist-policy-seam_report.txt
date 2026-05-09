@@ -1,0 +1,65 @@
+Summary
+- Added a small shared denylist policy seam for known high-volume articles.
+- Target registration now rejects denylisted inputs at the common
+  registration boundary and surfaces the result to web, feeder, and import
+  intake paths.
+- Raw denylisted /id candidates in the delete-request feeder are now skipped
+  before resolution or registration and counted separately.
+- Scrape-side denylist protection in orchestrator remains in place as a
+  safety net.
+
+Files touched
+- collection_policy.py
+- target_list.py
+- delete_request_feeder.py
+- orchestrator.py
+- web_app.py
+- main.py
+- tests/test_target_list.py
+- tests/test_delete_request_feeder.py
+- tests/test_web_app.py
+- tests/test_main.py
+
+Tests added/updated
+- Added target registration denylist tests for direct /id and exact canonical
+  /a URL inputs.
+- Added import target test covering observable denylisted skip counts.
+- Added delete-request feeder tests covering pre-handoff denylisted /id skips
+  and summary formatting of skipped_denylisted_candidates.
+- Added web registration tests covering denylisted manual registration and
+  denylisted slug rejection after resolution to numeric identity.
+- Added a direct add-target CLI test covering denylisted operator messaging.
+- Kept existing orchestrator skip_denylist test coverage intact.
+
+Validation attempted or not attempted
+- Not run.
+- Static inspection only: touched Python files were checked for obvious
+  unused imports/variables and for 88-character line limit issues.
+
+Known limitations
+- Denylist matching is keyed primarily by numeric NicoNicoPedia article id.
+- Supplementary exact URL matching is limited to the known denylisted
+  canonical article URLs and id URLs in the policy seam.
+- Raw denylisted feeder pre-skip is limited to /id/<digits> inputs that are
+  directly observable before the existing resolution path.
+- No fuzzy title matching, DB-backed denylist, schema flags, or extra network
+  requests were added solely for denylist checks.
+
+Policy constants moved
+- Yes.
+- Moved DENYLIST_ARTICLE_IDS from orchestrator.py into collection_policy.py
+  so registration, feeder/import, and scrape layers can share one source.
+- RESPONSE_CAP and QUEUE_DRAIN_PER_ARTICLE_RESPONSE_CAP were intentionally
+  not moved to keep the patch bounded and avoid unrelated policy churn.
+
+Response cap behavior
+- Response cap behavior was intentionally not changed.
+
+Feeder and add-target behavior
+- Raw denylisted /id candidates are skipped before registration and do not
+  increment handed_off_candidates.
+- `python main.py add-target ...` now reports denylisted targets with a clear
+  operator-facing message instead of treating them as invalid input.
+
+Line-length check
+- Touched Python files were checked for the 88-character line limit.
