@@ -11,24 +11,47 @@ from pathlib import Path
 DEFAULT_DB_PATH = "data/nicodic.db"
 
 
-def validate_saved_article_identity(article_id: str, article_type: str) -> None:
-    """
-    Validate saved archive identity at the persistence boundary.
-
-    For canonical NicoNicoPedia article rows (article_type='a'), the saved
-    article_id must be a non-empty digits-only string (numeric article ID),
-    never a URL-encoded '/a/<slug>' value.
-    """
+def _require_numeric_a_identity(
+    article_id: str,
+    article_type: str,
+    *,
+    identity_kind: str,
+) -> None:
     if article_type != "a":
         return
     if not isinstance(article_id, str):
-        raise ValueError("saved article_id must be a string for article_type='a'")
+        raise ValueError(
+            f"{identity_kind} article_id must be a string "
+            "for article_type='a'"
+        )
     if not article_id:
-        raise ValueError("saved article_id must be non-empty for article_type='a'")
+        raise ValueError(
+            f"{identity_kind} article_id must be non-empty "
+            "for article_type='a'"
+        )
     if not article_id.isdigit():
         raise ValueError(
-            "saved article_id must be digits-only for article_type='a'"
+            f"{identity_kind} article_id must be digits-only "
+            "for article_type='a'"
         )
+
+
+def validate_saved_article_identity(article_id: str, article_type: str) -> None:
+    """Validate saved archive identity at the persistence boundary."""
+    _require_numeric_a_identity(
+        article_id,
+        article_type,
+        identity_kind="saved",
+    )
+
+
+def validate_target_article_identity(article_id: str, article_type: str) -> None:
+    """Validate target registry identity at the persistence boundary."""
+    _require_numeric_a_identity(
+        article_id,
+        article_type,
+        identity_kind="target",
+    )
 
 
 def _target_row_to_entry(row):
@@ -36,12 +59,13 @@ def _target_row_to_entry(row):
         "id": row[0],
         "article_id": row[1],
         "article_type": row[2],
-        "canonical_url": row[3],
-        "is_active": bool(row[4]),
-        "created_at": row[5],
-        "is_redirected": bool(row[6]),
-        "redirect_target_url": row[7],
-        "redirect_detected_at": row[8],
+        "title": row[3],
+        "canonical_url": row[4],
+        "is_active": bool(row[5]),
+        "created_at": row[6],
+        "is_redirected": bool(row[7]),
+        "redirect_target_url": row[8],
+        "redirect_detected_at": row[9],
     }
 
 
@@ -76,6 +100,16 @@ def _ensure_target_redirect_columns(conn: sqlite3.Connection) -> None:
 
     if changed:
         conn.commit()
+
+
+def _ensure_target_title_column(conn: sqlite3.Connection) -> None:
+    column_names = _list_column_names(conn, "target")
+    if "title" in column_names:
+        return
+
+    cur = conn.cursor()
+    cur.execute("ALTER TABLE target ADD COLUMN title TEXT")
+    conn.commit()
 
 
 def _ensure_article_metadata_columns(conn: sqlite3.Connection) -> None:
@@ -161,6 +195,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         article_id TEXT NOT NULL,
         article_type TEXT NOT NULL,
+        title TEXT,
         canonical_url TEXT NOT NULL,
         is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
         is_redirected INTEGER NOT NULL DEFAULT 0 CHECK (is_redirected IN (0, 1)),
@@ -172,6 +207,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     """)
 
     _ensure_article_metadata_columns(conn)
+    _ensure_target_title_column(conn)
     _ensure_target_redirect_columns(conn)
 
     cur.execute("""
@@ -404,13 +440,15 @@ def dequeue_canonical_target(conn, article_id, article_type):
     return cur.rowcount > 0
 
 
-def register_target(conn, article_id, article_type, canonical_url):
+def register_target(conn, article_id, article_type, canonical_url, title=None):
     """Register or reactivate one canonical scrape target."""
+
+    validate_target_article_identity(article_id, article_type)
 
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT id, article_id, article_type, canonical_url, is_active,
+        SELECT id, article_id, article_type, title, canonical_url, is_active,
                created_at, is_redirected, redirect_target_url,
                redirect_detected_at
         FROM target
@@ -424,10 +462,10 @@ def register_target(conn, article_id, article_type, canonical_url):
         cur.execute(
             """
             INSERT INTO target
-            (article_id, article_type, canonical_url, is_active)
-            VALUES (?, ?, ?, 1)
+            (article_id, article_type, title, canonical_url, is_active)
+            VALUES (?, ?, ?, ?, 1)
             """,
-            (article_id, article_type, canonical_url),
+            (article_id, article_type, title, canonical_url),
         )
         status = "added"
     else:
@@ -439,21 +477,22 @@ def register_target(conn, article_id, article_type, canonical_url):
         cur.execute(
             """
             UPDATE target
-            SET canonical_url=?,
+            SET title=COALESCE(?, title),
+                canonical_url=?,
                 is_active=1,
                 is_redirected=0,
                 redirect_target_url=NULL,
                 redirect_detected_at=NULL
             WHERE article_id=? AND article_type=?
             """,
-            (canonical_url, article_id, article_type),
+            (title, canonical_url, article_id, article_type),
         )
 
     conn.commit()
 
     cur.execute(
         """
-        SELECT id, article_id, article_type, canonical_url, is_active,
+        SELECT id, article_id, article_type, title, canonical_url, is_active,
                created_at, is_redirected, redirect_target_url,
                redirect_detected_at
         FROM target
@@ -478,7 +517,7 @@ def list_targets(conn, active_only=True):
 
     cur = conn.cursor()
     query = (
-        "SELECT id, article_id, article_type, canonical_url, is_active, "
+        "SELECT id, article_id, article_type, title, canonical_url, is_active, "
         "created_at, is_redirected, redirect_target_url, "
         "redirect_detected_at FROM target"
     )
@@ -497,7 +536,7 @@ def get_target(conn, article_id, article_type):
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT id, article_id, article_type, canonical_url, is_active,
+        SELECT id, article_id, article_type, title, canonical_url, is_active,
                created_at, is_redirected, redirect_target_url,
                redirect_detected_at
         FROM target

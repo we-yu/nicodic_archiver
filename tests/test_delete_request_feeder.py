@@ -137,12 +137,13 @@ def test_run_delete_request_feeder_updates_state_and_deduplicates(tmp_path):
             "ok": True,
             "canonical_target": {
                 "article_url": "https://dic.nicovideo.jp/a/j-pop",
-                "article_id": "j-pop",
+                "article_id": "5728993",
                 "article_type": "a",
             },
+            "title": "J-POP",
         },
     ), patch(
-        "delete_request_feeder.register_target_url",
+        "delete_request_feeder.register_resolved_target",
         return_value="added",
     ) as register_mock:
         summary = run_delete_request_feeder(
@@ -153,7 +154,15 @@ def test_run_delete_request_feeder_updates_state_and_deduplicates(tmp_path):
 
     assert summary["handed_off_candidates"] == 1
     assert summary["queued_target_urls"] == ["https://dic.nicovideo.jp/a/j-pop"]
-    assert register_mock.call_count == 1
+    register_mock.assert_called_once_with(
+        "targets.db",
+        {
+            "article_url": "https://dic.nicovideo.jp/a/j-pop",
+            "article_id": "5728993",
+            "article_type": "a",
+        },
+        title="J-POP",
+    )
     saved = json.loads(state_path.read_text(encoding="utf-8"))
     assert saved["last_processed_res_no"] == 12
 
@@ -175,7 +184,7 @@ def test_run_delete_request_feeder_skips_malformed_candidate_without_abort(
     ), patch(
         "delete_request_feeder.resolve_article_input",
     ) as resolve_mock, patch(
-        "delete_request_feeder.register_target_url",
+        "delete_request_feeder.register_resolved_target",
     ) as register_mock:
         summary = run_delete_request_feeder(
             "targets.db",
@@ -212,12 +221,13 @@ def test_run_delete_request_feeder_continues_after_candidate_resolver_failure(
             "ok": True,
             "canonical_target": {
                 "article_url": "https://dic.nicovideo.jp/a/good-one",
-                "article_id": "good-one",
+                "article_id": "1001",
                 "article_type": "a",
             },
+            "title": "Good One",
         }],
     ), patch(
-        "delete_request_feeder.register_target_url",
+        "delete_request_feeder.register_resolved_target",
         return_value="added",
     ) as register_mock:
         summary = run_delete_request_feeder(
@@ -256,12 +266,13 @@ def test_run_delete_request_feeder_continues_after_upstream_fetch_failure(
             "ok": True,
             "canonical_target": {
                 "article_url": "https://dic.nicovideo.jp/a/good-two",
-                "article_id": "good-two",
+                "article_id": "1002",
                 "article_type": "a",
             },
+            "title": "Good Two",
         }],
     ), patch(
-        "delete_request_feeder.register_target_url",
+        "delete_request_feeder.register_resolved_target",
         return_value="added",
     ):
         summary = run_delete_request_feeder(
@@ -299,21 +310,23 @@ def test_run_delete_request_feeder_continues_after_registration_failure(
                 "ok": True,
                 "canonical_target": {
                     "article_url": "https://dic.nicovideo.jp/a/bad-register",
-                    "article_id": "bad-register",
+                    "article_id": "2001",
                     "article_type": "a",
                 },
+                "title": "Bad Register",
             },
             {
                 "ok": True,
                 "canonical_target": {
                     "article_url": "https://dic.nicovideo.jp/a/good-three",
-                    "article_id": "good-three",
+                    "article_id": "2002",
                     "article_type": "a",
                 },
+                "title": "Good Three",
             },
         ],
     ), patch(
-        "delete_request_feeder.register_target_url",
+        "delete_request_feeder.register_resolved_target",
         side_effect=[sqlite3.OperationalError("readonly"), "added"],
     ):
         summary = run_delete_request_feeder(
@@ -343,7 +356,7 @@ def test_run_delete_request_feeder_skips_denylisted_candidate(tmp_path):
     ), patch(
         "delete_request_feeder.resolve_article_input",
     ) as resolve_mock, patch(
-        "delete_request_feeder.register_target_url",
+        "delete_request_feeder.register_resolved_target",
     ) as register_mock:
         summary = run_delete_request_feeder(
             "targets.db",

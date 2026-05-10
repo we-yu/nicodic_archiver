@@ -21,7 +21,7 @@ from archive_read import (
     query_registered_articles,
 )
 from article_resolver import resolve_article_input
-from target_list import register_target_url
+from target_list import register_resolved_target
 
 
 DEFAULT_TARGET_DB_PATH = os.environ.get("TARGET_DB_PATH", "data/nicodic.db")
@@ -513,9 +513,14 @@ def _submit_archive_check(
 
     if check_result["status"] == "unsaved":
         try:
-            registration_status = register_target_url(
-                check_result["article_url"],
+            registration_status = register_resolved_target(
                 target_db_path,
+                {
+                    "article_id": check_result["article_id"],
+                    "article_type": check_result["article_type"],
+                    "article_url": check_result["article_url"],
+                },
+                title=check_result["title"],
             )
         except Exception as exc:
             failure_result = {

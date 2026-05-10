@@ -5,6 +5,7 @@ These tests run in a temp working directory so production `data/` is untouched.
 
 import json
 import sqlite3
+import pytest
 
 import storage
 from storage import (
@@ -389,6 +390,48 @@ def test_register_target_persists_canonical_identity_once(tmp_path, monkeypatch)
         assert len(targets) == 1
         assert targets[0]["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
         assert targets[0]["is_active"] is True
+        assert targets[0]["title"] is None
+    finally:
+        conn.close()
+
+
+def test_register_target_persists_title_for_pending_registry_row(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        result = register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/foo",
+            title="Foo",
+        )
+
+        assert result["entry"]["title"] == "Foo"
+        assert list_targets(conn)[0]["title"] == "Foo"
+    finally:
+        conn.close()
+
+
+def test_register_target_rejects_slug_identity_for_a_targets(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        with pytest.raises(ValueError) as exc_info:
+            register_target(
+                conn,
+                "foo-slug",
+                "a",
+                "https://dic.nicovideo.jp/a/foo-slug",
+            )
+
+        assert "target article_id must be digits-only" in str(exc_info.value)
     finally:
         conn.close()
 

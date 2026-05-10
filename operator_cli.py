@@ -92,6 +92,20 @@ def add_target_for_operator(article_url, target_db_path):
         print(f"Canonical URL: {article_url}")
         print("Result: already active")
         return True
+    if result == "denylisted":
+        print("Target registry update failed")
+        print("Action: add")
+        print(f"DB: {target_db_path}")
+        print(f"Input: {article_url}")
+        print("Reason: target is excluded from archive collection")
+        return False
+    if result == "resolution_failure":
+        print("Target registry update failed")
+        print("Action: add")
+        print(f"DB: {target_db_path}")
+        print(f"Input: {article_url}")
+        print("Reason: article resolution failed before registration")
+        return False
 
     print("Target registry update failed")
     print("Action: add")

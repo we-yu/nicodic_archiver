@@ -66,7 +66,13 @@ def _build_dup_group_db(tmp_path):
     _seed_response_row(conn, "foo-slug", "a", 2, "KEEP-2")
 
     register_target(conn, "12345", "a", canonical_url)
-    register_target(conn, "foo-slug", "a", canonical_url)
+    conn.execute(
+        """
+        INSERT INTO target (article_id, article_type, canonical_url, is_active)
+        VALUES (?, ?, ?, 1)
+        """,
+        ("foo-slug", "a", canonical_url),
+    )
 
     conn.commit()
     return conn, str(db_path), canonical_url

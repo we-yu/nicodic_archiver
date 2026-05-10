@@ -3,6 +3,7 @@ import sqlite3
 from unittest.mock import patch
 
 import web_app
+from target_list import list_registered_targets
 from web_app import application, check_article_status, create_app
 
 
@@ -80,9 +81,9 @@ def test_check_article_status_restores_saved_parity_for_decoded_url_input():
             "matched_by": "article_url",
             "title": "たつきショック",
             "canonical_target": {
-                "article_url": "https://dic.nicovideo.jp/id/5502789",
+                "article_url": "https://dic.nicovideo.jp/a/たつきショック",
                 "article_id": "5502789",
-                "article_type": "id",
+                "article_type": "a",
             },
         },
     ):
@@ -91,7 +92,7 @@ def test_check_article_status_restores_saved_parity_for_decoded_url_input():
             return_value={
                 "found": False,
                 "article_id": "5502789",
-                "article_type": "id",
+                "article_type": "a",
                 "title": None,
                 "url": None,
                 "created_at": None,
@@ -137,9 +138,9 @@ def test_check_article_status_restores_saved_parity_for_encoded_url_input():
             "matched_by": "article_url",
             "title": "たつきショック",
             "canonical_target": {
-                "article_url": "https://dic.nicovideo.jp/id/5502789",
+                "article_url": "https://dic.nicovideo.jp/a/たつきショック",
                 "article_id": "5502789",
-                "article_type": "id",
+                "article_type": "a",
             },
         },
     ):
@@ -148,7 +149,7 @@ def test_check_article_status_restores_saved_parity_for_encoded_url_input():
             return_value={
                 "found": False,
                 "article_id": "5502789",
-                "article_type": "id",
+                "article_type": "a",
                 "title": None,
                 "url": None,
                 "created_at": None,
@@ -603,7 +604,7 @@ def test_application_post_registration_write_failure_returns_bounded_error():
 
     with patch("web_app.check_article_status", return_value=result):
         with patch(
-            "web_app.register_target_url",
+            "web_app.register_resolved_target",
             side_effect=sqlite3.OperationalError(
                 "attempt to write a readonly database"
             ),
@@ -633,26 +634,33 @@ def test_application_post_registers_unsaved_article_and_logs_action(tmp_path):
         "message": "Resolved article, but no saved archive was found yet.",
     }
     log_path = tmp_path / "web_action.log"
+    target_db_path = tmp_path / "targets.db"
 
     with patch("web_app.check_article_status", return_value=result):
-        with patch("web_app.register_target_url", return_value="added"):
-            response = _run_wsgi_request(
-                "POST",
-                body="article_input=Foo",
-                app=create_app(
-                    target_db_path="/runtime/data/custom.db",
-                    web_action_log_path=str(log_path),
-                ),
-                extra_environ={
-                    "REMOTE_ADDR": "127.0.0.1",
-                    "HTTP_USER_AGENT": "pytest-agent",
-                },
-            )
+        response = _run_wsgi_request(
+            "POST",
+            body="article_input=Foo",
+            app=create_app(
+                target_db_path=str(target_db_path),
+                web_action_log_path=str(log_path),
+            ),
+            extra_environ={
+                "REMOTE_ADDR": "127.0.0.1",
+                "HTTP_USER_AGENT": "pytest-agent",
+            },
+        )
 
     assert response["status"] == "200 OK"
     assert "Article registered for archive checking." in response["body"]
     assert "Article title:</strong> ニコニコ大百科" in response["body"]
     assert "Saved response count" not in response["body"]
+
+    registered = list_registered_targets(str(target_db_path), active_only=False)
+    assert len(registered) == 1
+    assert registered[0]["article_id"] == "12345"
+    assert registered[0]["article_type"] == "a"
+    assert registered[0]["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
+    assert registered[0]["title"] == "ニコニコ大百科"
 
     log_text = log_path.read_text(encoding="utf-8")
     assert log_text.startswith("\nWEB_ACTION_START\n")
@@ -669,15 +677,15 @@ def test_application_post_rejects_denylisted_id_registration(tmp_path):
         "input": "https://dic.nicovideo.jp/id/480340",
         "title": ">>3が理解できることが不幸",
         "matched_by": "article_url",
-        "article_url": "https://dic.nicovideo.jp/id/480340",
+        "article_url": "https://dic.nicovideo.jp/a/denylisted-slug",
         "article_id": "480340",
-        "article_type": "id",
+        "article_type": "a",
         "message": "Resolved article, but no saved archive was found yet.",
     }
     log_path = tmp_path / "web_action.log"
 
     with patch("web_app.check_article_status", return_value=result):
-        with patch("web_app.register_target_url", return_value="denylisted"):
+        with patch("web_app.register_resolved_target", return_value="denylisted"):
             response = _run_wsgi_request(
                 "POST",
                 body="article_input=https%3A%2F%2Fdic.nicovideo.jp%2Fid%2F480340",
@@ -704,14 +712,14 @@ def test_application_post_rejects_denylisted_slug_after_resolution(tmp_path):
         ),
         "title": ">>3が理解できることが不幸",
         "matched_by": "article_url",
-        "article_url": "https://dic.nicovideo.jp/id/480340",
+        "article_url": "https://dic.nicovideo.jp/a/denylisted-slug",
         "article_id": "480340",
-        "article_type": "id",
+        "article_type": "a",
         "message": "Resolved article, but no saved archive was found yet.",
     }
 
     with patch("web_app.check_article_status", return_value=result):
-        with patch("web_app.register_target_url", return_value="denylisted"):
+        with patch("web_app.register_resolved_target", return_value="denylisted"):
             response = _run_wsgi_request(
                 "POST",
                 body=(
@@ -742,7 +750,7 @@ def test_application_post_unsaved_result_stays_200_when_log_write_fails():
     }
 
     with patch("web_app.check_article_status", return_value=result):
-        with patch("web_app.register_target_url", return_value="added"):
+        with patch("web_app.register_resolved_target", return_value="added"):
             with patch(
                 "web_app._append_web_action_log_lines",
                 side_effect=PermissionError("denied"),

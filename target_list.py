@@ -1,6 +1,7 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
+from article_resolver import resolve_article_input
 from collection_policy import find_denylisted_article_id
 from http_client import resolve_id_article_url
 from storage import get_target, init_db, list_targets, mark_target_redirected
@@ -94,21 +95,18 @@ def validate_target_url(article_url: str) -> bool:
     return _parse_target_identity(article_url) is not None
 
 
-def register_target_url(article_url: str, target_db_path: str) -> str:
-    if find_denylisted_article_id(article_url=article_url) is not None:
-        return "denylisted"
-
-    normalized_url = normalize_target_url(article_url)
-    if normalized_url is None:
-        return "invalid"
-
-    target_identity = parse_target_identity(normalized_url)
-    if target_identity is None:
+def register_resolved_target(
+    target_db_path: str,
+    canonical_target: dict,
+    *,
+    title: str | None,
+) -> str:
+    if canonical_target["article_type"] != "a":
         return "invalid"
 
     if find_denylisted_article_id(
-        article_id=target_identity["article_id"],
-        article_url=target_identity["canonical_url"],
+        article_id=canonical_target["article_id"],
+        article_url=canonical_target["article_url"],
     ) is not None:
         return "denylisted"
 
@@ -116,14 +114,34 @@ def register_target_url(article_url: str, target_db_path: str) -> str:
     try:
         result = register_target(
             conn,
-            target_identity["article_id"],
-            target_identity["article_type"],
-            target_identity["canonical_url"],
+            canonical_target["article_id"],
+            canonical_target["article_type"],
+            canonical_target["article_url"],
+            title=title,
         )
     finally:
         conn.close()
 
     return result["status"]
+
+
+def register_target_url(article_url: str, target_db_path: str) -> str:
+    if find_denylisted_article_id(article_url=article_url) is not None:
+        return "denylisted"
+
+    try:
+        resolution = resolve_article_input(article_url)
+    except Exception:
+        return "resolution_failure"
+
+    if not resolution["ok"]:
+        return "invalid"
+
+    return register_resolved_target(
+        target_db_path,
+        resolution["canonical_target"],
+        title=resolution["title"],
+    )
 
 
 def inspect_registered_target(
@@ -221,14 +239,25 @@ def handoff_redirected_target(
             redirect_identity["article_id"],
             redirect_identity["article_type"],
         ):
-            register_result = register_target(
-                conn,
-                redirect_identity["article_id"],
-                redirect_identity["article_type"],
-                redirect_identity["canonical_url"],
-            )
-            register_status = register_result["status"]
-            register_entry = register_result["entry"]
+            try:
+                resolution = resolve_article_input(
+                    redirect_identity["canonical_url"],
+                )
+            except Exception:
+                resolution = None
+
+            if not resolution or not resolution["ok"]:
+                register_status = "invalid_redirect_target"
+            else:
+                register_result = register_target(
+                    conn,
+                    resolution["canonical_target"]["article_id"],
+                    resolution["canonical_target"]["article_type"],
+                    resolution["canonical_target"]["article_url"],
+                    title=resolution["title"],
+                )
+                register_status = register_result["status"]
+                register_entry = register_result["entry"]
     finally:
         conn.close()
 
@@ -258,6 +287,7 @@ def import_targets_from_text_file(
         "denylisted": 0,
         "reactivated": 0,
         "invalid": 0,
+        "resolution_failure": 0,
     }
 
     lines = Path(source_path).read_text(encoding="utf-8").splitlines()

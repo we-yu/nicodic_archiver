@@ -11,7 +11,8 @@ def test_resolve_article_input_succeeds_for_full_article_url():
         """
         <html><head>
         <meta property="og:title" content="Fooとは">
-        <meta property="og:url" content="https://dic.nicovideo.jp/a/12345">
+        <meta property="og:url" content="https://dic.nicovideo.jp/id/12345">
+        <link rel="canonical" href="https://dic.nicovideo.jp/a/Foo">
         </head></html>
         """,
         "lxml",
@@ -24,7 +25,7 @@ def test_resolve_article_input_succeeds_for_full_article_url():
     assert result == {
         "ok": True,
         "canonical_target": {
-            "article_url": "https://dic.nicovideo.jp/a/12345",
+            "article_url": "https://dic.nicovideo.jp/a/Foo",
             "article_id": "12345",
             "article_type": "a",
         },
@@ -48,7 +49,8 @@ def test_resolve_article_input_succeeds_for_exact_title_first_page_only():
         """
         <html><head>
         <meta property="og:title" content="Fooとは">
-        <meta property="og:url" content="https://dic.nicovideo.jp/a/12345">
+        <meta property="og:url" content="https://dic.nicovideo.jp/id/12345">
+        <link rel="canonical" href="https://dic.nicovideo.jp/a/Foo">
         </head></html>
         """,
         "lxml",
@@ -63,7 +65,7 @@ def test_resolve_article_input_succeeds_for_exact_title_first_page_only():
     assert mock_fetch.call_count == 2
     assert result["ok"] is True
     assert result["canonical_target"] == {
-        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_url": "https://dic.nicovideo.jp/a/Foo",
         "article_id": "12345",
         "article_type": "a",
     }
@@ -151,3 +153,32 @@ def test_resolve_article_input_still_raises_unexpected_title_search_errors():
             resolve_article_input("Foo")
 
     assert "timeout=10s" in str(exc_info.value)
+
+
+def test_resolve_article_input_normalizes_id_input_to_numeric_a_target():
+    soup = BeautifulSoup(
+        """
+        <html><head>
+        <meta property="og:title" content="おそ松さんとは">
+        <meta property="og:url" content="https://dic.nicovideo.jp/id/5364158">
+        <link rel="canonical" href="https://dic.nicovideo.jp/a/osomatsu-san">
+        </head></html>
+        """,
+        "lxml",
+    )
+
+    with patch("article_resolver.fetch_page", return_value=soup) as mock_fetch:
+        result = resolve_article_input("https://dic.nicovideo.jp/id/5364158")
+
+    mock_fetch.assert_called_once_with("https://dic.nicovideo.jp/id/5364158")
+    assert result == {
+        "ok": True,
+        "canonical_target": {
+            "article_url": "https://dic.nicovideo.jp/a/osomatsu-san",
+            "article_id": "5364158",
+            "article_type": "a",
+        },
+        "title": "おそ松さん",
+        "matched_by": "article_url",
+        "normalized_input": "https://dic.nicovideo.jp/id/5364158",
+    }

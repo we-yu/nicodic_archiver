@@ -199,6 +199,32 @@ def test_main_add_target_exits_non_zero_for_invalid_url(mock_add_target, capsys)
     assert "Invalid target URL: not-a-url" in out
 
 
+@patch("main.register_target_url", return_value="resolution_failure")
+def test_main_add_target_exits_non_zero_for_resolution_failure(
+    mock_add_target,
+    capsys,
+):
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "add-target",
+            "https://dic.nicovideo.jp/a/foo",
+            "targets.db",
+        ],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    mock_add_target.assert_called_once_with(
+        "https://dic.nicovideo.jp/a/foo",
+        "targets.db",
+    )
+    out = capsys.readouterr().out
+    assert "Target resolution failed: https://dic.nicovideo.jp/a/foo" in out
+
+
 @patch("main.register_target_url", return_value="reactivated")
 def test_main_add_target_reports_reactivated_target(mock_add_target, capsys):
     with patch(
@@ -784,6 +810,7 @@ def test_main_import_targets_reports_counts(mock_import_targets, capsys):
         "denylisted": 4,
         "reactivated": 0,
         "invalid": 0,
+        "resolution_failure": 0,
     }
 
     with patch(
@@ -803,7 +830,10 @@ def test_main_import_targets_reports_counts(mock_import_targets, capsys):
     )
     out = capsys.readouterr().out
     assert "Imported 3 target line(s)" in out
-    assert "added=2 duplicate=1 reactivated=0 denylisted=4 invalid=0" in out
+    assert (
+        "added=2 duplicate=1 reactivated=0 denylisted=4 invalid=0 "
+        "resolution_failure=0"
+    ) in out
 
 
 def test_main_import_targets_without_required_args_exits_with_usage(capsys):

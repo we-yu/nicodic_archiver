@@ -22,18 +22,39 @@ def test_list_targets_for_operator_shows_status_and_count(
     monkeypatch.chdir(tmp_path)
     target_db_path = tmp_path / "targets.db"
 
-    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
-
     with patch(
-        "target_list.resolve_id_article_url",
-        return_value="https://dic.nicovideo.jp/a/99999-title",
+        "target_list.resolve_article_input",
+        side_effect=[
+            {
+                "ok": True,
+                "canonical_target": {
+                    "article_url": "https://dic.nicovideo.jp/a/12345",
+                    "article_id": "12345",
+                    "article_type": "a",
+                },
+                "title": "12345",
+            },
+            {
+                "ok": True,
+                "canonical_target": {
+                    "article_url": "https://dic.nicovideo.jp/a/99999-title",
+                    "article_id": "99999",
+                    "article_type": "a",
+                },
+                "title": "99999-title",
+            },
+        ],
     ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
         register_target_url(
             "https://dic.nicovideo.jp/id/99999",
             str(target_db_path),
         )
 
-    deactivate_target("99999-title", "a", str(target_db_path))
+    deactivate_target("99999", "a", str(target_db_path))
 
     assert list_targets_for_operator(str(target_db_path), active_only=False) is True
 
@@ -41,7 +62,7 @@ def test_list_targets_for_operator_shows_status_and_count(
     assert "=== TARGET REGISTRY ===" in out
     assert "Count: 2" in out
     assert "active   12345 a" in out
-    assert "inactive 99999-title a" in out
+    assert "inactive 99999 a" in out
 
 
 def test_inspect_target_for_operator_returns_false_for_missing_target(

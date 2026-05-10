@@ -14,14 +14,40 @@ from target_list import (
 )
 
 
+def _resolved_target(article_url, article_id, title):
+    return {
+        "ok": True,
+        "canonical_target": {
+            "article_url": article_url,
+            "article_id": article_id,
+            "article_type": "a",
+        },
+        "title": title,
+    }
+
+
 def test_list_active_target_urls_reads_registered_targets_stably(tmp_path):
     target_db_path = tmp_path / "targets.db"
 
-    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
     with patch(
-        "target_list.resolve_id_article_url",
-        return_value="https://dic.nicovideo.jp/a/osomatsu-san",
+        "target_list.resolve_article_input",
+        side_effect=[
+            _resolved_target(
+                "https://dic.nicovideo.jp/a/12345",
+                "12345",
+                "12345",
+            ),
+            _resolved_target(
+                "https://dic.nicovideo.jp/a/osomatsu-san",
+                "5364158",
+                "おそ松さん",
+            ),
+        ],
     ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
         register_target_url(
             "https://dic.nicovideo.jp/id/99999",
             str(target_db_path),
@@ -66,23 +92,37 @@ def test_validate_target_url_rejects_non_article_shape():
 def test_register_target_url_inserts_valid_target_into_registry(tmp_path):
     target_db_path = tmp_path / "targets.db"
 
-    result = register_target_url(
-        "https://dic.nicovideo.jp/a/12345",
-        str(target_db_path),
-    )
+    with patch(
+        "target_list.resolve_article_input",
+        return_value=_resolved_target(
+            "https://dic.nicovideo.jp/a/foo",
+            "12345",
+            "Foo",
+        ),
+    ):
+        result = register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
 
     assert result == "added"
     assert list_active_target_urls(str(target_db_path)) == [
-        "https://dic.nicovideo.jp/a/12345",
+        "https://dic.nicovideo.jp/a/foo",
     ]
+    entry = inspect_registered_target("12345", "a", str(target_db_path))
+    assert entry["title"] == "Foo"
 
 
 def test_register_target_url_stores_resolved_a_target_for_id_input(tmp_path):
     target_db_path = tmp_path / "targets.db"
 
     with patch(
-        "target_list.resolve_id_article_url",
-        return_value="https://dic.nicovideo.jp/a/osomatsu-san",
+        "target_list.resolve_article_input",
+        return_value=_resolved_target(
+            "https://dic.nicovideo.jp/a/osomatsu-san",
+            "5364158",
+            "おそ松さん",
+        ),
     ):
         result = register_target_url(
             "https://dic.nicovideo.jp/id/5364158",
@@ -93,18 +133,23 @@ def test_register_target_url_stores_resolved_a_target_for_id_input(tmp_path):
     assert list_active_target_urls(str(target_db_path)) == [
         "https://dic.nicovideo.jp/a/osomatsu-san",
     ]
+    entry = inspect_registered_target("5364158", "a", str(target_db_path))
+    assert entry["title"] == "おそ松さん"
 
 
-def test_register_target_url_rejects_unresolved_id_input(tmp_path):
+def test_register_target_url_reports_resolution_failure_for_unresolved_input(tmp_path):
     target_db_path = tmp_path / "targets.db"
 
-    with patch("target_list.resolve_id_article_url", return_value=None):
+    with patch(
+        "target_list.resolve_article_input",
+        side_effect=RuntimeError("timeout"),
+    ):
         result = register_target_url(
             "https://dic.nicovideo.jp/id/5364158",
             str(target_db_path),
         )
 
-    assert result == "invalid"
+    assert result == "resolution_failure"
     assert target_db_path.exists() is False
 
 
@@ -137,16 +182,34 @@ def test_register_target_url_rejects_denylisted_canonical_slug_url(tmp_path):
 
 def test_register_target_url_suppresses_duplicate_identity(tmp_path):
     target_db_path = tmp_path / "targets.db"
-    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+    with patch(
+        "target_list.resolve_article_input",
+        side_effect=[
+            _resolved_target(
+                "https://dic.nicovideo.jp/a/foo",
+                "12345",
+                "Foo",
+            ),
+            _resolved_target(
+                "https://dic.nicovideo.jp/a/foo",
+                "12345",
+                "Foo",
+            ),
+        ],
+    ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
 
-    result = register_target_url(
-        "https://dic.nicovideo.jp/a/12345",
-        str(target_db_path),
-    )
+        result = register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
 
     assert result == "duplicate"
     assert list_active_target_urls(str(target_db_path)) == [
-        "https://dic.nicovideo.jp/a/12345",
+        "https://dic.nicovideo.jp/a/foo",
     ]
 
 
@@ -173,8 +236,22 @@ def test_import_targets_from_text_file_is_one_shot_and_non_automatic(tmp_path):
     )
 
     with patch(
-        "target_list.resolve_id_article_url",
-        return_value="https://dic.nicovideo.jp/a/777-title",
+        "target_list.resolve_article_input",
+        side_effect=lambda article_url: {
+            "https://dic.nicovideo.jp/a/12345": _resolved_target(
+                "https://dic.nicovideo.jp/a/foo",
+                "12345",
+                "Foo",
+            ),
+            "https://dic.nicovideo.jp/id/777": _resolved_target(
+                "https://dic.nicovideo.jp/a/777-title",
+                "777",
+                "777-title",
+            ),
+        }.get(
+            article_url,
+            {"ok": False, "failure_kind": "invalid_input"},
+        ),
     ):
         result = import_targets_from_text_file(
             str(source_file),
@@ -190,9 +267,10 @@ def test_import_targets_from_text_file_is_one_shot_and_non_automatic(tmp_path):
         "denylisted": 0,
         "reactivated": 0,
         "invalid": 1,
+        "resolution_failure": 0,
     }
     assert list_active_target_urls(str(target_db_path)) == [
-        "https://dic.nicovideo.jp/a/12345",
+        "https://dic.nicovideo.jp/a/foo",
         "https://dic.nicovideo.jp/a/777-title",
     ]
 
@@ -220,16 +298,60 @@ def test_import_targets_from_text_file_reports_denylisted_skip(tmp_path):
         "denylisted": 1,
         "reactivated": 0,
         "invalid": 0,
+        "resolution_failure": 0,
     }
     assert list_active_target_urls(str(target_db_path)) == [
         "https://dic.nicovideo.jp/a/12345",
     ]
 
 
+def test_import_targets_reports_resolution_failure_without_aborting(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+    source_file = tmp_path / "targets.txt"
+    source_file.write_text(
+        "https://dic.nicovideo.jp/a/12345\n"
+        "https://dic.nicovideo.jp/a/fails\n",
+        encoding="utf-8",
+    )
+
+    with patch(
+        "target_list.resolve_article_input",
+        side_effect=[
+            _resolved_target(
+                "https://dic.nicovideo.jp/a/foo",
+                "12345",
+                "Foo",
+            ),
+            RuntimeError("timeout"),
+        ],
+    ):
+        result = import_targets_from_text_file(
+            str(source_file),
+            str(target_db_path),
+        )
+
+    assert result["added"] == 1
+    assert result["resolution_failure"] == 1
+    assert list_active_target_urls(str(target_db_path)) == [
+        "https://dic.nicovideo.jp/a/foo",
+    ]
+
+
 def test_list_registered_targets_includes_inactive_entries_when_requested(tmp_path):
     target_db_path = tmp_path / "targets.db"
 
-    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+    with patch(
+        "target_list.resolve_article_input",
+        return_value=_resolved_target(
+            "https://dic.nicovideo.jp/a/12345",
+            "12345",
+            "12345",
+        ),
+    ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
     deactivate_target("12345", "a", str(target_db_path))
 
     all_entries = list_registered_targets(str(target_db_path), active_only=False)
@@ -242,7 +364,18 @@ def test_list_registered_targets_includes_inactive_entries_when_requested(tmp_pa
 
 def test_inspect_registered_target_returns_entry_by_identity(tmp_path):
     target_db_path = tmp_path / "targets.db"
-    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+    with patch(
+        "target_list.resolve_article_input",
+        return_value=_resolved_target(
+            "https://dic.nicovideo.jp/a/12345",
+            "12345",
+            "12345",
+        ),
+    ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
 
     entry = inspect_registered_target("12345", "a", str(target_db_path))
 
@@ -250,11 +383,23 @@ def test_inspect_registered_target_returns_entry_by_identity(tmp_path):
     assert entry["article_id"] == "12345"
     assert entry["article_type"] == "a"
     assert entry["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
+    assert entry["title"] == "12345"
 
 
 def test_deactivate_and_reactivate_target_return_operator_facing_result(tmp_path):
     target_db_path = tmp_path / "targets.db"
-    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+    with patch(
+        "target_list.resolve_article_input",
+        return_value=_resolved_target(
+            "https://dic.nicovideo.jp/a/12345",
+            "12345",
+            "12345",
+        ),
+    ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
 
     deactivated = deactivate_target("12345", "a", str(target_db_path))
     reactivated = reactivate_target("12345", "a", str(target_db_path))
@@ -267,14 +412,32 @@ def test_deactivate_and_reactivate_target_return_operator_facing_result(tmp_path
 
 def test_handoff_redirected_target_deactivates_old_and_registers_new(tmp_path):
     target_db_path = tmp_path / "targets.db"
-    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+    with patch(
+        "target_list.resolve_article_input",
+        side_effect=[
+            _resolved_target(
+                "https://dic.nicovideo.jp/a/12345",
+                "12345",
+                "12345",
+            ),
+            _resolved_target(
+                "https://dic.nicovideo.jp/a/67890",
+                "67890",
+                "67890",
+            ),
+        ],
+    ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
 
-    result = handoff_redirected_target(
-        "12345",
-        "a",
-        "https://dic.nicovideo.jp/a/67890",
-        str(target_db_path),
-    )
+        result = handoff_redirected_target(
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/67890",
+            str(target_db_path),
+        )
 
     assert result["status"] == "redirected"
     assert result["entry"]["is_active"] is False
@@ -290,15 +453,41 @@ def test_handoff_redirected_target_deactivates_old_and_registers_new(tmp_path):
 
 def test_handoff_redirected_target_suppresses_duplicate_new_target(tmp_path):
     target_db_path = tmp_path / "targets.db"
-    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
-    register_target_url("https://dic.nicovideo.jp/a/67890", str(target_db_path))
+    with patch(
+        "target_list.resolve_article_input",
+        side_effect=[
+            _resolved_target(
+                "https://dic.nicovideo.jp/a/12345",
+                "12345",
+                "12345",
+            ),
+            _resolved_target(
+                "https://dic.nicovideo.jp/a/67890",
+                "67890",
+                "67890",
+            ),
+            _resolved_target(
+                "https://dic.nicovideo.jp/a/67890",
+                "67890",
+                "67890",
+            ),
+        ],
+    ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
+        register_target_url(
+            "https://dic.nicovideo.jp/a/67890",
+            str(target_db_path),
+        )
 
-    result = handoff_redirected_target(
-        "12345",
-        "a",
-        "https://dic.nicovideo.jp/a/67890",
-        str(target_db_path),
-    )
+        result = handoff_redirected_target(
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/67890",
+            str(target_db_path),
+        )
 
     assert result["status"] == "redirected"
     assert result["register_status"] == "duplicate"

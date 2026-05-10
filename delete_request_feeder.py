@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from article_resolver import resolve_article_input
 from collection_policy import find_denylisted_article_id
 from storage import DEFAULT_DB_PATH, init_db
-from target_list import register_target_url
+from target_list import register_resolved_target
 
 
 DELETE_REQUEST_ARTICLE_ID = "5511090"
@@ -407,13 +407,17 @@ def run_delete_request_feeder(
             invalid_targets += 1
             continue
 
-        canonical_url = resolution["canonical_target"]["article_url"]
         try:
-            register_status = register_target_url(canonical_url, target_db_path)
+            register_status = register_resolved_target(
+                target_db_path,
+                resolution["canonical_target"],
+                title=resolution["title"],
+            )
         except Exception:
             skipped_registration_failures += 1
             continue
 
+        canonical_url = resolution["canonical_target"]["article_url"]
         if register_status == "added":
             added_targets += 1
             queued_target_urls.append(canonical_url)

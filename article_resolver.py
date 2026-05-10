@@ -1,9 +1,11 @@
+import re
 from urllib.parse import quote, urlparse
 
 from http_client import fetch_page
 
 
 NICO_TOP_URL = "https://dic.nicovideo.jp"
+_OG_URL_ID_RE = re.compile(r"/id/([0-9]+)(?:/|$)")
 
 
 def normalize_article_input(raw_input: str) -> str:
@@ -60,6 +62,23 @@ def _extract_title_from_soup(soup) -> str | None:
     return title.split("とは")[0]
 
 
+def _extract_numeric_article_id(soup) -> str | None:
+    og_url_tag = soup.find("meta", property="og:url")
+    og_url = og_url_tag.get("content", "").strip() if og_url_tag else ""
+    if not og_url:
+        return None
+
+    match = _OG_URL_ID_RE.search(og_url)
+    if match is None:
+        return None
+
+    numeric_article_id = match.group(1)
+    if numeric_article_id and numeric_article_id.isdigit():
+        return numeric_article_id
+
+    return None
+
+
 def _normalize_candidate_url(candidate_url: str) -> str | None:
     parsed = urlparse(candidate_url)
 
@@ -94,6 +113,27 @@ def _extract_canonical_target_from_url(article_url: str) -> dict | None:
     }
 
 
+def _extract_canonical_article_url(article_url: str, soup) -> str | None:
+    canonical_tag = soup.find(
+        "link",
+        rel=lambda value: value and "canonical" in value,
+    )
+    if canonical_tag is not None:
+        href = canonical_tag.get("href", "").strip()
+        canonical_target = _extract_canonical_target_from_url(href)
+        if (
+            canonical_target is not None
+            and canonical_target["article_type"] == "a"
+        ):
+            return canonical_target["article_url"]
+
+    input_target = _extract_canonical_target_from_url(article_url)
+    if input_target is not None and input_target["article_type"] == "a":
+        return input_target["article_url"]
+
+    return None
+
+
 def _resolve_from_article_url(
     article_url: str,
     normalized_input: str,
@@ -106,18 +146,26 @@ def _resolve_from_article_url(
             return _build_failure_result("not_found", normalized_input)
         raise
 
-    og_url = soup.find("meta", property="og:url")
-    canonical_url = og_url.get("content", "").strip() if og_url else ""
-    canonical_target = _extract_canonical_target_from_url(canonical_url)
+    canonical_url = _extract_canonical_article_url(article_url, soup)
+    canonical_target = _extract_canonical_target_from_url(canonical_url or "")
     title = _extract_title_from_soup(soup)
+    numeric_article_id = _extract_numeric_article_id(soup)
 
-    if canonical_target is None or title is None:
+    if canonical_target is None or title is None or numeric_article_id is None:
+        return _build_failure_result("not_found", normalized_input)
+
+    input_target = _extract_canonical_target_from_url(article_url)
+    if (
+        input_target is not None
+        and input_target["article_type"] == "id"
+        and input_target["article_id"] != numeric_article_id
+    ):
         return _build_failure_result("not_found", normalized_input)
 
     return _build_success_result(
         article_url=canonical_target["article_url"],
-        article_id=canonical_target["article_id"],
-        article_type=canonical_target["article_type"],
+        article_id=numeric_article_id,
+        article_type="a",
         title=title,
         matched_by=matched_by,
         normalized_input=normalized_input,

@@ -50,7 +50,13 @@ def _build_slug_group_db(tmp_path):
     _seed_articles_row(conn, slug_id, "Foo", canonical_url)
     _seed_response_row(conn, slug_id, 1, "S1")
     _seed_response_row(conn, slug_id, 2, "S2")
-    register_target(conn, slug_id, "a", canonical_url)
+    conn.execute(
+        """
+        INSERT INTO target (article_id, article_type, canonical_url, is_active)
+        VALUES (?, 'a', ?, 1)
+        """,
+        (slug_id, canonical_url),
+    )
 
     conn.commit()
     return conn, str(db_path), canonical_url, slug_id, numeric_id
@@ -65,7 +71,14 @@ def _build_numeric_slug_group_db(tmp_path):
 
     _seed_articles_row(conn, legacy_numeric_slug_id, "999", canonical_url)
     _seed_response_row(conn, legacy_numeric_slug_id, 1, "N1")
-    register_target(conn, legacy_numeric_slug_id, "a", canonical_url)
+    register_target(conn, resolved_numeric_id, "a", canonical_url)
+    conn.execute(
+        """
+        INSERT INTO target (article_id, article_type, canonical_url, is_active)
+        VALUES (?, 'a', ?, 1)
+        """,
+        (legacy_numeric_slug_id, canonical_url),
+    )
 
     conn.commit()
     return (
@@ -86,7 +99,13 @@ def _build_target_only_numeric_slug_db(
     conn = init_db(str(db_path))
     canonical_url = f"https://dic.nicovideo.jp/a/{slug_id}"
 
-    register_target(conn, slug_id, "a", canonical_url)
+    conn.execute(
+        """
+        INSERT INTO target (article_id, article_type, canonical_url, is_active)
+        VALUES (?, 'a', ?, 1)
+        """,
+        (slug_id, canonical_url),
+    )
     conn.commit()
     return conn, str(db_path), canonical_url, slug_id
 

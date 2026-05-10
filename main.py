@@ -1552,6 +1552,9 @@ def main():
                 f"{sys.argv[2]}"
             )
             sys.exit(1)
+        if result == "resolution_failure":
+            print(f"Target resolution failed: {sys.argv[2]}")
+            sys.exit(1)
 
         print(f"Invalid target URL: {sys.argv[2]}")
         sys.exit(1)
@@ -1571,7 +1574,8 @@ def main():
         print(
             "added={added} duplicate={duplicate} "
             "reactivated={reactivated} denylisted={denylisted} "
-            "invalid={invalid}".format(
+            "invalid={invalid} "
+            "resolution_failure={resolution_failure}".format(
                 **import_result,
             )
         )
