@@ -1552,6 +1552,12 @@ def main():
                 f"{sys.argv[2]}"
             )
             sys.exit(1)
+        if result == "resolution_failure":
+            print(
+                "Target registration failed: could not resolve article metadata "
+                f"for {sys.argv[2]}"
+            )
+            sys.exit(1)
 
         print(f"Invalid target URL: {sys.argv[2]}")
         sys.exit(1)
@@ -1571,7 +1577,7 @@ def main():
         print(
             "added={added} duplicate={duplicate} "
             "reactivated={reactivated} denylisted={denylisted} "
-            "invalid={invalid}".format(
+            "invalid={invalid} resolution_failure={resolution_failure}".format(
                 **import_result,
             )
         )

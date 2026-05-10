@@ -1,8 +1,8 @@
 from pathlib import Path
-from urllib.parse import urlparse
 
+from article_resolver import resolve_article_input
 from collection_policy import find_denylisted_article_id
-from http_client import resolve_id_article_url
+from dicopedia_urls import parse_target_identity
 from storage import get_target, init_db, list_targets, mark_target_redirected
 from storage import register_target
 from storage import set_target_active_state
@@ -15,40 +15,6 @@ def _parse_target_line(raw_line: str) -> str | None:
         return None
 
     return line
-
-
-def parse_target_identity(article_url: str) -> dict | None:
-    """Return article_id, article_type, canonical_url for a valid target URL."""
-
-    return _parse_target_identity(article_url)
-
-
-def _parse_target_identity(article_url: str) -> dict | None:
-    candidate = article_url.strip()
-    if not candidate:
-        return None
-
-    parsed = urlparse(candidate)
-    if parsed.scheme not in {"http", "https"}:
-        return None
-    if parsed.netloc != "dic.nicovideo.jp":
-        return None
-
-    path_parts = [part for part in parsed.path.split("/") if part]
-    if len(path_parts) != 2:
-        return None
-
-    article_type, article_id = path_parts
-    if not article_type or not article_id:
-        return None
-
-    return {
-        "article_id": article_id,
-        "article_type": article_type,
-        "canonical_url": (
-            f"https://dic.nicovideo.jp/{article_type}/{article_id}"
-        ),
-    }
 
 
 def list_active_target_urls(target_db_path: str) -> list[str]:
@@ -76,49 +42,57 @@ def list_registered_targets(
 
 
 def normalize_target_url(article_url: str) -> str | None:
-    target_identity = _parse_target_identity(article_url)
+    """Best-effort parse of a dic article URL shape (syntax only; may be id)."""
+
+    target_identity = parse_target_identity(article_url)
     if target_identity is None:
         return None
 
-    canonical_url = target_identity["canonical_url"]
-    if target_identity["article_type"] != "id":
-        return canonical_url
-
-    try:
-        return resolve_id_article_url(canonical_url)
-    except RuntimeError:
-        return None
+    return target_identity["canonical_url"]
 
 
 def validate_target_url(article_url: str) -> bool:
-    return _parse_target_identity(article_url) is not None
+    return parse_target_identity(article_url) is not None
 
 
 def register_target_url(article_url: str, target_db_path: str) -> str:
-    if find_denylisted_article_id(article_url=article_url) is not None:
+    """Resolve numeric identity via metadata, then persist one target row."""
+
+    candidate = article_url.strip()
+    if find_denylisted_article_id(article_url=candidate):
         return "denylisted"
 
-    normalized_url = normalize_target_url(article_url)
-    if normalized_url is None:
+    parsed = parse_target_identity(candidate)
+    if parsed is None:
         return "invalid"
 
-    target_identity = parse_target_identity(normalized_url)
-    if target_identity is None:
-        return "invalid"
+    resolution = resolve_article_input(candidate)
+    if not resolution["ok"]:
+        kind = resolution["failure_kind"]
+        if kind == "invalid_input":
+            return "invalid"
+        return "resolution_failure"
 
-    if find_denylisted_article_id(
-        article_id=target_identity["article_id"],
-        article_url=target_identity["canonical_url"],
-    ) is not None:
+    canonical_target = resolution["canonical_target"]
+    numeric_id = canonical_target["article_id"]
+
+    post_denylisted = find_denylisted_article_id(
+        article_id=numeric_id,
+        article_url=canonical_target["article_url"],
+    )
+    if post_denylisted is not None:
         return "denylisted"
+
+    title = resolution.get("title") or ""
 
     conn = init_db(target_db_path)
     try:
         result = register_target(
             conn,
-            target_identity["article_id"],
-            target_identity["article_type"],
-            target_identity["canonical_url"],
+            numeric_id,
+            canonical_target["article_type"],
+            canonical_target["article_url"],
+            title=title,
         )
     finally:
         conn.close()
@@ -214,18 +188,29 @@ def handoff_redirected_target(
 
         register_status = "self_redirect"
         register_entry = None
-        if (
-            article_id,
-            article_type,
-        ) != (
-            redirect_identity["article_id"],
-            redirect_identity["article_type"],
+        nested = resolve_article_input(
+            redirect_identity["canonical_url"],
+        )
+        if not nested["ok"]:
+            register_status = "resolution_failure"
+        elif (
+            nested["canonical_target"]["article_id"] == article_id
+            and nested["canonical_target"]["article_type"] == article_type
         ):
+            pass
+        elif find_denylisted_article_id(
+            article_id=nested["canonical_target"]["article_id"],
+            article_url=nested["canonical_target"]["article_url"],
+        ):
+            register_status = "denylisted"
+        else:
+            ct = nested["canonical_target"]
             register_result = register_target(
                 conn,
-                redirect_identity["article_id"],
-                redirect_identity["article_type"],
-                redirect_identity["canonical_url"],
+                ct["article_id"],
+                ct["article_type"],
+                ct["article_url"],
+                title=nested.get("title") or "",
             )
             register_status = register_result["status"]
             register_entry = register_result["entry"]
@@ -258,6 +243,7 @@ def import_targets_from_text_file(
         "denylisted": 0,
         "reactivated": 0,
         "invalid": 0,
+        "resolution_failure": 0,
     }
 
     lines = Path(source_path).read_text(encoding="utf-8").splitlines()

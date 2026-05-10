@@ -22,13 +22,21 @@ def validate_saved_article_identity(article_id: str, article_type: str) -> None:
     if article_type != "a":
         return
     if not isinstance(article_id, str):
-        raise ValueError("saved article_id must be a string for article_type='a'")
+        raise ValueError(
+            "saved article_id must be a string for article_type='a'"
+        )
     if not article_id:
         raise ValueError("saved article_id must be non-empty for article_type='a'")
     if not article_id.isdigit():
         raise ValueError(
             "saved article_id must be digits-only for article_type='a'"
         )
+
+
+def validate_target_article_identity(article_id: str, article_type: str) -> None:
+    """Reject non-canonical scrape target identities at the persistence seam."""
+
+    validate_saved_article_identity(article_id, article_type)
 
 
 def _target_row_to_entry(row):
@@ -42,6 +50,7 @@ def _target_row_to_entry(row):
         "is_redirected": bool(row[6]),
         "redirect_target_url": row[7],
         "redirect_detected_at": row[8],
+        "title": row[9] if len(row) > 9 else None,
     }
 
 
@@ -76,6 +85,15 @@ def _ensure_target_redirect_columns(conn: sqlite3.Connection) -> None:
 
     if changed:
         conn.commit()
+
+
+def _ensure_target_title_column(conn: sqlite3.Connection) -> None:
+    column_names = _list_column_names(conn, "target")
+    if "title" in column_names:
+        return
+    cur = conn.cursor()
+    cur.execute("ALTER TABLE target ADD COLUMN title TEXT")
+    conn.commit()
 
 
 def _ensure_article_metadata_columns(conn: sqlite3.Connection) -> None:
@@ -167,12 +185,14 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
         redirect_target_url TEXT,
         redirect_detected_at TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        title TEXT,
         UNIQUE(article_id, article_type)
     )
     """)
 
     _ensure_article_metadata_columns(conn)
     _ensure_target_redirect_columns(conn)
+    _ensure_target_title_column(conn)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS scrape_run_observation (
@@ -404,15 +424,35 @@ def dequeue_canonical_target(conn, article_id, article_type):
     return cur.rowcount > 0
 
 
-def register_target(conn, article_id, article_type, canonical_url):
+def _merge_persisted_target_title(
+    existing_title: str | None,
+    incoming_title: str | None,
+) -> str | None:
+    if incoming_title is None:
+        return existing_title
+    stripped = incoming_title.strip()
+    if stripped != "":
+        return stripped
+    return existing_title
+
+
+def register_target(
+    conn,
+    article_id,
+    article_type,
+    canonical_url,
+    title=None,
+):
     """Register or reactivate one canonical scrape target."""
+
+    validate_target_article_identity(article_id, article_type)
 
     cur = conn.cursor()
     cur.execute(
         """
         SELECT id, article_id, article_type, canonical_url, is_active,
                created_at, is_redirected, redirect_target_url,
-               redirect_detected_at
+               redirect_detected_at, title
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -421,13 +461,17 @@ def register_target(conn, article_id, article_type, canonical_url):
     existing_row = cur.fetchone()
 
     if existing_row is None:
+        insert_title = None
+        if title is not None:
+            ins = title.strip()
+            insert_title = ins if ins else None
         cur.execute(
             """
             INSERT INTO target
-            (article_id, article_type, canonical_url, is_active)
-            VALUES (?, ?, ?, 1)
+            (article_id, article_type, canonical_url, is_active, title)
+            VALUES (?, ?, ?, 1, ?)
             """,
-            (article_id, article_type, canonical_url),
+            (article_id, article_type, canonical_url, insert_title),
         )
         status = "added"
     else:
@@ -436,6 +480,10 @@ def register_target(conn, article_id, article_type, canonical_url):
         if not existing_entry["is_active"]:
             status = "reactivated"
 
+        merged_title = _merge_persisted_target_title(
+            existing_entry.get("title"),
+            title,
+        )
         cur.execute(
             """
             UPDATE target
@@ -443,10 +491,11 @@ def register_target(conn, article_id, article_type, canonical_url):
                 is_active=1,
                 is_redirected=0,
                 redirect_target_url=NULL,
-                redirect_detected_at=NULL
+                redirect_detected_at=NULL,
+                title=?
             WHERE article_id=? AND article_type=?
             """,
-            (canonical_url, article_id, article_type),
+            (canonical_url, merged_title, article_id, article_type),
         )
 
     conn.commit()
@@ -455,7 +504,7 @@ def register_target(conn, article_id, article_type, canonical_url):
         """
         SELECT id, article_id, article_type, canonical_url, is_active,
                created_at, is_redirected, redirect_target_url,
-               redirect_detected_at
+               redirect_detected_at, title
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -480,7 +529,7 @@ def list_targets(conn, active_only=True):
     query = (
         "SELECT id, article_id, article_type, canonical_url, is_active, "
         "created_at, is_redirected, redirect_target_url, "
-        "redirect_detected_at FROM target"
+        "redirect_detected_at, title FROM target"
     )
     params = ()
     if active_only:
@@ -499,7 +548,7 @@ def get_target(conn, article_id, article_type):
         """
         SELECT id, article_id, article_type, canonical_url, is_active,
                created_at, is_redirected, redirect_target_url,
-               redirect_detected_at
+               redirect_detected_at, title
         FROM target
         WHERE article_id=? AND article_type=?
         """,

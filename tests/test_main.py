@@ -784,6 +784,7 @@ def test_main_import_targets_reports_counts(mock_import_targets, capsys):
         "denylisted": 4,
         "reactivated": 0,
         "invalid": 0,
+        "resolution_failure": 0,
     }
 
     with patch(
@@ -804,6 +805,7 @@ def test_main_import_targets_reports_counts(mock_import_targets, capsys):
     out = capsys.readouterr().out
     assert "Imported 3 target line(s)" in out
     assert "added=2 duplicate=1 reactivated=0 denylisted=4 invalid=0" in out
+    assert "resolution_failure=0" in out
 
 
 def test_main_import_targets_without_required_args_exits_with_usage(capsys):

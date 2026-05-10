@@ -713,6 +713,15 @@ def _registered_has_last_scraped_column(conn):
     return "latest_scraped_at" in cols
 
 
+def _registered_has_target_title_column(conn):
+    """Return whether optional target.title column exists (older DB compat)."""
+
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(target)")
+    cols = {row[1] for row in cur.fetchall()}
+    return "title" in cols
+
+
 def _registered_fallback_title(article_id, canonical_url):
     parsed = urlparse(canonical_url or "")
     path_parts = [part for part in parsed.path.split("/") if part]
@@ -771,9 +780,14 @@ def _registered_row_to_dict(row):
         latest_scraped_max_res_no,
         last_scraped_at,
     ) = row
+    aid = (article_id or "").strip()
+    if aid.isdigit():
+        display_article_id = aid
+    else:
+        display_article_id = unquote(aid)
     display_title = title or _registered_fallback_title(article_id, canonical_url)
     return {
-        "article_id": unquote(article_id or ""),
+        "article_id": display_article_id,
         "article_type": article_type or "",
         "title": display_title,
         "canonical_url": canonical_url or "",
@@ -810,15 +824,25 @@ def query_registered_articles(
 
     try:
         has_last_scraped = _registered_has_last_scraped_column(conn)
+        has_target_title = _registered_has_target_title_column(conn)
         sort_expr = _registered_sort_sql_expr(sort_by)
         matched_last_scraped_expr = (
             "COALESCE(a_exact.latest_scraped_at, a_url.latest_scraped_at)"
             if has_last_scraped
             else "NULL"
         )
+        if has_target_title:
+            matched_title_sql = (
+                "COALESCE("
+                "NULLIF(TRIM(COALESCE(t.title, '')), ''), "
+                "a_exact.title, a_url.title)"
+            )
+        else:
+            matched_title_sql = "COALESCE(a_exact.title, a_url.title)"
         base_cte_sql = f"""
             WITH resolved_targets AS (
                 SELECT
+                    t.id AS target_row_id,
                     t.article_id AS target_article_id,
                     t.article_type AS target_article_type,
                     t.canonical_url AS target_canonical_url,
@@ -827,7 +851,7 @@ def query_registered_articles(
                         AS matched_article_id,
                     COALESCE(a_exact.article_type, a_url.article_type)
                         AS matched_article_type,
-                    COALESCE(a_exact.title, a_url.title)
+                    {matched_title_sql}
                         AS matched_title,
                     {matched_last_scraped_expr} AS matched_last_scraped_at
                 FROM target AS t
@@ -893,7 +917,8 @@ def query_registered_articles(
             {where_sql}
             ORDER BY
                 {sort_expr} {order_dir},
-                rt.target_article_id ASC, rt.target_article_type ASC
+                rt.target_row_id DESC,
+                rt.target_article_type ASC
         """
 
         cur = conn.cursor()

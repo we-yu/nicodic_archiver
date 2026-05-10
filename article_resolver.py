@@ -1,5 +1,9 @@
 from urllib.parse import quote, urlparse
 
+from article_page_identity import (
+    ArticleIdMismatchError,
+    resolve_registration_identity_from_html,
+)
 from http_client import fetch_page
 
 
@@ -48,18 +52,6 @@ def _looks_like_url_input(normalized_input: str) -> bool:
     return bool(parsed.scheme or parsed.netloc)
 
 
-def _extract_title_from_soup(soup) -> str | None:
-    title_tag = soup.find("meta", property="og:title")
-    if title_tag is None:
-        return None
-
-    title = title_tag.get("content", "").strip()
-    if not title:
-        return None
-
-    return title.split("とは")[0]
-
-
 def _normalize_candidate_url(candidate_url: str) -> str | None:
     parsed = urlparse(candidate_url)
 
@@ -79,19 +71,15 @@ def _normalize_candidate_url(candidate_url: str) -> str | None:
     return f"{parsed.scheme}://{parsed.netloc}/{article_type}/{article_slug}"
 
 
-def _extract_canonical_target_from_url(article_url: str) -> dict | None:
-    normalized_url = _normalize_candidate_url(article_url)
-    if normalized_url is None:
-        return None
-
-    parsed = urlparse(normalized_url)
-    article_type, article_id = [part for part in parsed.path.split("/") if part]
-
-    return {
-        "article_url": normalized_url,
-        "article_id": article_id,
-        "article_type": article_type,
-    }
+def _id_url_numeric_from_normalized_url(normalized_url: str) -> str | None:
+    path_parts = [p for p in urlparse(normalized_url).path.split("/") if p]
+    if (
+        len(path_parts) == 2
+        and path_parts[0] == "id"
+        and path_parts[1].isdigit()
+    ):
+        return path_parts[1]
+    return None
 
 
 def _resolve_from_article_url(
@@ -99,6 +87,8 @@ def _resolve_from_article_url(
     normalized_input: str,
     matched_by: str,
 ) -> dict:
+    id_candidate = _id_url_numeric_from_normalized_url(article_url)
+
     try:
         soup = fetch_page(article_url)
     except RuntimeError as exc:
@@ -106,12 +96,15 @@ def _resolve_from_article_url(
             return _build_failure_result("not_found", normalized_input)
         raise
 
-    og_url = soup.find("meta", property="og:url")
-    canonical_url = og_url.get("content", "").strip() if og_url else ""
-    canonical_target = _extract_canonical_target_from_url(canonical_url)
-    title = _extract_title_from_soup(soup)
-
-    if canonical_target is None or title is None:
+    try:
+        canonical_target, title = resolve_registration_identity_from_html(
+            soup,
+            article_url,
+            input_id_numeric_candidate=id_candidate,
+        )
+    except ArticleIdMismatchError:
+        return _build_failure_result("id_mismatch", normalized_input)
+    except ValueError:
         return _build_failure_result("not_found", normalized_input)
 
     return _build_success_result(

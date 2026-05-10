@@ -1,0 +1,120 @@
+TASK044 — Numeric NicoNicoPedia target registry identity
+
+Editor AI model
+- Composer (Cursor agent); exact SKU not reported by the runtime.
+
+Summary
+- Target registration now resolves article pages to a numeric article ID from
+  metadata (og:url /id/<digits> with canonical /a/<slug>), stores article_type
+  `a`, optional `target.title`, and enforces digits-only `article_id` for type
+  `a` at the storage boundary.
+- Registered Articles and CSV prefer `target.title`, use stable sort tie-break
+  `target.id DESC` after primary sort, and display numeric Article ID for
+  digit-stored rows (legacy slug `target.article_id` rows still read for tests).
+- Shared parsing lives in `dicopedia_urls.py`; shared metadata extraction in
+  `article_page_identity.py` (also used from `orchestrator.fetch_article_metadata`
+  numeric path). Imports updated to avoid circular imports.
+
+Files touched (product repo)
+- article_page_identity.py (new)
+- article_resolver.py
+- archive_read.py
+- delete_request_feeder.py
+- dicopedia_urls.py (new)
+- main.py
+- operator_cli.py
+- orchestrator.py
+- storage.py
+- target_list.py
+- web_app.py
+- tests/test_archive_read.py
+- tests/test_article_resolver.py
+- tests/test_identity_merge.py
+- tests/test_repair_slug_article_identity.py
+- tests/test_storage.py
+- tests/test_target_list.py
+- tests/test_task044_numeric_target_identity.py (new)
+- TASK044_numeric_target_identity_report.txt (this file)
+
+Schema changes
+- `target.title` optional TEXT column via `_ensure_target_title_column` and new
+  installs include it. `init_db` applies the migration for existing DBs.
+
+Registration behavior changes
+- All intake flows using `register_target_url` / `register_target` resolve via
+  `resolve_article_input` (metadata; no live network in unit tests when
+  mocked), apply denylist on post-resolve numeric id and URLs, and return
+  `resolution_failure` when resolution fails (imports count this key).
+- `storage.register_target` validates numeric `article_id` for type `a` (
+  `validate_target_article_identity`).
+- Redirect handoff re-resolves the redirect canonical URL before inserting the
+  new target row.
+
+Registered Articles behavior changes
+- `matched_title` prefers non-empty trimmed `target.title`, then saved article
+  titles.
+- Default sort (`created_at` desc) adds `target_row_id DESC` as tie-breaker.
+- Display shows raw digits for numeric `article_id`; non-digit legacy rows still
+  use URL-decoded display for compatibility.
+
+Import / feeder / operator CLI behavior changes
+- `import_targets_from_text_file` tracks `resolution_failure` per line.
+- Delete-request feeder treats `resolution_failure` from registration like other
+  non-success outcomes (counts toward failure buckets).
+- `main add-target` / `operator_cli` handle the `resolution_failure` outcome for
+  registration that cannot complete after URL/metadata resolution.
+- Web registration logs `registration_resolution_failure` for metadata
+  failures at persistence time after a successful check resolution.
+
+Tests added/updated
+- New/updated coverage for resolver ID extraction, denylist id URLs, target
+  list mocks, archive read pending/numeric paths, storage validation,
+  identity merge and repair slug-only target inserts, and TASK044 integration
+  tests.
+
+Canonical result string for registration resolution misses: `resolution_failure`.
+
+Follow-up pytest fix (three observed failures)
+1. `test_export_registered_articles_csv_includes_pending_target_rows`: seed a
+   numeric `article_id` pending target via `_seed_pending_target` with title, not
+   a slug via `register_target()`.
+2. `test_main_import_targets_reports_counts`: mock import result includes
+   `resolution_failure` (aligned with CLI output key).
+3. `test_list_targets_for_operator_shows_status_and_count`: patch
+   `target_list.resolve_article_input` (current resolution boundary) instead of
+   removed `resolve_id_article_url`; expectations use numeric ids for both rows.
+
+Orchestrator.py scope (TASK044)
+- Imports `article_page_identity` helpers so `fetch_article_metadata_record`
+  uses the same canonical `/a/` + numeric ID extraction as registration. No
+  response-cap, queue, or scrape control-flow changes; behavior stays aligned
+  with the shared identity seam only.
+
+Validation attempted or not attempted
+- Not run (pytest/flake8 not executed in this follow-up); static inspection and
+  read_lints on edited Python paths only.
+
+Follow-up lint fix (earlier session)
+- orchestrator.py: E302 before `_extract_page_title` (two blank lines after
+  module-level `_LOCATION_REPLACE_RE`).
+- tests/test_repair_slug_article_identity.py: moved repair tool imports to the
+  module top (E402/E305); correct spacing after helper definition.
+- tests/test_target_list.py: restored `_mock_resolve_for_slug_numeric_pair`
+  (orphaned dict caused IndentationError / E999).
+
+Known limitations
+- Registration performs duplicate metadata resolution (check UI then register):
+  acceptable per task (no perf work).
+- Legacy slug `target` rows are not auto-migrated; tests insert them with raw
+  SQL where slug identity must be preserved.
+
+Backward compatibility notes
+- Older DBs without `target.title` skip COALESCE on `t.title` in Registered
+  Articles. Legacy slug targets remain readable; new writes require numeric id.
+
+Explicit non-changes (per task)
+- Runtime DB, cron, and response cap behavior were not modified.
+- No `article_type='id'` target rows are introduced; canonical storage remains
+  `/a/<slug>`.
+- Numeric `article_id` write-boundary validation was added via
+  `validate_target_article_identity` + `register_target` enforcement.

@@ -361,6 +361,28 @@ def test_dequeue_canonical_target_removes_only_requested_item(tmp_path, monkeypa
         conn.close()
 
 
+def test_register_target_rejects_non_numeric_article_id_for_type_a(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        try:
+            register_target(
+                conn,
+                "sluglike",
+                "a",
+                "https://dic.nicovideo.jp/a/sluglike",
+            )
+        except ValueError as exc:
+            assert "digits-only" in str(exc)
+        else:
+            raise AssertionError("expected ValueError")
+    finally:
+        conn.close()
+
+
 def test_register_target_persists_canonical_identity_once(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     conn = init_db()
