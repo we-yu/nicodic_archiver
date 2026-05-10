@@ -97,6 +97,9 @@ def add_target_for_operator(article_url, target_db_path):
     print("Action: add")
     print(f"DB: {target_db_path}")
     print(f"Input: {article_url}")
+    if result == "resolution_failure":
+        print("Reason: could not resolve article metadata for registration")
+        return False
     print("Reason: input must be a canonical Nicopedia article URL")
     return False
 

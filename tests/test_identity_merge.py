@@ -24,6 +24,17 @@ from identity_merge import (
 from storage import init_db, register_target
 
 
+def _insert_legacy_slug_target(conn, article_id, canonical_url):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO target (article_id, article_type, canonical_url, is_active)
+        VALUES (?, 'a', ?, 1)
+        """,
+        (article_id, canonical_url),
+    )
+
+
 def _seed_articles_row(
     conn, article_id, article_type, title, canonical_url
 ):
@@ -66,7 +77,7 @@ def _build_dup_group_db(tmp_path):
     _seed_response_row(conn, "foo-slug", "a", 2, "KEEP-2")
 
     register_target(conn, "12345", "a", canonical_url)
-    register_target(conn, "foo-slug", "a", canonical_url)
+    _insert_legacy_slug_target(conn, "foo-slug", canonical_url)
 
     conn.commit()
     return conn, str(db_path), canonical_url

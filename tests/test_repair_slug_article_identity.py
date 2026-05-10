@@ -18,6 +18,17 @@ from tools.repair_slug_article_identity import (
 )
 
 
+def _insert_legacy_slug_target_row(conn, article_id, canonical_url):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO target (article_id, article_type, canonical_url, is_active)
+        VALUES (?, 'a', ?, 1)
+        """,
+        (article_id, canonical_url),
+    )
+
+
 def _seed_articles_row(conn, article_id, title, canonical_url):
     cur = conn.cursor()
     cur.execute(
@@ -50,7 +61,7 @@ def _build_slug_group_db(tmp_path):
     _seed_articles_row(conn, slug_id, "Foo", canonical_url)
     _seed_response_row(conn, slug_id, 1, "S1")
     _seed_response_row(conn, slug_id, 2, "S2")
-    register_target(conn, slug_id, "a", canonical_url)
+    _insert_legacy_slug_target_row(conn, slug_id, canonical_url)
 
     conn.commit()
     return conn, str(db_path), canonical_url, slug_id, numeric_id
@@ -86,7 +97,7 @@ def _build_target_only_numeric_slug_db(
     conn = init_db(str(db_path))
     canonical_url = f"https://dic.nicovideo.jp/a/{slug_id}"
 
-    register_target(conn, slug_id, "a", canonical_url)
+    _insert_legacy_slug_target_row(conn, slug_id, canonical_url)
     conn.commit()
     return conn, str(db_path), canonical_url, slug_id
 

@@ -414,6 +414,11 @@ def run_delete_request_feeder(
             skipped_registration_failures += 1
             continue
 
+        if register_status == "resolution_failure":
+            skipped_resolution_failures += 1
+            invalid_targets += 1
+            continue
+
         if register_status == "added":
             added_targets += 1
             queued_target_urls.append(canonical_url)

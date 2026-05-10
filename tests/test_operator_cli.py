@@ -1,5 +1,6 @@
 import csv
 from io import StringIO
+from unittest.mock import patch
 
 from operator_cli import (
     export_archive_for_operator,
@@ -11,7 +12,6 @@ from operator_cli import (
 )
 from storage import init_db, register_target, save_to_db
 from target_list import deactivate_target, register_target_url
-from unittest.mock import patch
 
 
 def test_list_targets_for_operator_shows_status_and_count(
@@ -22,18 +22,45 @@ def test_list_targets_for_operator_shows_status_and_count(
     monkeypatch.chdir(tmp_path)
     target_db_path = tmp_path / "targets.db"
 
-    register_target_url("https://dic.nicovideo.jp/a/12345", str(target_db_path))
+    mock_payloads = [
+        {
+            "ok": True,
+            "canonical_target": {
+                "article_url": "https://dic.nicovideo.jp/a/12345",
+                "article_id": "12345",
+                "article_type": "a",
+            },
+            "title": "First",
+            "matched_by": "article_url",
+            "normalized_input": "u1",
+        },
+        {
+            "ok": True,
+            "canonical_target": {
+                "article_url": "https://dic.nicovideo.jp/a/99999-title",
+                "article_id": "88776655",
+                "article_type": "a",
+            },
+            "title": "Second",
+            "matched_by": "article_url",
+            "normalized_input": "u2",
+        },
+    ]
 
     with patch(
-        "target_list.resolve_id_article_url",
-        return_value="https://dic.nicovideo.jp/a/99999-title",
+        "target_list.resolve_article_input",
+        side_effect=mock_payloads,
     ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
         register_target_url(
             "https://dic.nicovideo.jp/id/99999",
             str(target_db_path),
         )
 
-    deactivate_target("99999-title", "a", str(target_db_path))
+    deactivate_target("88776655", "a", str(target_db_path))
 
     assert list_targets_for_operator(str(target_db_path), active_only=False) is True
 
@@ -41,7 +68,7 @@ def test_list_targets_for_operator_shows_status_and_count(
     assert "=== TARGET REGISTRY ===" in out
     assert "Count: 2" in out
     assert "active   12345 a" in out
-    assert "inactive 99999-title a" in out
+    assert "inactive 88776655 a" in out
 
 
 def test_inspect_target_for_operator_returns_false_for_missing_target(

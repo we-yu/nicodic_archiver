@@ -151,3 +151,77 @@ def test_resolve_article_input_still_raises_unexpected_title_search_errors():
             resolve_article_input("Foo")
 
     assert "timeout=10s" in str(exc_info.value)
+
+
+def test_resolve_article_input_uses_og_id_not_numeric_slug_segment():
+    soup = BeautifulSoup(
+        """
+        <html><head>
+        <link rel="canonical"
+              href="https://dic.nicovideo.jp/a/4294967295" />
+        <meta property="og:title" content="4294967295とは">
+        <meta property="og:url"
+              content="https://dic.nicovideo.jp/id/237789" />
+        </head></html>
+        """,
+        "lxml",
+    )
+
+    with patch("article_resolver.fetch_page", return_value=soup):
+        result = resolve_article_input(
+            "https://dic.nicovideo.jp/a/4294967295",
+        )
+
+    assert result["ok"] is True
+    assert result["canonical_target"]["article_id"] == "237789"
+    assert result["canonical_target"]["article_url"] == (
+        "https://dic.nicovideo.jp/a/4294967295"
+    )
+
+
+def test_resolve_article_input_confirm_id_url_matches_metadata():
+    soup = BeautifulSoup(
+        """
+        <html><head>
+        <link rel="canonical"
+              href="https://dic.nicovideo.jp/a/sample" />
+        <meta property="og:title" content="Sとは">
+        <meta property="og:url"
+              content="https://dic.nicovideo.jp/id/777888" />
+        </head></html>
+        """,
+        "lxml",
+    )
+
+    with patch("article_resolver.fetch_page", return_value=soup):
+        result = resolve_article_input("https://dic.nicovideo.jp/id/777888")
+
+    assert result["ok"] is True
+    assert result["canonical_target"]["article_url"] == (
+        "https://dic.nicovideo.jp/a/sample"
+    )
+    assert result["canonical_target"]["article_id"] == "777888"
+
+
+def test_resolve_article_input_id_mismatch_returns_failure():
+    soup = BeautifulSoup(
+        """
+        <html><head>
+        <link rel="canonical"
+              href="https://dic.nicovideo.jp/a/sample" />
+        <meta property="og:title" content="Sとは">
+        <meta property="og:url"
+              content="https://dic.nicovideo.jp/id/222222" />
+        </head></html>
+        """,
+        "lxml",
+    )
+
+    with patch("article_resolver.fetch_page", return_value=soup):
+        result = resolve_article_input("https://dic.nicovideo.jp/id/111111")
+
+    assert result == {
+        "ok": False,
+        "failure_kind": "id_mismatch",
+        "normalized_input": "https://dic.nicovideo.jp/id/111111",
+    }
