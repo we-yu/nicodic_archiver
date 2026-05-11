@@ -737,17 +737,58 @@ def _registered_fallback_title(article_id, canonical_url):
     return ""
 
 
-def _registered_sort_sql_expr(sort_by):
-    """Return SQL ORDER BY expression for a validated sort_by key."""
-    _map = {
-        "title": "COALESCE(NULLIF(rt.matched_title, ''), rt.target_article_id)",
-        "article_id": "rt.target_article_id",
-        "created_at": "rt.target_created_at",
-        "saved_response_count": "saved_response_count",
-        "latest_scraped_max_res_no": "latest_scraped_max_res_no",
-        "last_scraped_at": "last_scraped_at",
+def _registered_order_by_clause(sort_by, order_dir):
+    """Return a typed ORDER BY clause for a validated sort key."""
+    numeric_article_id = (
+        "rt.target_article_id != '' "
+        "AND rt.target_article_id NOT GLOB '*[^0-9]*'"
+    )
+    sort_terms = {
+        "title": [
+            (
+                "COALESCE(NULLIF(rt.matched_title, ''), rt.target_article_id) "
+                f"COLLATE NOCASE {order_dir}"
+            ),
+        ],
+        "article_id": [
+            (
+                "CASE WHEN "
+                f"{numeric_article_id} THEN 0 ELSE 1 END ASC"
+            ),
+            (
+                "CASE WHEN "
+                f"{numeric_article_id} "
+                "THEN CAST(rt.target_article_id AS INTEGER) END "
+                f"{order_dir}"
+            ),
+            f"rt.target_article_id COLLATE NOCASE {order_dir}",
+        ],
+        "created_at": [
+            "CASE WHEN rt.target_created_at IS NULL THEN 1 ELSE 0 END ASC",
+            f"julianday(rt.target_created_at) {order_dir}",
+        ],
+        "saved_response_count": [
+            f"COALESCE(rs.saved_response_count, 0) {order_dir}",
+        ],
+        "latest_scraped_max_res_no": [
+            (
+                "CASE WHEN rs.latest_scraped_max_res_no IS NULL "
+                "THEN 1 ELSE 0 END ASC"
+            ),
+            f"rs.latest_scraped_max_res_no {order_dir}",
+        ],
+        "last_scraped_at": [
+            "CASE WHEN rt.matched_last_scraped_at IS NULL THEN 1 ELSE 0 END ASC",
+            f"julianday(rt.matched_last_scraped_at) {order_dir}",
+        ],
     }
-    return _map.get(sort_by, "rt.target_created_at")
+    selected = sort_terms.get(sort_by, sort_terms[DEFAULT_REGISTERED_SORT_BY])
+    return ",\n                ".join(
+        selected + [
+            "rt.target_row_id DESC",
+            "rt.target_article_type ASC",
+        ]
+    )
 
 
 def _registered_search_sql_expr(column):
@@ -825,7 +866,6 @@ def query_registered_articles(
     try:
         has_last_scraped = _registered_has_last_scraped_column(conn)
         has_target_title = _registered_has_target_title_column(conn)
-        sort_expr = _registered_sort_sql_expr(sort_by)
         matched_last_scraped_expr = (
             "COALESCE(a_exact.latest_scraped_at, a_url.latest_scraped_at)"
             if has_last_scraped
@@ -839,6 +879,7 @@ def query_registered_articles(
             )
         else:
             matched_title_sql = "COALESCE(a_exact.title, a_url.title)"
+        order_by_sql = _registered_order_by_clause(sort_by, order_dir)
         base_cte_sql = f"""
             WITH resolved_targets AS (
                 SELECT
@@ -916,9 +957,7 @@ def query_registered_articles(
                 AND rt.matched_article_type = rs.article_type
             {where_sql}
             ORDER BY
-                {sort_expr} {order_dir},
-                rt.target_row_id DESC,
-                rt.target_article_type ASC
+                {order_by_sql}
         """
 
         cur = conn.cursor()

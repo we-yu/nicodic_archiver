@@ -907,13 +907,13 @@ def test_top_page_includes_registered_list_link():
     assert "登録済み記事一覧" in response["body"]
 
 
-def _mock_query_result(rows):
+def _mock_query_result(rows, *, total=None, per_page=100):
     """Build a query_registered_articles return value for mocking."""
     return {
         "rows": rows,
-        "total": len(rows),
+        "total": len(rows) if total is None else total,
         "page": 1,
-        "per_page": 100,
+        "per_page": per_page,
     }
 
 
@@ -952,7 +952,7 @@ def test_registered_page_renders_html_table_with_expected_columns():
     assert "https://dic.nicovideo.jp/a/12345" in response["body"]
     assert ">42<" in response["body"]
     assert ">50<" in response["body"]
-    assert "2026-01-01T00:00:00+00:00" in response["body"]
+    assert "2026-01-01 09:00 JST" in response["body"]
     assert "12345" in response["body"]
 
 
@@ -978,6 +978,139 @@ def test_registered_page_canonical_url_is_clickable_link():
     assert 'target="_blank"' in response["body"]
 
 
+def test_registered_page_truncates_long_url_display_but_keeps_full_link():
+    long_url = (
+        "https://dic.nicovideo.jp/a/this-is-a-very-long-canonical-url-"
+        "that-should-be-truncated-in-the-table-display"
+    )
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([
+            _make_reg_row(canonical_url=long_url),
+        ]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert 'class="ext-link truncated-url"' in response["body"]
+    assert f'href="{long_url}"' in response["body"]
+    assert f'title="{long_url}"' in response["body"]
+    assert "max-width: 100%;" in response["body"]
+    assert "white-space: nowrap;" in response["body"]
+
+
+def test_registered_page_formats_table_times_in_jst():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([
+            _make_reg_row(
+                created_at="2026-01-01T00:00:00+00:00",
+                last_scraped_at="2026-01-01T03:15:00+00:00",
+            )
+        ]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert "2026-01-01 09:00 JST" in response["body"]
+    assert "2026-01-01 12:15 JST" in response["body"]
+    assert "2026-01-01T00:00:00+00:00" not in response["body"]
+
+
+def test_registered_page_includes_refresh_link_with_current_state():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result(
+            [_make_reg_row()],
+            total=300,
+            per_page=200,
+        ),
+    ):
+        response = _run_wsgi_request(
+            "GET",
+            path="/registered",
+            query_string=(
+                "sort_by=title&sort_order=asc&q=foo%20bar&page=2&per_page=200"
+            ),
+        )
+
+    assert (
+        'href="/registered?sort_by=title&amp;sort_order=asc&amp;'
+        'page=2&amp;per_page=200&amp;q=foo+bar" class="aux-link">Refresh<'
+    ) in response["body"]
+
+
+def test_registered_page_includes_reset_link_to_default_view():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request(
+            "GET",
+            path="/registered",
+            query_string="sort_by=title&sort_order=asc&q=foo&page=3",
+        )
+
+    assert 'href="/registered" class="aux-link">Reset</a>' in response["body"]
+
+
+def test_registered_page_search_input_uses_wider_classed_field():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert 'class="registered-search-input"' in response["body"]
+    assert "min-width: 280px;" in response["body"]
+
+
+def test_registered_page_renders_top_and_bottom_pagination():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result(
+            [_make_reg_row()],
+            total=300,
+            per_page=100,
+        ),
+    ):
+        response = _run_wsgi_request(
+            "GET",
+            path="/registered",
+            query_string="page=2",
+        )
+
+    assert response["body"].count('class="pagination top"') == 1
+    assert response["body"].count('class="pagination bottom"') == 1
+    assert response["body"].count("Page 2 / 3") == 2
+
+
+def test_registered_page_uses_alignment_classes_for_columns():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert 'class="col-title align-left"' in response["body"]
+    assert 'class="col-canonical-url align-left"' in response["body"]
+    assert 'class="col-article-id align-right"' in response["body"]
+    assert 'class="col-article-type align-center"' in response["body"]
+    assert 'class="col-created-at align-center"' in response["body"]
+    assert 'class="col-last-scraped align-center"' in response["body"]
+    assert 'class="col-saved-count align-right"' in response["body"]
+    assert 'class="col-max-res align-right"' in response["body"]
+
+
+def test_registered_page_uses_wrapping_title_column_styles():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert ".col-title { width: 21%; }" in response["body"]
+    assert "overflow-wrap: anywhere;" in response["body"]
+
+
 def test_registered_page_highlights_not_scraped_rows():
     unscrapped = _make_reg_row(
         title="未スクレイプ",
@@ -992,6 +1125,16 @@ def test_registered_page_highlights_not_scraped_rows():
         response = _run_wsgi_request("GET", path="/registered")
 
     assert "not-scraped" in response["body"]
+
+
+def test_registered_page_uses_middle_vertical_alignment_for_cells():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert "vertical-align: middle;" in response["body"]
 
 
 def test_registered_page_scraped_rows_have_no_special_class():
@@ -1108,6 +1251,23 @@ def test_registered_page_csv_renders_pending_target_rows():
     assert response["status"] == "200 OK"
     assert "pending-slug" in response["body"]
     assert "https://dic.nicovideo.jp/a/pending-slug" in response["body"]
+
+
+def test_registered_page_csv_keeps_full_canonical_url():
+    long_url = (
+        "https://dic.nicovideo.jp/a/this-is-a-very-long-canonical-url-"
+        "that-should-remain-complete-in-csv-output"
+    )
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([
+            _make_reg_row(canonical_url=long_url),
+        ]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered/csv")
+
+    assert response["status"] == "200 OK"
+    assert long_url in response["body"]
 
 
 def test_registered_csv_includes_csv_download_link_on_page():

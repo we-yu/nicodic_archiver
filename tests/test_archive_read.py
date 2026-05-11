@@ -142,6 +142,57 @@ def _seed_pending_target(
         conn.close()
 
 
+def _seed_registered_sort_case(
+    tmp_path,
+    monkeypatch,
+    article_id,
+    *,
+    created_at,
+    response_numbers=None,
+    latest_scraped_at=None,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            article_id,
+            "a",
+            f"https://dic.nicovideo.jp/a/{article_id}",
+            title=f"Title {article_id}",
+        )
+        conn.execute(
+            """
+            UPDATE target
+            SET created_at=?
+            WHERE article_id=? AND article_type=?
+            """,
+            (created_at, article_id, "a"),
+        )
+        if response_numbers:
+            save_to_db(
+                conn,
+                article_id,
+                "a",
+                f"Title {article_id}",
+                f"https://dic.nicovideo.jp/a/{article_id}",
+                [
+                    {
+                        "res_no": res_no,
+                        "id_hash": f"id{res_no}",
+                        "poster_name": f"Poster {res_no}",
+                        "posted_at": "2025-01-01 00:00",
+                        "content": f"Response {res_no}",
+                        "content_html": f"<p>Response {res_no}</p>",
+                    }
+                    for res_no in response_numbers
+                ],
+                latest_scraped_at=latest_scraped_at,
+            )
+    finally:
+        conn.close()
+
+
 def test_has_saved_article_returns_true_for_existing_article(
     tmp_path,
     monkeypatch,
@@ -748,6 +799,182 @@ def test_query_registered_articles_filters_by_search_article_id(
 
     assert result["total"] == 1
     assert result["rows"][0]["article_id"] == "12345"
+
+
+def test_query_registered_articles_sorts_article_id_numerically(
+    tmp_path,
+    monkeypatch,
+):
+    for article_id in ("1", "2", "10", "100"):
+        _seed_registered_sort_case(
+            tmp_path,
+            monkeypatch,
+            article_id,
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+
+    result = query_registered_articles(
+        sort_by="article_id",
+        sort_order="asc",
+        paginate=False,
+    )
+
+    assert [row["article_id"] for row in result["rows"]] == [
+        "1",
+        "2",
+        "10",
+        "100",
+    ]
+
+
+def test_query_registered_articles_sorts_saved_response_count_numerically(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "11",
+        created_at="2026-01-01T00:00:00+00:00",
+        response_numbers=[1, 2],
+        latest_scraped_at="2026-01-01T00:00:00+00:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "12",
+        created_at="2026-01-01T00:00:00+00:00",
+        response_numbers=list(range(1, 11)),
+        latest_scraped_at="2026-01-01T00:00:00+00:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "13",
+        created_at="2026-01-01T00:00:00+00:00",
+        response_numbers=[1],
+        latest_scraped_at="2026-01-01T00:00:00+00:00",
+    )
+
+    result = query_registered_articles(
+        sort_by="saved_response_count",
+        sort_order="asc",
+        paginate=False,
+    )
+
+    assert [row["article_id"] for row in result["rows"]] == [
+        "13",
+        "11",
+        "12",
+    ]
+
+
+def test_query_registered_articles_sorts_max_res_no_numerically(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "21",
+        created_at="2026-01-01T00:00:00+00:00",
+        response_numbers=[2],
+        latest_scraped_at="2026-01-01T00:00:00+00:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "22",
+        created_at="2026-01-01T00:00:00+00:00",
+        response_numbers=[10],
+        latest_scraped_at="2026-01-01T00:00:00+00:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "23",
+        created_at="2026-01-01T00:00:00+00:00",
+        response_numbers=[100],
+        latest_scraped_at="2026-01-01T00:00:00+00:00",
+    )
+
+    result = query_registered_articles(
+        sort_by="latest_scraped_max_res_no",
+        sort_order="asc",
+        paginate=False,
+    )
+
+    assert [row["article_id"] for row in result["rows"]] == [
+        "21",
+        "22",
+        "23",
+    ]
+
+
+def test_query_registered_articles_sorts_created_at_as_datetime(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "31",
+        created_at="2026-01-01T00:30:00+09:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "32",
+        created_at="2025-12-31T23:00:00+00:00",
+    )
+
+    result = query_registered_articles(
+        sort_by="created_at",
+        sort_order="desc",
+        paginate=False,
+    )
+
+    assert [row["article_id"] for row in result["rows"]] == ["32", "31"]
+
+
+def test_query_registered_articles_sorts_last_scraped_as_datetime(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "41",
+        created_at="2026-01-01T00:00:00+00:00",
+        response_numbers=[1],
+        latest_scraped_at="2026-01-01T00:30:00+09:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "42",
+        created_at="2026-01-01T00:00:00+00:00",
+        response_numbers=[1],
+        latest_scraped_at="2025-12-31T23:00:00+00:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "43",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    result = query_registered_articles(
+        sort_by="last_scraped_at",
+        sort_order="desc",
+        paginate=False,
+    )
+
+    assert [row["article_id"] for row in result["rows"]] == [
+        "42",
+        "41",
+        "43",
+    ]
 
 
 def test_query_registered_articles_no_match_returns_empty(
