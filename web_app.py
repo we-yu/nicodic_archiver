@@ -1,6 +1,6 @@
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
@@ -31,6 +31,7 @@ DEFAULT_WEB_ACTION_LOG_PATH = os.environ.get(
 )
 DEFAULT_DOWNLOAD_FORMAT = "txt"
 DOWNLOAD_FORMATS = ("txt", "md", "csv")
+JST = timezone(timedelta(hours=9))
 
 UI_TEXTS = {
     "page_title": "NicoNicoPedia Archive Checker",
@@ -1027,6 +1028,45 @@ def _build_registered_url(
     return "/registered?" + urlencode(params)
 
 
+def _registered_column_class(key: str) -> str:
+    classes = {
+        "article_id": "col-article-id",
+        "article_type": "col-article-type",
+        "title": "col-title",
+        "canonical_url": "col-canonical-url",
+        "created_at": "col-created-at",
+        "saved_response_count": "col-saved-count",
+        "latest_scraped_max_res_no": "col-max-res",
+        "last_scraped_at": "col-last-scraped",
+    }
+    return classes.get(key, "")
+
+
+def _registered_align_class(key: str) -> str:
+    if key in {"title", "canonical_url"}:
+        return "align-left"
+    if key in {"article_id", "saved_response_count", "latest_scraped_max_res_no"}:
+        return "align-right"
+    return "align-center"
+
+
+def _format_registered_time(value: str | None) -> str:
+    if not value:
+        return ""
+    normalized = value.strip()
+    if not normalized:
+        return ""
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return normalized
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(JST).strftime("%Y-%m-%d %H:%M JST")
+
+
 def _registered_sort_header_cell(
     col: dict,
     sort_by: str,
@@ -1037,8 +1077,17 @@ def _registered_sort_header_cell(
 ) -> str:
     key = col["key"]
     label = escape(col["label"])
+    col_class = " ".join(
+        part
+        for part in (
+            _registered_column_class(key),
+            _registered_align_class(key),
+        )
+        if part
+    )
+    cls_attr = f' class="{col_class}"' if col_class else ""
     if key not in REGISTERED_SORT_ALLOWLIST:
-        return f"<th>{label}</th>"
+        return f"<th{cls_attr}>{label}</th>"
     if sort_by == key:
         next_order = "asc" if sort_order == "desc" else "desc"
         ind = " &#9660;" if sort_order == "desc" else " &#9650;"
@@ -1047,7 +1096,7 @@ def _registered_sort_header_cell(
         ind = ""
     url = escape(_build_registered_url(key, next_order, q, page, per_page))
     return (
-        f'<th><a href="{url}" class="sort-link">'
+        f'<th{cls_attr}><a href="{url}" class="sort-link">'
         f"{label}{ind}</a></th>"
     )
 
@@ -1059,17 +1108,30 @@ def _registered_row_html(row: dict) -> str:
     for col in REGISTERED_ARTICLE_COLUMNS:
         key = col["key"]
         val = row.get(key)
+        col_class = " ".join(
+            part
+            for part in (
+                _registered_column_class(key),
+                _registered_align_class(key),
+            )
+            if part
+        )
+        cls_attr = f' class="{col_class}"' if col_class else ""
         if key == "canonical_url" and val:
             safe_url = escape(str(val))
             cell = (
-                f'<td><a href="{safe_url}" target="_blank"'
+                f'<td{cls_attr}><a href="{safe_url}" target="_blank"'
                 f' rel="noopener noreferrer"'
-                f' class="ext-link">{safe_url}</a></td>'
+                f' class="ext-link truncated-url" title="{safe_url}">'
+                f"{safe_url}</a></td>"
             )
+        elif key in {"created_at", "last_scraped_at"}:
+            display = _format_registered_time(val)
+            cell = f"<td{cls_attr}>{escape(display)}</td>"
         elif val is None:
-            cell = "<td></td>"
+            cell = f"<td{cls_attr}></td>"
         else:
-            cell = f"<td>{escape(str(val))}</td>"
+            cell = f"<td{cls_attr}>{escape(str(val))}</td>"
         cells.append(cell)
     return f"<tr{cls}>{''.join(cells)}</tr>"
 
@@ -1152,7 +1214,10 @@ def _render_registered_list_page(query_params: dict) -> bytes:
         for col in REGISTERED_ARTICLE_COLUMNS
     )
     rows_html = "".join(_registered_row_html(r) for r in rows)
-    pagination = _registered_pagination_html(
+    top_pagination = _registered_pagination_html(
+        page, total_pages, sort_by, sort_order, search, per_page
+    )
+    bottom_pagination = _registered_pagination_html(
         page, total_pages, sort_by, sort_order, search, per_page
     )
 
@@ -1170,6 +1235,10 @@ def _render_registered_list_page(query_params: dict) -> bytes:
     sort_by_esc = escape(sort_by)
     sort_ord_esc = escape(sort_order)
     per_page_str = str(per_page)
+    refresh_url = escape(
+        _build_registered_url(sort_by, sort_order, search, page, per_page)
+    )
+    reset_url = "/registered"
 
     csv_params = urlencode({
         "sort_by": sort_by,
@@ -1179,13 +1248,6 @@ def _render_registered_list_page(query_params: dict) -> bytes:
         "per_page": per_page_str,
     })
     csv_url = escape(f"/registered/csv?{csv_params}")
-
-    clear_link = ""
-    if search:
-        cl_url = escape(
-            _build_registered_url(sort_by, sort_order, "", 1, per_page)
-        )
-        clear_link = f' <a href="{cl_url}" class="clear-link">Clear</a>'
 
     per_page_opts = "".join(
         f'<option value="{n}"'
@@ -1227,7 +1289,8 @@ def _render_registered_list_page(query_params: dict) -> bytes:
       border: 1px solid #d9ccb4;
       border-radius: 6px;
       font: inherit;
-      min-width: 180px;
+            min-width: 280px;
+            width: min(42vw, 30rem);
     }}
     button, .btn {{
       padding: 5px 14px;
@@ -1240,19 +1303,13 @@ def _render_registered_list_page(query_params: dict) -> bytes:
       text-decoration: none;
     }}
     button:hover, .btn:hover {{ background: #0d6560; }}
-    .clear-link {{
-      color: #6b7280;
-      font-size: 0.88rem;
-      text-decoration: none;
-    }}
-    .clear-link:hover {{ text-decoration: underline; }}
     select.per-page {{
       padding: 4px 8px;
       border: 1px solid #d9ccb4;
       border-radius: 6px;
       font: inherit;
     }}
-    .csv-link {{
+        .csv-link, .aux-link {{
       padding: 5px 12px;
       border: 1px solid #0f766e;
       border-radius: 6px;
@@ -1261,22 +1318,28 @@ def _render_registered_list_page(query_params: dict) -> bytes:
       font-size: 0.9rem;
       background: transparent;
     }}
-    .csv-link:hover {{ background: rgba(15, 118, 110, 0.08); }}
+        .csv-link:hover, .aux-link:hover {{
+            background: rgba(15, 118, 110, 0.08);
+        }}
+        .aux-link {{ border-color: #d9ccb4; color: #1f2430; }}
     table {{
       border-collapse: collapse;
       width: 100%;
+            table-layout: fixed;
       background: #fffaf2;
       border: 1px solid #d9ccb4;
       border-radius: 8px;
       overflow: hidden;
     }}
     th, td {{
-      text-align: left;
       padding: 8px 12px;
       border-bottom: 1px solid #e8dfc8;
-      word-break: break-word;
+            vertical-align: middle;
     }}
     th {{ background: #f0e9d8; font-weight: 700; }}
+        th.align-left, td.align-left {{ text-align: left; }}
+        th.align-center, td.align-center {{ text-align: center; }}
+        th.align-right, td.align-right {{ text-align: right; }}
     th a.sort-link {{
       color: #1f2430;
       text-decoration: none;
@@ -1286,7 +1349,33 @@ def _render_registered_list_page(query_params: dict) -> bytes:
     tr:last-child td {{ border-bottom: none; }}
     tr.not-scraped td {{ background: #fff8e6; }}
     a {{ color: #0f766e; }}
-    .ext-link {{ word-break: break-all; }}
+        .col-article-id {{ width: 9ch; }}
+        .col-article-type {{ width: 6ch; }}
+        .col-title {{ width: 21%; }}
+        .col-canonical-url {{ width: 13%; }}
+        .col-created-at, .col-last-scraped {{ width: 17ch; }}
+        .col-saved-count, .col-max-res {{ width: 11ch; }}
+        td.col-title {{
+            font-weight: 600;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }}
+        th.col-title {{ white-space: nowrap; }}
+        th.col-canonical-url,
+        td.col-canonical-url {{
+            white-space: nowrap;
+            overflow: hidden;
+        }}
+        .ext-link.truncated-url {{
+            display: block;
+            width: 100%;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            word-break: normal;
+        }}
     .pagination {{
       display: flex;
       flex-wrap: wrap;
@@ -1294,6 +1383,8 @@ def _render_registered_list_page(query_params: dict) -> bytes:
       align-items: center;
       margin-top: 16px;
     }}
+        .pagination.top {{ margin: 0 0 12px; }}
+        .pagination.bottom {{ margin-top: 16px; }}
     .page-btn {{
       padding: 4px 10px;
       border: 1px solid #d9ccb4;
@@ -1321,9 +1412,14 @@ def _render_registered_list_page(query_params: dict) -> bytes:
       <input type="hidden" name="sort_by" value="{sort_by_esc}">
       <input type="hidden" name="sort_order" value="{sort_ord_esc}">
       <input type="hidden" name="per_page" value="{per_page_str}">
-      <input type="text" name="q" value="{search_esc}"
-              placeholder="Search title, article ID, or canonical URL&hellip;">
-      <button type="submit">Search</button>{clear_link}
+            <input
+                type="text"
+                name="q"
+                value="{search_esc}"
+                class="registered-search-input"
+                placeholder="Search title, article ID, or canonical URL&hellip;"
+            >
+            <button type="submit">Search</button>
     </form>
     <form method="get" action="/registered">
       <input type="hidden" name="q" value="{search_esc}">
@@ -1334,7 +1430,10 @@ def _render_registered_list_page(query_params: dict) -> bytes:
               onchange="this.form.submit()">{per_page_opts}</select>
     </form>
     <a href="{csv_url}" class="csv-link">&#8595; CSV (this page)</a>
+        <a href="{refresh_url}" class="aux-link">Refresh</a>
+        <a href="{reset_url}" class="aux-link">Reset</a>
   </div>
+    {top_pagination.replace('class="pagination"', 'class="pagination top"')}
   <table>
     <thead>
       <tr>{header_cells}</tr>
@@ -1343,7 +1442,7 @@ def _render_registered_list_page(query_params: dict) -> bytes:
 {rows_html}
     </tbody>
   </table>
-  {pagination}
+    {bottom_pagination.replace('class="pagination"', 'class="pagination bottom"')}
 </body>
 </html>
 """
