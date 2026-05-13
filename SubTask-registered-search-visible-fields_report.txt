@@ -1,0 +1,56 @@
+Summary
+- Registered Articles search now matches only visible Title and Article ID
+  fields.
+- Canonical URL-only matches were removed from Registered Articles search.
+- User-entered LIKE wildcard characters such as % and _ are now treated as
+  literal text.
+- SQL search now uses visible-value helpers for Article ID and Title so legacy
+  URL-encoded pending/article identities follow the same semantics as the
+  rendered table.
+
+Files touched
+- archive_read.py
+- tests/test_archive_read.py
+
+Tests added or updated
+- Updated Registered Articles search coverage so canonical URL-only hits no
+  longer match.
+- Added coverage for visible Title and Article ID partial-text search,
+  including a Japanese visible-title term.
+- Added coverage for literal % and _ handling in search input.
+- Updated encoded-term search expectations to match visible-field-only search.
+
+Validation attempted or not attempted
+- Input validation context: user reported 3 failing tests in
+  tests/test_archive_read.py around legacy/pending URL-encoded identity search.
+- Executable validation: Not run. A focused pytest run was attempted but the
+  tool execution was skipped.
+- Static inspection only: editor error inspection plus manual review of touched
+  diffs, line lengths, and EOF state.
+
+Known limitations
+- Visible-field search is limited to Title and Article ID only.
+- Registered Articles sorting, pagination, CSV export, layout, and Max Res No
+  semantics were intentionally not changed.
+- This update does not include a fresh executable confirmation of the previously
+  reported 3 failing tests.
+
+Editor AI model/tool information
+- GitHub Copilot using GPT-5.4.
+- Tools used: workspace file edits, workspace search, git change inspection,
+  and editor static error inspection.
+Human validation
+- Human ran root ./validate_helix.sh after the focused fix.
+- Result: copilot PASS, cursor PASS.
+- Copilot branch collected 397 tests and passed all tests.
+- Cursor main collected 394 tests and passed all tests.
+- Codex suggested host Python / venv-style validation commands, but those were rejected because this project validates through existing container/script workflows.
+
+Browser smoke
+- Human launched the Copilot branch as a temporary Web container on 127.0.0.1:58043 using runtime data.
+- Human confirmed /registered rendered correctly in the browser.
+- Human confirmed q=99 matches visible Article ID and visible Title values.
+- Human confirmed the temporary Web container and image were removed after smoke.
+
+Follow-up wording fix
+- Updated the Registered Articles search placeholder to remove canonical URL from the visible search description, because search now intentionally targets only visible Title and Article ID.

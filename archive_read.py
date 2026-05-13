@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from io import StringIO
 import sqlite3
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import unquote, urlparse
 
 from storage import DEFAULT_DB_PATH
 
@@ -19,9 +19,8 @@ REGISTERED_SORT_ALLOWLIST = frozenset({
     "last_scraped_at",
 })
 
-# Search target columns. Add entries here to extend user-facing search
-# without scattering conditions across query/render code.
-REGISTERED_SEARCH_COLUMNS = ("title", "article_id", "canonical_url")
+# Search only fields users can understand from the visible table.
+REGISTERED_SEARCH_COLUMNS = ("title", "article_id")
 
 DEFAULT_REGISTERED_SORT_BY = "created_at"
 DEFAULT_REGISTERED_SORT_ORDER = "desc"
@@ -793,21 +792,44 @@ def _registered_order_by_clause(sort_by, order_dir):
 
 def _registered_search_sql_expr(column):
     mapping = {
-        "title": "rt.matched_title",
-        "article_id": "rt.target_article_id",
-        "canonical_url": "rt.target_canonical_url",
+        "title": (
+            "registered_visible_title("
+            "rt.target_article_id, rt.target_canonical_url, rt.matched_title)"
+        ),
+        "article_id": "registered_visible_article_id(rt.target_article_id)",
     }
     return mapping[column]
 
 
-def _registered_search_variants(term):
-    """Return distinct search terms including an encoded variant."""
-    variants = []
-    for candidate in (term, quote(term, safe="")):
-        if not candidate or candidate in variants:
-            continue
-        variants.append(candidate)
-    return variants
+def _escape_registered_like_term(term):
+    """Escape LIKE wildcard characters so user input is treated literally."""
+    escaped = term.replace("\\", "\\\\")
+    escaped = escaped.replace("%", "\\%")
+    return escaped.replace("_", "\\_")
+
+
+def _registered_visible_article_id(value):
+    return unquote(value or "").strip()
+
+
+def _registered_visible_title(article_id, canonical_url, matched_title):
+    title = (matched_title or "").strip()
+    if title:
+        return title
+    return _registered_fallback_title(article_id, canonical_url)
+
+
+def _register_registered_search_functions(conn):
+    conn.create_function(
+        "registered_visible_article_id",
+        1,
+        _registered_visible_article_id,
+    )
+    conn.create_function(
+        "registered_visible_title",
+        3,
+        _registered_visible_title,
+    )
 
 
 def _registered_row_to_dict(row):
@@ -864,6 +886,7 @@ def query_registered_articles(
         return {"rows": [], "total": 0, "page": page, "per_page": per_page}
 
     try:
+        _register_registered_search_functions(conn)
         has_last_scraped = _registered_has_last_scraped_column(conn)
         has_target_title = _registered_has_target_title_column(conn)
         matched_last_scraped_expr = (
@@ -916,17 +939,15 @@ def query_registered_articles(
         where_params: list = []
         where_sql = ""
         if search:
-            search_variants = _registered_search_variants(search)
             conds = []
             for col in REGISTERED_SEARCH_COLUMNS:
                 expr = _registered_search_sql_expr(col)
-                for _ in search_variants:
-                    conds.append(f"{expr} LIKE ?")
+                conds.append(f"{expr} LIKE ? ESCAPE '\\'")
             where_sql = "WHERE (" + " OR ".join(conds) + ")"
-            where_params = []
-            for _ in REGISTERED_SEARCH_COLUMNS:
-                for variant in search_variants:
-                    where_params.append(f"%{variant}%")
+            escaped_search = _escape_registered_like_term(search)
+            where_params = [
+                f"%{escaped_search}%" for _ in REGISTERED_SEARCH_COLUMNS
+            ]
 
         count_sql = base_cte_sql + f"""
             SELECT COUNT(*)
