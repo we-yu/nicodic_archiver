@@ -1417,7 +1417,7 @@ def _render_registered_list_page(query_params: dict) -> bytes:
                 name="q"
                 value="{search_esc}"
                 class="registered-search-input"
-                placeholder="Search title, article ID, or canonical URL&hellip;"
+                placeholder="Search title or article ID"
             >
             <button type="submit">Search</button>
     </form>

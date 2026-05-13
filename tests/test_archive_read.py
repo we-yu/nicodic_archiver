@@ -706,7 +706,7 @@ def test_query_registered_articles_search_finds_pending_target_by_article_id(
     assert result["rows"][0]["article_id"] == "8880001"
 
 
-def test_query_registered_articles_search_finds_pending_target_by_url(
+def test_query_registered_articles_search_does_not_match_canonical_url_only(
     tmp_path,
     monkeypatch,
 ):
@@ -718,8 +718,7 @@ def test_query_registered_articles_search_finds_pending_target_by_url(
 
     result = query_registered_articles(search="dic.nicovideo.jp/a/pending-slug")
 
-    assert result["total"] == 1
-    assert result["rows"][0]["article_id"] == "8880001"
+    assert result["total"] == 0
 
 
 def test_query_registered_articles_uses_target_created_at_for_default_order(
@@ -799,6 +798,88 @@ def test_query_registered_articles_filters_by_search_article_id(
 
     assert result["total"] == 1
     assert result["rows"][0]["article_id"] == "12345"
+
+
+def test_query_registered_articles_search_matches_visible_title_and_article_id(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="991100",
+        title="Pending Display Title",
+        canonical_url="https://dic.nicovideo.jp/a/pending-a",
+    )
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="880001",
+        title="Title 99 Visible",
+        canonical_url="https://dic.nicovideo.jp/a/pending-b",
+        created_at="2026-02-02T00:00:00+00:00",
+    )
+
+    result = query_registered_articles(search="99", paginate=False)
+
+    assert [row["article_id"] for row in result["rows"]] == [
+        "880001",
+        "991100",
+    ]
+
+
+def test_query_registered_articles_search_matches_visible_japanese_title(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="771100",
+        title="連合艦隊これくしょん",
+        canonical_url="https://dic.nicovideo.jp/a/hidden-encoded-match",
+    )
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="771101",
+        title="連合船隊これくしょん",
+        canonical_url="https://dic.nicovideo.jp/a/%E8%89%A6-only-hit",
+        created_at="2026-02-02T00:00:00+00:00",
+    )
+
+    result = query_registered_articles(search="艦", paginate=False)
+
+    assert [row["article_id"] for row in result["rows"]] == ["771100"]
+
+
+def test_query_registered_articles_search_escapes_like_wildcards(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="wild-1",
+        article_type="id",
+        title="Rate 100%_艦 Visible",
+        canonical_url="https://dic.nicovideo.jp/id/wild-1",
+    )
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="plain-2",
+        article_type="id",
+        title="Rate 100X艦 Visible",
+        canonical_url="https://dic.nicovideo.jp/id/plain-2",
+        created_at="2026-02-02T00:00:00+00:00",
+    )
+
+    percent_result = query_registered_articles(search="%", paginate=False)
+    underscore_result = query_registered_articles(search="_", paginate=False)
+
+    assert [row["article_id"] for row in percent_result["rows"]] == ["wild-1"]
+    assert [row["article_id"] for row in underscore_result["rows"]] == ["wild-1"]
 
 
 def test_query_registered_articles_sorts_article_id_numerically(
@@ -1240,7 +1321,7 @@ def test_query_registered_articles_decodes_url_encoded_article_id(
     )
 
 
-def test_query_registered_articles_search_by_raw_encoded_id_still_works(
+def test_query_registered_articles_search_by_raw_encoded_id_no_longer_matches(
     tmp_path,
     monkeypatch,
 ):
@@ -1248,8 +1329,7 @@ def test_query_registered_articles_search_by_raw_encoded_id_still_works(
 
     result = query_registered_articles(search=_ENCODED_JP)
 
-    assert result["total"] == 1
-    assert result["rows"][0]["article_id"] == _DECODED_JP
+    assert result["total"] == 0
 
 
 def test_query_registered_articles_search_finds_encoded_pending_target_by_decoded_term(
@@ -1265,7 +1345,7 @@ def test_query_registered_articles_search_finds_encoded_pending_target_by_decode
     assert result["rows"][0]["title"] == _DECODED_JP
 
 
-def test_query_registered_articles_search_finds_encoded_pending_target_by_encoded_term(
+def test_query_registered_articles_search_encoded_pending_by_encoded_term_no_match(
     tmp_path,
     monkeypatch,
 ):
@@ -1273,8 +1353,7 @@ def test_query_registered_articles_search_finds_encoded_pending_target_by_encode
 
     result = query_registered_articles(search=_ENCODED_JP, paginate=False)
 
-    assert result["total"] == 1
-    assert result["rows"][0]["article_id"] == _DECODED_JP
+    assert result["total"] == 0
 
 
 def test_query_registered_articles_saved_title_search_still_works_with_search_variants(
