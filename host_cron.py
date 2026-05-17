@@ -249,10 +249,16 @@ class HostCronReporter:
         self._step_index = 0
         self._step_total = 0
         self._step_article_id: str | None = None
+        self._step_canonical_url: str | None = None
+        self._step_saved_before: int | None = None
+        self._step_observed_before: str | None = None
         self._compact_step_started = False
+        self._compact_step_detail_started = False
         self._pages_ok_step = 0
+        self._last_page_key: str | None = None
         self._interrupt_http: str | None = None
         self._response_cap_hit = False
+        self._detail_emitted = False
         self._compact_run_stamp = ""
         self._compact_trigger = "host_cron"
         self._compact_started_at_iso = ""
@@ -382,7 +388,9 @@ class HostCronReporter:
     def compact_note_top_fetch_failure(self, status_text: str) -> None:
         if not self._compact_run:
             return
+        self._ensure_compact_step_detail_started()
         self._interrupt_http = http_status_quick(status_text)
+        self._detail_emitted = True
         tok = format_top_err_token(status_text)
         self._page_tokens.append(tok)
         self._flush_compact_pages()
@@ -413,22 +421,18 @@ class HostCronReporter:
         self._interrupt_http = None
         self._response_cap_hit = False
         self._pages_ok_step = 0
+        self._last_page_key = None
         self._page_tokens.clear()
         self._step_index = index
         self._step_total = total
         self._step_article_id = article_id
+        self._step_canonical_url = canonical_url
+        self._step_saved_before = saved_before
+        self._step_observed_before = observed_before
         if self._compact_run:
             self._compact_step_started = True
-            sb = saved_before if saved_before is not None else 0
-            ob = observed_before if observed_before else "unknown"
-            aid = observe_val(article_id)
-            step_msg = (
-                f"ts={utc_ts_z()} step={index}/{total} article_id={aid} "
-                f'title="{title_for_log(label)}" '
-                f"saved_before={sb} observed_before={ob} "
-                f"url={shell_quote_safe(canonical_url)}"
-            )
-            self.emit("STEP START", step_msg, 1)
+            self._compact_step_detail_started = False
+            self._detail_emitted = False
         else:
             self._compact_step_started = False
             self.emit(
@@ -449,12 +453,85 @@ class HostCronReporter:
             self.emit("PAGE", join_page_tokens(self._page_tokens), 2)
             self._page_tokens.clear()
 
+    def _format_compact_step_start(self) -> str:
+        sb = self._step_saved_before if self._step_saved_before is not None else 0
+        ob = self._step_observed_before if self._step_observed_before else "unknown"
+        aid = observe_val(self._step_article_id)
+        url = shell_quote_safe(self._step_canonical_url or "unknown")
+        label = title_for_log(self._current_label or "?")
+        return (
+            f"ts={utc_ts_z()} step={self._step_index}/{self._step_total} "
+            f"article_id={aid} title=\"{label}\" "
+            f"saved_before={sb} observed_before={ob} url={url}"
+        )
+
+    def _ensure_compact_step_detail_started(self) -> None:
+        if not self._compact_run or not self._compact_step_started:
+            return
+        if self._compact_step_detail_started:
+            return
+        self.emit("STEP START", self._format_compact_step_start(), 1)
+        self._compact_step_detail_started = True
+
+    def _is_compact_ok0_target(
+        self,
+        *,
+        status: str,
+        reason: str | None,
+        stored_new: int | None,
+        saved_after: int | str | None,
+        observed_after: int | str | None,
+    ) -> bool:
+        if status != "success":
+            return False
+        if (stored_new if stored_new is not None else 0) != 0:
+            return False
+        if self._reason_token(reason, status) != "already_up_to_date":
+            return False
+        if self._detail_emitted:
+            return False
+        if self._pages_ok_step != 1:
+            return False
+        if observe_val(saved_after) == "unknown":
+            return False
+        if observe_val(observed_after) == "unknown":
+            return False
+        if self._interrupt_http is not None:
+            return False
+        return True
+
+    def _format_step_ok0(
+        self,
+        *,
+        label: str,
+        ref: str,
+        reason: str | None,
+        saved_after: int | str | None,
+        observed_after: int | str | None,
+        elapsed_s: int | None,
+    ) -> str:
+        aid = observe_val(self._step_article_id or ref)
+        saved = observe_val(saved_after)
+        observed = observe_val(observed_after)
+        page = observe_val(self._last_page_key)
+        elapsed = elapsed_s if elapsed_s is not None else 0
+        rsn = self._reason_token(reason, "success")
+        return (
+            f"ts={utc_ts_z()} step={self._step_index}/{self._step_total} "
+            f"article_id={aid} title=\"{title_for_log(label)}\" "
+            f"saved={saved} observed={observed} page={page} "
+            f"elapsed={elapsed}s reason={rsn}"
+        )
+
     def page_progress(self, page_url: str, collected: int, total: int) -> None:
         self._current_page_count += 1
         if self._compact_run:
             self._pages_ok_step += 1
+            self._last_page_key = board_page_token_key(page_url)
             tok = format_page_ok_token(page_url)
             self._page_tokens.append(tok)
+            if self._pages_ok_step > 1:
+                self._ensure_compact_step_detail_started()
             self._flush_compact_partial_rows()
         else:
             page_ref = page_url.rsplit("/", 1)[-1]
@@ -467,6 +544,7 @@ class HostCronReporter:
         saved_partial: int,
     ) -> None:
         if self._compact_run:
+            self._ensure_compact_step_detail_started()
             self._flush_compact_partial_rows()
             self._page_tokens.append(
                 format_page_err_token(page_url, status_text),
@@ -475,6 +553,7 @@ class HostCronReporter:
             pk = board_page_token_key(page_url)
             hs = observe_val(http_status_quick(status_text))
             self._interrupt_http = hs
+            self._detail_emitted = True
             self.emit(
                 "WARN DETAIL",
                 warn_detail_later_page(pk, hs, saved_partial),
@@ -492,6 +571,7 @@ class HostCronReporter:
 
     def response_cap_reached(self, saved_partial: int) -> None:
         if self._compact_run:
+            self._ensure_compact_step_detail_started()
             self._flush_compact_pages()
             self.emit(
                 "WARN DETAIL",
@@ -499,6 +579,7 @@ class HostCronReporter:
                 2,
             )
             self._response_cap_hit = True
+            self._detail_emitted = True
             return
         label = self._current_label or "unknown"
         self.emit("WARN", f"{label} response_cap_reached", 1)
@@ -520,18 +601,40 @@ class HostCronReporter:
     ) -> None:
         had_step = self._compact_step_started
         if self._compact_run and had_step:
-            self._flush_compact_pages()
-            self._emit_compact_step_end(
+            if self._is_compact_ok0_target(
                 status=status,
-                label=label,
-                ref=ref,
                 reason=reason,
                 stored_new=stored_new,
                 saved_after=saved_after,
                 observed_after=observed_after,
-                pages_ok=pages_ok,
-                elapsed_s=elapsed_s,
-            )
+            ):
+                self.emit(
+                    "STEP OK0 🟢",
+                    self._format_step_ok0(
+                        label=label,
+                        ref=ref,
+                        reason=reason,
+                        saved_after=saved_after,
+                        observed_after=observed_after,
+                        elapsed_s=elapsed_s,
+                    ),
+                    1,
+                )
+                self._page_tokens.clear()
+            else:
+                self._ensure_compact_step_detail_started()
+                self._flush_compact_pages()
+                self._emit_compact_step_end(
+                    status=status,
+                    label=label,
+                    ref=ref,
+                    reason=reason,
+                    stored_new=stored_new,
+                    saved_after=saved_after,
+                    observed_after=observed_after,
+                    pages_ok=pages_ok,
+                    elapsed_s=elapsed_s,
+                )
         if self._compact_run:
             self._record_compact_digest(
                 had_step=had_step,
@@ -564,7 +667,12 @@ class HostCronReporter:
         self._current_label = None
         self._current_page_count = 0
         self._compact_step_started = False
+        self._compact_step_detail_started = False
         self._page_tokens.clear()
+        self._last_page_key = None
+        self._interrupt_http = None
+        self._response_cap_hit = False
+        self._detail_emitted = False
 
     def _emit_compact_step_end(
         self,

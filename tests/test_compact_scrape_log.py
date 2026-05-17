@@ -46,6 +46,11 @@ def test_join_page_tokens_concatenates_tokens():
     assert join_page_tokens([a, b]) == "[1 OK][31 OK]"
 
 
+def test_format_page_ok_token_strips_trailing_dash_from_board_page():
+    url = "https://dic.nicovideo.jp/b/a/5492955/511-"
+    assert format_page_ok_token(url) == "[511 OK]"
+
+
 def test_batch_digest_recorder_render_includes_counters_and_sections():
     rec = BatchDigestRecorder()
     rec.add_finish_entry(
