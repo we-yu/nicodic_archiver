@@ -53,7 +53,7 @@ def feeder_summary_compact(summary: dict) -> str:
     return " ".join(pieces)
 
 
-_PAGE_START_RE = re.compile(r"/(\d+)-?(?:\.[^/]*)?$")
+_PAGE_START_RE = re.compile(r"^(\d+)-?(?:\.[^/]*)?$")
 
 
 def board_page_token_key(page_url: str) -> str:

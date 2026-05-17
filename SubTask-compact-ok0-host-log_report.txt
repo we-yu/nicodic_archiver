@@ -1,0 +1,67 @@
+SubTask: compact OK0 host log report
+
+Summary
+- Compressed clean host_cron no-change targets into a single [STEP OK0 🟢]
+  line inside HostCronReporter compact mode.
+- Kept detailed STEP START / PAGE / WARN DETAIL / FAIL DETAIL / STEP END
+  output for HIT, WARN, FAIL, partial, multi-page, unknown observed, and
+  other non-qualifying targets.
+- Preserved RUN DIGEST accounting, including ok0_targets and [OK0] others.
+- Fixed compact page token parsing so board page keys drop the trailing dash.
+
+Files touched
+- host_cron.py
+- compact_scrape_log.py
+- tests/test_host_cron.py
+- tests/test_compact_scrape_log.py
+- SubTask-compact-ok0-host-log_report.txt
+
+OK0 compression rule
+- One-line [STEP OK0 🟢] is emitted only when all of these are true:
+  status=success, stored_new=0, reason resolves to already_up_to_date,
+  no WARN/FAIL detail was emitted, exactly one successful page was observed,
+  saved_after is known, observed_after is known, and no status text is
+  present.
+- The compact OK0 line includes step, article_id, title, saved, observed,
+  page, elapsed, and reason.
+- URL is omitted from the compact OK0 line.
+- Non-qualifying targets fall back to the existing detailed compact format.
+
+Tests added or updated
+- tests/test_host_cron.py
+  - clean already_up_to_date target emits [STEP OK0 🟢]
+  - clean OK0 target does not emit STEP START, PAGE, or STEP END
+  - compact OK0 line includes step, article_id, title, saved, observed,
+    page, elapsed, and reason
+  - HIT target with stored_new > 0 still emits detailed STEP START / PAGE /
+    STEP END
+  - WARN later_page_interrupted target still emits detailed STEP START /
+    PAGE / WARN DETAIL / STEP END WARN
+  - RUN DIGEST still reports ok0_targets and [OK0] others correctly
+- tests/test_compact_scrape_log.py
+  - page token formatting strips the trailing dash from board page numbers
+
+Validation attempted or not attempted
+- Attempted and completed:
+  docker compose run --rm --entrypoint "" scraper pytest -q
+  tests/test_host_cron.py tests/test_compact_scrape_log.py
+- Result: PASS, 16 tests passed in 0.08s.
+
+Known limitations
+- OK0 compression applies only within compact host_cron reporting.
+- Multi-page success targets remain in detailed STEP START / PAGE /
+  STEP END form by design.
+- batch_*.log formatting was not changed.
+
+Explicit non-goals preserved
+- No scraping behavior changes.
+- No DB schema changes.
+- No scrape_id implementation.
+- No Delete Feeder logging redesign.
+- No parent log.
+- No runtime, cron, docker, or data file changes.
+- No batch_*.log behavior changes.
+
+Editor AI model/tool information
+- GitHub Copilot / GPT-5.4
+- Validation executed via repository docker compose test workflow

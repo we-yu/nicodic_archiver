@@ -224,3 +224,275 @@ def test_compact_host_run_groups_page_tokens_and_hashes_step_end_shapes():
             assert " url=" not in ln
             assert ("OK 🟢" in ln or "WARN 🟡" in ln or "FAIL 🔴" in ln)
     assert "[RUN DIGEST]" in text
+
+
+def test_compact_host_run_compresses_clean_ok0_target_to_one_line():
+    started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 45),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+
+    reporter.begin_compact_host_run(
+        started_at_iso=started.isoformat().replace("+00:00", "Z"),
+        batch_ref="ok0batch",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.note_targets_loaded(1, "/app/data/registry.db")
+    reporter.start_target(
+        44,
+        12192,
+        "巨影都市",
+        "https://dic.nicovideo.jp/a/5492955",
+        article_id="5492955",
+        saved_before=514,
+        observed_before="514",
+    )
+    reporter.page_progress(
+        "https://dic.nicovideo.jp/b/a/5492955/511-",
+        514,
+        514,
+    )
+    reporter.finish_target(
+        "success",
+        "巨影都市",
+        514,
+        "5492955",
+        reason="already_up_to_date",
+        stored_new=0,
+        saved_after=514,
+        observed_after=514,
+        pages_ok=1,
+        elapsed_s=0,
+    )
+    reporter.bind_run_totals(
+        total_targets=1,
+        processed_targets=1,
+        remaining_targets=0,
+    )
+    reporter.finish_run("success")
+
+    text = stream.getvalue()
+    assert "[STEP OK0 🟢]" in text
+    ok0_line = next(
+        line for line in text.splitlines() if "[STEP OK0 🟢]" in line
+    )
+    assert "step=44/12192" in ok0_line
+    assert 'article_id=5492955 title="巨影都市"' in ok0_line
+    assert "saved=514 observed=514 page=511 elapsed=0s" in ok0_line
+    assert "reason=already_up_to_date" in ok0_line
+    assert " url=" not in ok0_line
+    assert "[STEP START]" not in text
+    assert "[PAGE]" not in text
+    assert "[STEP END" not in text
+    assert "ok0_targets=1" in text
+    assert "[OK0] others=1" in text
+
+
+def test_compact_host_run_hit_target_keeps_detailed_step_lines():
+    started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 41),
+            datetime(2026, 5, 17, 13, 21, 50),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+
+    reporter.begin_compact_host_run(
+        started_at_iso=started.isoformat().replace("+00:00", "Z"),
+        batch_ref="hitbatch",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.note_targets_loaded(1, "/app/data/registry.db")
+    reporter.start_target(
+        1,
+        1,
+        "Sample",
+        "https://dic.nicovideo.jp/a/694740",
+        article_id="694740",
+        saved_before=280,
+        observed_before="400",
+    )
+    reporter.page_progress(
+        "https://dic.nicovideo.jp/b/a/694740/391-",
+        30,
+        400,
+    )
+    reporter.finish_target(
+        "success",
+        "Sample",
+        430,
+        "694740",
+        reason=None,
+        stored_new=30,
+        saved_after=430,
+        observed_after=430,
+        pages_ok=1,
+        elapsed_s=2,
+    )
+
+    text = stream.getvalue()
+    assert "[STEP START]" in text
+    assert "[PAGE] [391 OK]" in text
+    assert "[STEP END OK 🟢]" in text
+    assert "stored_new=30" in text
+    assert "[STEP OK0 🟢]" not in text
+
+
+def test_compact_host_run_warn_target_keeps_detailed_step_lines():
+    started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 42),
+            datetime(2026, 5, 17, 13, 21, 51),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+
+    reporter.begin_compact_host_run(
+        started_at_iso=started.isoformat().replace("+00:00", "Z"),
+        batch_ref="warnbatch",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.note_targets_loaded(1, "/app/data/registry.db")
+    reporter.start_target(
+        3,
+        3,
+        "FamilyMart",
+        "https://dic.nicovideo.jp/a/218285",
+        article_id="218285",
+        saved_before=30,
+        observed_before="unknown",
+    )
+    reporter.page_progress(
+        "https://dic.nicovideo.jp/b/a/218285/1-",
+        30,
+        30,
+    )
+    reporter.later_page_interrupted(
+        "https://dic.nicovideo.jp/b/a/218285/31-",
+        "404",
+        30,
+    )
+    reporter.finish_target(
+        "partial",
+        "FamilyMart",
+        30,
+        "218285",
+        reason="later_page_interrupted",
+        stored_new=0,
+        saved_after=30,
+        observed_after="unknown",
+        pages_ok=1,
+        elapsed_s=3,
+    )
+
+    text = stream.getvalue()
+    assert "[STEP START]" in text
+    assert "[PAGE] [1 OK][31 ERR404]" in text
+    assert "[WARN DETAIL]" in text
+    assert "[STEP END WARN 🟡]" in text
+    assert "status=404" in text
+    assert "[STEP OK0 🟢]" not in text
+
+
+def test_compact_host_run_digest_keeps_ok0_and_other_counters():
+    started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 40),
+            datetime(2026, 5, 17, 13, 21, 41),
+            datetime(2026, 5, 17, 13, 21, 50),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+
+    reporter.begin_compact_host_run(
+        started_at_iso=started.isoformat().replace("+00:00", "Z"),
+        batch_ref="mixbatch",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.note_targets_loaded(2, "/app/data/registry.db")
+    reporter.start_target(
+        1,
+        2,
+        "巨影都市",
+        "https://dic.nicovideo.jp/a/5492955",
+        article_id="5492955",
+        saved_before=514,
+        observed_before="514",
+    )
+    reporter.page_progress(
+        "https://dic.nicovideo.jp/b/a/5492955/511-",
+        514,
+        514,
+    )
+    reporter.finish_target(
+        "success",
+        "巨影都市",
+        514,
+        "5492955",
+        reason="already_up_to_date",
+        stored_new=0,
+        saved_after=514,
+        observed_after=514,
+        pages_ok=1,
+        elapsed_s=0,
+    )
+    reporter.start_target(
+        2,
+        2,
+        "Sample",
+        "https://dic.nicovideo.jp/a/694740",
+        article_id="694740",
+        saved_before=280,
+        observed_before="400",
+    )
+    reporter.page_progress(
+        "https://dic.nicovideo.jp/b/a/694740/391-",
+        30,
+        400,
+    )
+    reporter.finish_target(
+        "success",
+        "Sample",
+        430,
+        "694740",
+        reason=None,
+        stored_new=30,
+        saved_after=430,
+        observed_after=430,
+        pages_ok=1,
+        elapsed_s=1,
+    )
+    reporter.bind_run_totals(
+        total_targets=2,
+        processed_targets=2,
+        remaining_targets=0,
+    )
+    reporter.finish_run("success")
+
+    text = stream.getvalue()
+    assert "[RUN DIGEST] hit_targets=1 ok0_targets=1" in text
+    assert "[HIT] progress=2/2 article_id=694740" in text
+    assert "[OK0] others=1" in text
