@@ -117,53 +117,17 @@ def _resolve_from_article_url(
     )
 
 
-def _build_title_search_url(normalized_title: str) -> str:
-    return f"{NICO_TOP_URL}/search/{quote(normalized_title)}"
+def _build_direct_article_url_from_title(normalized_title: str) -> str:
+    """Encode the trimmed title into a dic /a/<slug> article URL."""
 
-
-def _extract_exact_title_candidate_urls(soup, normalized_title: str) -> list[str]:
-    candidate_urls = []
-    seen_urls = set()
-
-    for anchor in soup.find_all("a", href=True):
-        candidate_title = anchor.get_text(strip=True)
-        if candidate_title != normalized_title:
-            continue
-
-        href = anchor["href"].strip()
-        if href.startswith("/"):
-            href = f"{NICO_TOP_URL}{href}"
-
-        normalized_url = _normalize_candidate_url(href)
-        if normalized_url is None:
-            continue
-        if normalized_url in seen_urls:
-            continue
-
-        seen_urls.add(normalized_url)
-        candidate_urls.append(normalized_url)
-
-    return candidate_urls
+    slug = quote(normalized_title, safe="")
+    return f"{NICO_TOP_URL}/a/{slug}"
 
 
 def _resolve_from_exact_title(normalized_title: str) -> dict:
-    search_url = _build_title_search_url(normalized_title)
-    try:
-        soup = fetch_page(search_url)
-    except RuntimeError as exc:
-        if _is_not_found_runtime_error(exc):
-            return _build_failure_result("not_found", normalized_title)
-        raise
-
-    candidate_urls = _extract_exact_title_candidate_urls(soup, normalized_title)
-
-    if not candidate_urls:
-        return _build_failure_result("not_found", normalized_title)
-    if len(candidate_urls) >= 2:
-        return _build_failure_result("ambiguous", normalized_title)
-
+    article_url = _build_direct_article_url_from_title(normalized_title)
     return _resolve_from_article_url(
-        candidate_urls[0],
+        article_url,
         normalized_input=normalized_title,
         matched_by="exact_title",
     )
