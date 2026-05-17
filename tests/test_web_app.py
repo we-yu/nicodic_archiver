@@ -1,8 +1,12 @@
 from io import BytesIO
 import sqlite3
 from unittest.mock import patch
+from urllib.parse import quote, quote_plus
+
+from bs4 import BeautifulSoup
 
 import web_app
+from storage import init_db, list_targets
 from web_app import application, check_article_status, create_app
 
 
@@ -181,6 +185,93 @@ def test_check_article_status_restores_saved_parity_for_encoded_url_input():
     assert result["article_id"] == "5502789"
     assert result["article_type"] == "a"
     assert result["article_url"] == "https://dic.nicovideo.jp/a/たつきショック"
+
+
+def test_check_article_status_plain_exact_title_via_direct_article_fetch():
+    """Title input resolves with one fetch of /a/<url-encoded-title>, no search."""
+    empty_summary = {
+        "found": False,
+        "article_id": None,
+        "article_type": None,
+        "title": None,
+        "url": None,
+        "created_at": None,
+        "published_at": None,
+        "modified_at": None,
+        "response_count": 0,
+    }
+
+    ttl = "ストローマン論法"
+    dire = f"https://dic.nicovideo.jp/a/{quote(ttl, safe='')}"
+    soup = BeautifulSoup(
+        f"""
+        <html><head>
+        <meta property="og:title" content="{ttl}とは">
+        <meta property="og:url"
+              content="https://dic.nicovideo.jp/id/880011">
+        <link rel="canonical" href="{dire}"/>
+        </head></html>
+        """,
+        "lxml",
+    )
+
+    arc_miss = {
+        "found": False,
+        "article_id": "880011",
+        "article_type": "a",
+        "title": None,
+        "url": None,
+        "created_at": None,
+        "published_at": None,
+        "modified_at": None,
+        "response_count": 0,
+    }
+
+    with patch(
+        "web_app.get_saved_article_summary_by_exact_title",
+        return_value=empty_summary,
+    ):
+        with patch(
+            "web_app.get_saved_article_summary",
+            return_value=arc_miss,
+        ):
+            with patch(
+                "article_resolver.fetch_page",
+                return_value=soup,
+            ) as mf:
+                result = check_article_status(ttl)
+
+    mf.assert_called_once_with(dire)
+    assert result["status"] == "unsaved"
+    assert result["matched_by"] == "exact_title"
+    assert result["article_id"] == "880011"
+
+
+def test_check_article_status_plain_exact_title_not_found_on_direct_404():
+    empty_summary = {
+        "found": False,
+        "article_id": None,
+        "article_type": None,
+        "title": None,
+        "url": None,
+        "created_at": None,
+        "published_at": None,
+        "modified_at": None,
+        "response_count": 0,
+    }
+    ttl = "存在しない完全一致タイトル"
+    dire = f"https://dic.nicovideo.jp/a/{quote(ttl, safe='')}"
+    err = RuntimeError(f"Failed to fetch {dire} (status=404)")
+
+    with patch(
+        "web_app.get_saved_article_summary_by_exact_title",
+        return_value=empty_summary,
+    ):
+        with patch("article_resolver.fetch_page", side_effect=err):
+            result = check_article_status(ttl)
+
+    assert result["status"] == "resolution_failure"
+    assert result["failure_kind"] == "not_found"
 
 
 def test_check_article_status_classifies_temporary_fetch_failure():
@@ -587,6 +678,53 @@ def test_saved_encoded_url_input_with_csv_selection_keeps_download_flow():
 
     assert response["status"] == "200 OK"
     assert 'name="requested_format" value="csv"' in response["body"]
+
+
+def test_application_post_registers_plain_exact_title_via_resolver(
+    tmp_path, monkeypatch,
+):
+    """End-to-end: Japanese exact title resolves by direct slug URL and persists."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+    tgt_db = tmp_path / "targets.db"
+    log_path = tmp_path / "web_action.log"
+
+    ttl = "ストローマン論法"
+    dire = f"https://dic.nicovideo.jp/a/{quote(ttl, safe='')}"
+    soup = BeautifulSoup(
+        f"""
+        <html><head>
+        <meta property="og:title" content="{ttl}とは">
+        <meta property="og:url"
+              content="https://dic.nicovideo.jp/id/880011">
+        <link rel="canonical" href="{dire}"/>
+        </head></html>
+        """,
+        "lxml",
+    )
+
+    body = f"article_input={quote_plus(ttl)}"
+    with patch("article_resolver.fetch_page", return_value=soup):
+        captured = _run_wsgi_request(
+            "POST",
+            body=body,
+            app=create_app(
+                target_db_path=str(tgt_db),
+                web_action_log_path=str(log_path),
+            ),
+        )
+
+    assert captured["status"] == "200 OK"
+    assert "Article registered for archive checking." in captured["body"]
+    assert f"Article title:</strong> {ttl}" in captured["body"]
+
+    conn = init_db(str(tgt_db))
+    try:
+        rows = list_targets(conn)
+    finally:
+        conn.close()
+    assert len(rows) == 1
+    assert rows[0]["article_id"] == "880011"
 
 
 def test_application_post_registration_write_failure_returns_bounded_error():

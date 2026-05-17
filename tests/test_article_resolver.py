@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 import pytest
@@ -35,35 +36,28 @@ def test_resolve_article_input_succeeds_for_full_article_url():
 
 
 def test_resolve_article_input_succeeds_for_exact_title_first_page_only():
-    search_soup = BeautifulSoup(
-        """
-        <html><body>
-        <a href="/a/12345">Foo</a>
-        <a href="/a/99999">Foo Extra</a>
-        </body></html>
-        """,
-        "lxml",
-    )
     article_soup = BeautifulSoup(
         """
         <html><head>
         <meta property="og:title" content="Fooとは">
-        <meta property="og:url" content="https://dic.nicovideo.jp/a/12345">
+        <meta property="og:url" content="https://dic.nicovideo.jp/id/12345">
+        <link rel="canonical" href="https://dic.nicovideo.jp/a/Foo"/>
         </head></html>
         """,
         "lxml",
     )
 
+    expected = f"https://dic.nicovideo.jp/a/{quote('Foo', safe='')}"
     with patch(
         "article_resolver.fetch_page",
-        side_effect=[search_soup, article_soup],
+        return_value=article_soup,
     ) as mock_fetch:
         result = resolve_article_input("Foo")
 
-    assert mock_fetch.call_count == 2
+    mock_fetch.assert_called_once_with(expected)
     assert result["ok"] is True
     assert result["canonical_target"] == {
-        "article_url": "https://dic.nicovideo.jp/a/12345",
+        "article_url": "https://dic.nicovideo.jp/a/Foo",
         "article_id": "12345",
         "article_type": "a",
     }
@@ -82,18 +76,13 @@ def test_resolve_article_input_rejects_invalid_url_shape():
     }
 
 
-def test_resolve_article_input_returns_not_found_for_missing_exact_title():
-    search_soup = BeautifulSoup(
-        """
-        <html><body>
-        <a href="/a/12345">Other</a>
-        </body></html>
-        """,
-        "lxml",
-    )
+def test_resolve_article_input_returns_not_found_for_missing_article_metadata():
+    bad_soup = BeautifulSoup("<html><head></head><body></body></html>", "lxml")
 
-    with patch("article_resolver.fetch_page", return_value=search_soup):
+    dire = f"https://dic.nicovideo.jp/a/{quote('Foo', safe='')}"
+    with patch("article_resolver.fetch_page", return_value=bad_soup) as mf:
         result = resolve_article_input("Foo")
+    mf.assert_called_once_with(dire)
 
     assert result == {
         "ok": False,
@@ -102,32 +91,58 @@ def test_resolve_article_input_returns_not_found_for_missing_exact_title():
     }
 
 
-def test_resolve_article_input_returns_ambiguous_for_multiple_exact_titles():
-    search_soup = BeautifulSoup(
+def test_resolve_article_input_exact_title_japanese_queries_direct_article_url():
+    slug = quote("ストローマン論法", safe="")
+    expected_fetch = f"https://dic.nicovideo.jp/a/{slug}"
+    article_soup = BeautifulSoup(
+        f"""
+        <html><head>
+        <meta property="og:title" content="ストローマン論法とは">
+        <meta property="og:url"
+              content="https://dic.nicovideo.jp/id/880011">
+        <link rel="canonical" href="{expected_fetch}"/>
+        </head></html>
+        """,
+        "lxml",
+    )
+    with patch(
+        "article_resolver.fetch_page",
+        return_value=article_soup,
+    ) as mock_fetch:
+        result = resolve_article_input("ストローマン論法")
+    mock_fetch.assert_called_once_with(expected_fetch)
+    assert result["ok"] is True
+    assert result["normalized_input"] == "ストローマン論法"
+    assert result["matched_by"] == "exact_title"
+    assert result["canonical_target"]["article_id"] == "880011"
+
+
+def test_resolve_article_input_exact_title_never_requests_search_path():
+    soup = BeautifulSoup(
         """
-        <html><body>
-        <a href="/a/12345">Foo</a>
-        <a href="/a/67890">Foo</a>
-        </body></html>
+        <html><head>
+        <meta property="og:title" content="Xとは">
+        <meta property="og:url" content="https://dic.nicovideo.jp/id/9">
+        <link rel="canonical" href="https://dic.nicovideo.jp/a/X"/>
+        </head></html>
         """,
         "lxml",
     )
 
-    with patch("article_resolver.fetch_page", return_value=search_soup):
-        result = resolve_article_input("Foo")
+    def _grab(url):
+        assert "/search/" not in url
+        return soup
 
-    assert result == {
-        "ok": False,
-        "failure_kind": "ambiguous",
-        "normalized_input": "Foo",
-    }
+    with patch("article_resolver.fetch_page", side_effect=_grab):
+        resolve_article_input("X")
 
 
-def test_resolve_article_input_returns_not_found_when_title_search_is_404():
+def test_resolve_article_input_returns_not_found_when_direct_article_is_404():
+    expected = f"https://dic.nicovideo.jp/a/{quote('Foo', safe='')}"
     with patch(
         "article_resolver.fetch_page",
         side_effect=RuntimeError(
-            "Failed to fetch https://dic.nicovideo.jp/search/Foo (status=404)"
+            f"Failed to fetch {expected} (status=404)"
         ),
     ):
         result = resolve_article_input("Foo")
@@ -139,12 +154,12 @@ def test_resolve_article_input_returns_not_found_when_title_search_is_404():
     }
 
 
-def test_resolve_article_input_still_raises_unexpected_title_search_errors():
+def test_resolve_article_input_still_raises_unexpected_direct_fetch_errors():
+    expected = f"https://dic.nicovideo.jp/a/{quote('Foo', safe='')}"
     with patch(
         "article_resolver.fetch_page",
         side_effect=RuntimeError(
-            "Failed to fetch https://dic.nicovideo.jp/search/Foo "
-            "(timeout=10s)"
+            f"Failed to fetch {expected} (timeout=10s)"
         ),
     ):
         with pytest.raises(RuntimeError) as exc_info:

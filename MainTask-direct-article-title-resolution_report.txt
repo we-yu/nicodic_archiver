@@ -1,0 +1,70 @@
+MainTask: direct article title resolution — report
+
+Summary
+-------
+Non-URL article input is resolved by fetching a single direct Nicopedia article
+URL built as `https://dic.nicovideo.jp/a/<URL-encoded title>`, then passing the
+response through the existing `resolve_registration_identity_from_html` path.
+The Nicopedia Search endpoint is no longer used for normal title registration.
+
+Files touched
+-------------
+- article_resolver.py — replaced search + link scraping with
+  `_build_direct_article_url_from_title` and `_resolve_from_exact_title` calling
+  `_resolve_from_article_url`.
+- tests/test_article_resolver.py — updated expectations; added Japanese slug,
+  no-/search/, 404, and metadata-miss cases; removed ambiguous multi-search-hit
+  case.
+- tests/test_web_app.py — `check_article_status` direct-fetch + 404 cases;
+  POST integration registering a Japanese plain title with mocked `fetch_page`.
+
+Root cause
+----------
+Title resolution used `https://dic.nicovideo.jp/search/<query>` and parsed
+anchor text for an exact title match. Search can 404 or diverge from article
+existence, so a valid `/a/<title>` article was reported as not found.
+
+Behavior before / after
+-----------------------
+Before: trim non-URL input → search page → exact-title link(s) → fetch article.
+After: trim non-URL input → fetch `/a/<urllib.parse.quote(title, safe='')>` →
+same HTML identity extraction as URL input. URL-shaped input is unchanged.
+
+Search usage decision
+---------------------
+No Nicopedia Search for primary title resolution (per product requirement).
+Legacy search helpers were removed from the resolver. The `ambiguous`
+failure_kind is no longer emitted from this title path.
+
+Tests added or updated
+----------------------
+- test_article_resolver.py: direct URL for exact title; Japanese example;
+  asserts no `/search/` in fetch URL; 404 and non-404 errors; missing metadata
+  → not_found.
+- test_web_app.py:
+  `test_check_article_status_plain_exact_title_via_direct_article_fetch`,
+  `test_check_article_status_plain_exact_title_not_found_on_direct_404`,
+  `test_application_post_registers_plain_exact_title_via_resolver`.
+
+Validation attempted or not attempted
+--------------------------------------
+Attempted and passed: `docker compose run --rm --entrypoint "" scraper pytest
+tests/test_article_resolver.py tests/test_web_app.py -q` (61 passed).
+
+Known limitations
+-----------------
+- Titles that Nicopedia serves only under a different slug still resolve to
+  `not_found` if `/a/<exact-encoded-input>` does not exist (intended: no
+  typo recovery or alternate titles).
+- `ambiguous` may still appear only in older UI strings if other code paths ever
+  reuse that key; title resolution no longer produces it.
+
+Explicit non-goals preserved
+----------------------------
+No DB schema, scrape, cron/runtime, denylist policy, or identity semantics
+changes; no `article_type=id` registration mode; no live network tests; no
+fuzzy search or user suggestions; no runtime/root edits; no git commit/push.
+
+Editor AI model / tool information
+----------------------------------
+Composer (Cursor agent); Docker-backed pytest run as above.
