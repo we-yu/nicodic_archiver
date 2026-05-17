@@ -482,6 +482,13 @@ def collect_all_responses(
 
             # 1ページ目のその他エラーは従来どおり上位へ伝播させる。
             if first_request:
+                reporter_fn = getattr(
+                    progress_reporter,
+                    "compact_note_top_fetch_failure",
+                    None,
+                )
+                if reporter_fn is not None:
+                    reporter_fn(_error_status_text(str(e)))
                 raise
 
             # 2ページ目以降のエラーは「later-page interruption」として扱う。
@@ -613,7 +620,9 @@ def run_scrape(
                 article_url,
                 0,
                 article_url,
-                reason=f"url={article_url} reason=article_not_found",
+                reason=f"reason=article_not_found url={article_url}",
+                stored_new=0,
+                elapsed_s=0,
             )
         return ScrapeResult(
             False,
@@ -634,18 +643,6 @@ def run_scrape(
     )
     target_ref = article_id or canonical_article_url
 
-    if (
-        progress_reporter is not None
-        and target_index is not None
-        and target_total is not None
-    ):
-        progress_reporter.start_target(
-            target_index,
-            target_total,
-            display_label,
-            canonical_article_url,
-        )
-
     if article_id in DENYLIST_ARTICLE_IDS:
         if progress_reporter is None:
             print("Skipping article (high-volume).")
@@ -656,6 +653,10 @@ def run_scrape(
                 0,
                 target_ref,
                 reason="reason=skip_denylist",
+                stored_new=0,
+                saved_after=0,
+                observed_after="unknown",
+                elapsed_s=0,
             )
         return ScrapeResult(
             False,
@@ -670,6 +671,30 @@ def run_scrape(
         )
 
     max_saved_res_no = get_max_saved_res_no(article_id, article_type)
+    saved_before_kw = max_saved_res_no if max_saved_res_no is not None else 0
+    observed_kw = (
+        str(max_saved_res_no)
+        if max_saved_res_no is not None
+        else "unknown"
+    )
+
+    step_t0: float | None = None
+    if (
+        progress_reporter is not None
+        and target_index is not None
+        and target_total is not None
+    ):
+        progress_reporter.start_target(
+            target_index,
+            target_total,
+            display_label,
+            canonical_article_url,
+            article_id=str(article_id) if article_id else None,
+            saved_before=int(saved_before_kw),
+            observed_before=observed_kw,
+        )
+        step_t0 = time.monotonic()
+
     bbs_base_url = build_bbs_base_url(canonical_article_url)
 
     if max_saved_res_no is None:
@@ -706,6 +731,12 @@ def run_scrape(
                 max_saved_res_no,
                 target_ref,
                 reason="reason=already_up_to_date",
+                stored_new=0,
+                saved_after=max_saved_res_no,
+                observed_after=max_saved_res_no,
+                elapsed_s=(
+                    max(0, int(time.monotonic() - step_t0)) if step_t0 else 0
+                ),
             )
         return ScrapeResult(
             True,
@@ -770,11 +801,25 @@ def run_scrape(
         print("Saved to SQLite")
     else:
         display_status = "partial" if interrupted or cap_reached else "success"
+        elapsed_now = (
+            max(0, int(time.monotonic() - step_t0)) if step_t0 else 0
+        )
+        obs_mx = _observed_max_res_no(json_responses)
+        rsn_kw: str | None = None
+        if interrupted:
+            rsn_kw = "reason=later_page_interrupted"
+        elif cap_reached:
+            rsn_kw = "reason=response_cap_reached"
         progress_reporter.finish_target(
             display_status,
             display_label,
             len(json_responses),
             target_ref,
+            reason=rsn_kw,
+            stored_new=len(responses),
+            saved_after=obs_mx,
+            observed_after=obs_mx,
+            elapsed_s=elapsed_now,
         )
     return ScrapeResult(
         True,

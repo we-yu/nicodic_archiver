@@ -1,9 +1,9 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from io import StringIO
 import tarfile
 
 from host_cron import HostCronReporter
-from host_cron import compress_weekly_archives, rotate_active_log
+from host_cron import compress_weekly_archives, parse_run_start_day, rotate_active_log
 
 
 class FixedClock:
@@ -12,6 +12,19 @@ class FixedClock:
 
     def __call__(self):
         return self._values.pop(0)
+
+
+def test_parse_run_start_day_legacy_stamp():
+    text = "[RUN] START 2026-04-01 23:50:00\n"
+    assert parse_run_start_day(text) == date(2026, 4, 1)
+
+
+def test_parse_run_start_day_compact_run_start_stamp():
+    text = (
+        "[RUN START] ts=2026-04-01T23:50:05Z "
+        "run_id=20260401T235005Z batch_ref=z\n"
+    )
+    assert parse_run_start_day(text) == date(2026, 4, 1)
 
 
 def test_rotate_active_log_moves_previous_day_log_and_reopens_active(tmp_path):
@@ -144,3 +157,70 @@ def test_host_cron_reporter_emits_run_block_and_error_summary():
     assert "[RUN] END 2026-04-09 07:00:09 status=partial_failure" in text
     assert "[SUMMARY] targets=2 ok=1 fail=1 duration=9s" in text
     assert "[ERROR SUMMARY] count=1 refs=218285" in text
+
+
+def test_compact_host_run_groups_page_tokens_and_hashes_step_end_shapes():
+    started = datetime(2026, 4, 9, 7, 0, 5, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 4, 9, 10, 0, 5),
+            datetime(2026, 4, 9, 10, 0, 44),
+            datetime(2026, 4, 9, 10, 5, 0),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+    iso = started.isoformat().replace("+00:00", "Z")
+
+    reporter.begin_compact_host_run(
+        started_at_iso=iso,
+        batch_ref="ba9cafe12345",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.note_targets_loaded(1, "/app/data/registry.db")
+
+    reporter.start_target(
+        1,
+        1,
+        "Sample",
+        "https://dic.nicovideo.jp/a/694740",
+        article_id="694740",
+        saved_before=0,
+        observed_before="unknown",
+    )
+    root = "https://dic.nicovideo.jp/b/a/694740/"
+    for k in range(14):
+        n = k * 30 + 1
+        reporter.page_progress(f"{root}{n}-", 30, (k + 1) * 30)
+    reporter.finish_target(
+        "success",
+        "Sample",
+        400,
+        "694740",
+        reason=None,
+        stored_new=120,
+        saved_after=400,
+        observed_after=400,
+        elapsed_s=40,
+        pages_ok=None,
+    )
+    reporter.bind_run_totals(
+        total_targets=1,
+        processed_targets=1,
+        remaining_targets=0,
+    )
+    reporter.finish_run("success")
+
+    text = stream.getvalue()
+    assert "[RUN START]" in text
+    page_lines = [ln for ln in text.splitlines() if "[PAGE]" in ln]
+    assert len(page_lines) >= 2
+    assert "[STEP START]" in text
+    assert " url=" in text.split("[STEP START]", 1)[1].split("\n", 1)[0]
+    for ln in text.splitlines():
+        if "STEP END" in ln:
+            assert " url=" not in ln
+            assert ("OK 🟢" in ln or "WARN 🟡" in ln or "FAIL 🔴" in ln)
+    assert "[RUN DIGEST]" in text

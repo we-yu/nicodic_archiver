@@ -9,6 +9,7 @@ from pathlib import Path
 from archive_read import write_scrape_targets_txt
 from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
+from compact_scrape_log import BatchDigestRecorder
 from delete_request_feeder import (
     DEFAULT_DELETE_REQUEST_FEED_STATE_PATH,
     append_batch_targets,
@@ -423,6 +424,12 @@ def run_batch_scrape(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"batch_{run_id}.log"
 
+    batch_digest_tracker: BatchDigestRecorder | None
+    if progress_reporter is None:
+        batch_digest_tracker = BatchDigestRecorder()
+    else:
+        batch_digest_tracker = None
+
     existing_targets = list_active_target_urls(target_db_path)
     delete_request_feed_summary = run_delete_request_feeder(
         target_db_path,
@@ -432,6 +439,17 @@ def run_batch_scrape(
         existing_targets,
         delete_request_feed_summary["queued_target_urls"],
     )
+
+    bcm_fn = getattr(progress_reporter or None, "begin_compact_host_run", None)
+    if callable(bcm_fn):
+        limit_val = _oneshot_limit_duration_seconds()
+        bcm_fn(
+            started_at_iso=started_at,
+            batch_ref=run_id,
+            archive_db_path=archive_db_path,
+            limit_seconds=limit_val,
+            trigger="host_cron",
+        )
 
     if progress_reporter is None:
         print(
@@ -443,11 +461,18 @@ def run_batch_scrape(
             f"from target registry {target_db_path}"
         )
     else:
-        _emit_delete_request_feed_summary(
-            progress_reporter,
-            delete_request_feed_summary,
-        )
+        ecs = getattr(progress_reporter, "emit_compact_feed_summary", None)
+        if callable(ecs):
+            ecs(delete_request_feed_summary)
+        else:
+            _emit_delete_request_feed_summary(
+                progress_reporter,
+                delete_request_feed_summary,
+            )
         progress_reporter.note_targets_loaded(len(targets), target_db_path)
+        nss = getattr(progress_reporter, "note_scrape_start_compact", None)
+        if callable(nss):
+            nss()
 
     _append_batch_run_start(
         log_path,
@@ -476,6 +501,20 @@ def run_batch_scrape(
         identity = parse_target_identity(target)
         if identity is None:
             failed_targets += 1
+            if batch_digest_tracker is not None:
+                batch_digest_tracker.add_finish_entry(
+                    had_step=False,
+                    prog_idx=idx,
+                    prog_total=len(targets),
+                    article_id_val=None,
+                    label=target,
+                    ref=target,
+                    status="fail",
+                    reason="reason=invalid_target_url_shape",
+                    stored_new=0,
+                    observed_after=None,
+                    interrupt_http=None,
+                )
             if progress_reporter is None:
                 print(f"[FAIL] {target} (invalid target URL shape)")
             else:
@@ -485,6 +524,8 @@ def run_batch_scrape(
                     0,
                     target,
                     reason="reason=invalid_target_url_shape",
+                    stored_new=0,
+                    elapsed_s=0,
                 )
             _append_batch_progress(
                 log_path,
@@ -524,6 +565,23 @@ def run_batch_scrape(
             scrape_outcome = scrape_result.outcome
         except Exception as exc:
             failed_targets += 1
+            if batch_digest_tracker is not None:
+                exc_snip = (
+                    f"{type(exc).__name__}:{exc}"
+                ).replace("\n", " ")[:240]
+                batch_digest_tracker.add_finish_entry(
+                    had_step=True,
+                    prog_idx=idx,
+                    prog_total=len(targets),
+                    article_id_val=identity["article_id"],
+                    label=identity["article_id"],
+                    ref=identity["article_id"],
+                    status="fail",
+                    reason=f"reason={exc_snip}",
+                    stored_new=0,
+                    observed_after=None,
+                    interrupt_http=None,
+                )
             if progress_reporter is None:
                 print(f"[FAIL] {target} ({type(exc).__name__}: {exc})")
             else:
@@ -533,6 +591,8 @@ def run_batch_scrape(
                     0,
                     identity["article_id"],
                     reason=f"reason={type(exc).__name__}:{exc}",
+                    stored_new=0,
+                    elapsed_s=0,
                 )
             short_reason = f"{type(exc).__name__}: {exc}"
             _append_batch_progress(
@@ -586,6 +646,29 @@ def run_batch_scrape(
             if redirect_status != "redirected":
                 failed_targets += 1
                 scrape_outcome = "fail_exception"
+                rh_reason = (
+                    "reason=redirect_handoff_failed "
+                    f"status={redirect_status}"
+                )
+                if batch_digest_tracker is not None:
+                    art_title = getattr(
+                        scrape_result,
+                        "article_title",
+                        identity["article_id"],
+                    )
+                    batch_digest_tracker.add_finish_entry(
+                        had_step=True,
+                        prog_idx=idx,
+                        prog_total=len(targets),
+                        article_id_val=identity["article_id"],
+                        label=art_title,
+                        ref=identity["article_id"],
+                        status="fail",
+                        reason=rh_reason,
+                        stored_new=0,
+                        observed_after=None,
+                        interrupt_http=None,
+                    )
                 if progress_reporter is None:
                     print(
                         f"[FAIL] {target} "
@@ -597,10 +680,9 @@ def run_batch_scrape(
                         identity["article_id"],
                         0,
                         identity["article_id"],
-                        reason=(
-                            "reason=redirect_handoff_failed "
-                            f"status={redirect_status}"
-                        ),
+                        reason=rh_reason,
+                        stored_new=0,
+                        elapsed_s=0,
                     )
                 _append_batch_progress(
                     log_path,
@@ -634,6 +716,31 @@ def run_batch_scrape(
                 )
                 continue
 
+            red_reason = (
+                "reason=redirect_detected "
+                f"redirect_target={redirect_target_url} "
+                f"handoff_status={register_status}"
+            )
+            if batch_digest_tracker is not None:
+                art_tit = getattr(
+                    scrape_result,
+                    "article_title",
+                    identity["article_id"],
+                )
+                batch_digest_tracker.add_finish_entry(
+                    had_step=True,
+                    prog_idx=idx,
+                    prog_total=len(targets),
+                    article_id_val=identity["article_id"],
+                    label=art_tit,
+                    ref=identity["article_id"],
+                    status="success",
+                    reason=red_reason,
+                    stored_new=0,
+                    observed_after=scrape_result.observed_max_res_no,
+                    interrupt_http=None,
+                )
+
             if progress_reporter is None:
                 print(
                     f"[OK] {target} "
@@ -645,11 +752,9 @@ def run_batch_scrape(
                     getattr(scrape_result, "article_title", identity["article_id"]),
                     0,
                     identity["article_id"],
-                    reason=(
-                        "reason=redirect_detected "
-                        f"redirect_target={redirect_target_url} "
-                        f"handoff_status={register_status}"
-                    ),
+                    reason=red_reason,
+                    stored_new=0,
+                    elapsed_s=0,
                 )
             _append_batch_progress(
                 log_path,
@@ -682,6 +787,32 @@ def run_batch_scrape(
 
         if not ok:
             failed_targets += 1
+            if batch_digest_tracker is not None:
+                sr_nf = getattr(scrape_result, "short_reason", None)
+                fc_nf = scrape_result.failure_cause
+                had_nf = (
+                    fc_nf == "article_not_found"
+                    or sr_nf == "article_not_found"
+                )
+                reason_nf = sr_nf or fc_nf or "run_scrape_returned_false"
+                art_nf = getattr(scrape_result, "article_title", "unknown")
+                batch_digest_tracker.add_finish_entry(
+                    had_step=(not had_nf),
+                    prog_idx=idx,
+                    prog_total=len(targets),
+                    article_id_val=identity["article_id"],
+                    label=art_nf,
+                    ref=identity["article_id"],
+                    status="fail",
+                    reason=f"reason={reason_nf}",
+                    stored_new=getattr(
+                        scrape_result,
+                        "collected_response_count",
+                        0,
+                    ),
+                    observed_after=scrape_result.observed_max_res_no,
+                    interrupt_http=None,
+                )
             if progress_reporter is None:
                 print(f"[FAIL] {target}")
             short_reason = getattr(
@@ -712,6 +843,34 @@ def run_batch_scrape(
                 short_reason,
             )
         else:
+            if batch_digest_tracker is not None:
+                ds_ok = scrape_result.display_status
+                fc_digest = scrape_result.failure_cause
+                cap_digest = fc_digest == "response_cap_reached"
+                r_ok_kw: str | None = None
+                if fc_digest == "later_page_interrupted":
+                    r_ok_kw = "reason=later_page_interrupted"
+                elif cap_digest:
+                    r_ok_kw = "reason=response_cap_reached"
+                art_lab = getattr(
+                    scrape_result,
+                    "article_title",
+                    identity["article_id"],
+                )
+                batch_digest_tracker.add_finish_entry(
+                    had_step=True,
+                    prog_idx=idx,
+                    prog_total=len(targets),
+                    article_id_val=identity["article_id"],
+                    label=art_lab,
+                    ref=identity["article_id"],
+                    status=ds_ok,
+                    reason=r_ok_kw,
+                    stored_new=scrape_result.collected_response_count,
+                    observed_after=scrape_result.observed_max_res_no,
+                    interrupt_http=None,
+                    response_cap_hint=cap_digest,
+                )
             if progress_reporter is None:
                 print(f"[OK] {target}")
             _append_batch_progress(
@@ -772,6 +931,22 @@ def run_batch_scrape(
         final_status,
     )
 
+    rnd = getattr(progress_reporter or None, "bind_run_totals", None)
+    if callable(rnd):
+        rnd(
+            total_targets=total_targets,
+            processed_targets=processed_targets,
+            remaining_targets=remaining_targets,
+        )
+
+    bd_fn = getattr(progress_reporter or None, "render_batch_digest_block", None)
+    if callable(bd_fn):
+        digest_lines = bd_fn()
+        if digest_lines:
+            _append_batch_log_lines(log_path, digest_lines)
+    elif batch_digest_tracker is not None:
+        _append_batch_log_lines(log_path, batch_digest_tracker.render_block())
+
     try:
         write_scrape_targets_txt()
     except Exception:
@@ -815,7 +990,6 @@ def _run_periodic_once_with_host_cron(
     reporter = HostCronReporter(stream)
 
     try:
-        reporter.begin_run()
         for warning in warnings:
             reporter.note_maintenance_warning(warning)
 
