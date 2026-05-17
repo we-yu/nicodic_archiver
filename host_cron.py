@@ -1,16 +1,42 @@
 import tarfile
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import re
 import shutil
 from typing import Callable, TextIO
+
+from compact_scrape_log import (
+    GROUP_PAGE_TOKENS,
+    digest_reason_token,
+    digest_looks_like_skip,
+    format_batch_digest_block,
+    board_page_token_key,
+    compact_run_id_from_datetime,
+    fail_detail_line,
+    feeder_summary_compact,
+    format_page_err_token,
+    format_page_ok_token,
+    format_top_err_token,
+    http_status_quick,
+    join_page_tokens,
+    observe_val,
+    run_start_compact_fields,
+    shell_quote_safe,
+    title_for_log,
+    utc_ts_z,
+    warn_detail_later_page,
+    warn_detail_response_cap,
+)
 
 
 ACTIVE_LOG_NAME = "host_cron.log"
 DAILY_LOG_RE = re.compile(r"^host_cron\.(\d{8})\.log$")
 RUN_START_RE = re.compile(
     r"^\[RUN\] START (\d{4})-(\d{2})-(\d{2}) "
+)
+RUN_START_COMPACT_TS_RE = re.compile(
+    r"^\[RUN START\] ts=(\d{4})-(\d{2})-(\d{2})T"
 )
 
 
@@ -27,12 +53,16 @@ def format_day_token(value: date) -> str:
 
 
 def parse_run_start_day(text: str) -> date | None:
-    for line in text.splitlines():
+    for raw in text.splitlines():
+        line = raw.strip()
         match = RUN_START_RE.match(line)
-        if match is None:
-            continue
-        year, month, day = match.groups()
-        return date(int(year), int(month), int(day))
+        if match is not None:
+            year, month, day = match.groups()
+            return date(int(year), int(month), int(day))
+        cm = RUN_START_COMPACT_TS_RE.match(line)
+        if cm is not None:
+            year, month, day = cm.groups()
+            return date(int(year), int(month), int(day))
     return None
 
 
@@ -214,13 +244,119 @@ class HostCronReporter:
         self._error_refs: list[str] = []
         self._current_label: str | None = None
         self._current_page_count = 0
+        self._compact_run = False
+        self._page_tokens: list[str] = []
+        self._step_index = 0
+        self._step_total = 0
+        self._step_article_id: str | None = None
+        self._compact_step_started = False
+        self._pages_ok_step = 0
+        self._interrupt_http: str | None = None
+        self._response_cap_hit = False
+        self._compact_run_stamp = ""
+        self._compact_trigger = "host_cron"
+        self._compact_started_at_iso = ""
+        self._batch_totals: dict[str, int] | None = None
+        self._digest_hit_msgs: list[str] = []
+        self._digest_warn_msgs: list[str] = []
+        self._digest_fail_msgs: list[str] = []
+        self._digest_skip_msgs: list[str] = []
+        self._digest_ok0 = 0
+        self._total_new_responses = 0
+        self._unknown_obs_targets = 0
+        self._compact_plain_fail_total = 0
+        self._compact_skip_display_total = 0
 
     def emit(self, tag: str, message: str, indent_level: int = 0) -> None:
         indent = "  " * indent_level
         self._stream.write(f"{indent}[{tag}] {message}\n")
         self._stream.flush()
 
+    def begin_compact_host_run(
+        self,
+        *,
+        started_at_iso: str,
+        batch_ref: str,
+        archive_db_path: str,
+        limit_seconds: int | float | None,
+        trigger: str = "host_cron",
+    ) -> None:
+        dt = datetime.fromisoformat(started_at_iso.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        utc_dt = dt.astimezone(timezone.utc)
+        self._started_at = self._now_provider()
+        self._compact_started_at_iso = started_at_iso
+        stamp = compact_run_id_from_datetime(utc_dt)
+        ts_z = utc_ts_z(utc_dt)
+        self._compact_run = True
+        self._compact_run_stamp = stamp
+        self._compact_trigger = trigger
+        self._reset_compact_digest_counters()
+        self.emit("RUN", f"START {format_run_timestamp(self._started_at)}")
+        compact_body = run_start_compact_fields(
+            ts_iso_z=ts_z,
+            run_stamp=stamp,
+            batch_ref=batch_ref,
+            trigger=trigger,
+            db_path=archive_db_path,
+            limit_seconds=limit_seconds,
+        )
+        self.emit("RUN START", compact_body, indent_level=0)
+
+    def _reset_compact_digest_counters(self) -> None:
+        self._digest_hit_msgs.clear()
+        self._digest_warn_msgs.clear()
+        self._digest_fail_msgs.clear()
+        self._digest_skip_msgs.clear()
+        self._digest_ok0 = 0
+        self._total_new_responses = 0
+        self._unknown_obs_targets = 0
+        self._compact_plain_fail_total = 0
+        self._compact_skip_display_total = 0
+
+    def bind_run_totals(
+        self,
+        *,
+        total_targets: int,
+        processed_targets: int,
+        remaining_targets: int,
+    ) -> None:
+        self._batch_totals = {
+            "total": total_targets,
+            "processed": processed_targets,
+            "remaining": remaining_targets,
+        }
+
+    def emit_compact_feed_summary(self, summary: dict) -> None:
+        if not self._compact_run:
+            return
+        self.emit("FEEDER SUMMARY", feeder_summary_compact(summary), 1)
+
+    def note_scrape_start_compact(self) -> None:
+        if not self._compact_run:
+            return
+        self.emit("SCRAPE START", f"targets={self._total_targets}", 1)
+
+    def render_batch_digest_block(self) -> list[str]:
+        if not self._compact_run:
+            return []
+        return format_batch_digest_block(
+            digest_hit_msgs=self._digest_hit_msgs,
+            digest_warn_msgs=self._digest_warn_msgs,
+            digest_fail_msgs=self._digest_fail_msgs,
+            digest_skip_msgs=self._digest_skip_msgs,
+            digest_ok0=self._digest_ok0,
+            total_new_responses=self._total_new_responses,
+            unknown_obs_targets=self._unknown_obs_targets,
+        )
+
+    @staticmethod
+    def _looks_like_skip(reason: str | None) -> bool:
+        return digest_looks_like_skip(reason)
+
     def begin_run(self) -> None:
+        self._compact_run = False
         self._started_at = self._now_provider()
         self.emit("RUN", f"START {format_run_timestamp(self._started_at)}")
 
@@ -229,10 +365,36 @@ class HostCronReporter:
 
     def note_targets_loaded(self, count: int, target_db_path: str) -> None:
         self._total_targets = count
+        if self._compact_run:
+            reg_tail = Path(target_db_path).name
+            self.emit(
+                "TARGETS",
+                f"total={count} source=target_table path={reg_tail}",
+                1,
+            )
+        else:
+            self.emit(
+                "INFO",
+                f"target_db_path={target_db_path} targets={count}",
+                1,
+            )
+
+    def compact_note_top_fetch_failure(self, status_text: str) -> None:
+        if not self._compact_run:
+            return
+        self._interrupt_http = http_status_quick(status_text)
+        tok = format_top_err_token(status_text)
+        self._page_tokens.append(tok)
+        self._flush_compact_pages()
+        st_http = observe_val(self._interrupt_http).replace('"', "?")
         self.emit(
-            "INFO",
-            f"target_db_path={target_db_path} targets={count}",
-            indent_level=1,
+            "FAIL DETAIL",
+            fail_detail_line(
+                phase="article_top_fetch",
+                http_status=st_http,
+                reason_snake="article_top_fetch_failed",
+            ),
+            2,
         )
 
     def start_target(
@@ -241,22 +403,62 @@ class HostCronReporter:
         total: int,
         label: str,
         canonical_url: str,
+        *,
+        article_id: str | None = None,
+        saved_before: int | None = None,
+        observed_before: str | None = None,
     ) -> None:
         self._current_label = label
         self._current_page_count = 0
-        self.emit(
-            "STEP",
-            f"{index}/{total} title={label} url={canonical_url}",
-            indent_level=1,
-        )
+        self._interrupt_http = None
+        self._response_cap_hit = False
+        self._pages_ok_step = 0
+        self._page_tokens.clear()
+        self._step_index = index
+        self._step_total = total
+        self._step_article_id = article_id
+        if self._compact_run:
+            self._compact_step_started = True
+            sb = saved_before if saved_before is not None else 0
+            ob = observed_before if observed_before else "unknown"
+            aid = observe_val(article_id)
+            step_msg = (
+                f"ts={utc_ts_z()} step={index}/{total} article_id={aid} "
+                f'title="{title_for_log(label)}" '
+                f"saved_before={sb} observed_before={ob} "
+                f"url={shell_quote_safe(canonical_url)}"
+            )
+            self.emit("STEP START", step_msg, 1)
+        else:
+            self._compact_step_started = False
+            self.emit(
+                "STEP",
+                f"{index}/{total} title={label} url={canonical_url}",
+                1,
+            )
+
+    def _flush_compact_partial_rows(self) -> None:
+        while len(self._page_tokens) >= GROUP_PAGE_TOKENS:
+            chunk = self._page_tokens[:GROUP_PAGE_TOKENS]
+            del self._page_tokens[:GROUP_PAGE_TOKENS]
+            self.emit("PAGE", join_page_tokens(chunk), 2)
+
+    def _flush_compact_pages(self) -> None:
+        self._flush_compact_partial_rows()
+        if self._page_tokens:
+            self.emit("PAGE", join_page_tokens(self._page_tokens), 2)
+            self._page_tokens.clear()
 
     def page_progress(self, page_url: str, collected: int, total: int) -> None:
-        # Compact normal-success page progress while preserving a visible
-        # heartbeat in host_cron output. Warning / error / interrupted /
-        # cap-reached paths still emit their full detail lines below.
         self._current_page_count += 1
-        page_ref = page_url.rsplit("/", 1)[-1]
-        self.emit("INFO", f"[{page_ref}:OK]", indent_level=2)
+        if self._compact_run:
+            self._pages_ok_step += 1
+            tok = format_page_ok_token(page_url)
+            self._page_tokens.append(tok)
+            self._flush_compact_partial_rows()
+        else:
+            page_ref = page_url.rsplit("/", 1)[-1]
+            self.emit("INFO", f"[{page_ref}:OK]", 2)
 
     def later_page_interrupted(
         self,
@@ -264,25 +466,43 @@ class HostCronReporter:
         status_text: str,
         saved_partial: int,
     ) -> None:
+        if self._compact_run:
+            self._flush_compact_partial_rows()
+            self._page_tokens.append(
+                format_page_err_token(page_url, status_text),
+            )
+            self._flush_compact_pages()
+            pk = board_page_token_key(page_url)
+            hs = observe_val(http_status_quick(status_text))
+            self._interrupt_http = hs
+            self.emit(
+                "WARN DETAIL",
+                warn_detail_later_page(pk, hs, saved_partial),
+                2,
+            )
+            return
         label = self._current_label or "unknown"
-        self.emit("WARN", f"{label} later_page_interrupted", indent_level=1)
+        self.emit("WARN", f"{label} later_page_interrupted", 1)
         self.emit(
             "INFO",
-            (
-                f"page={page_url} status={status_text} "
-                f"saved_partial={saved_partial}"
-            ),
-            indent_level=2,
+            f"page={page_url} status={status_text} "
+            f"saved_partial={saved_partial}",
+            2,
         )
 
     def response_cap_reached(self, saved_partial: int) -> None:
+        if self._compact_run:
+            self._flush_compact_pages()
+            self.emit(
+                "WARN DETAIL",
+                warn_detail_response_cap(saved_partial),
+                2,
+            )
+            self._response_cap_hit = True
+            return
         label = self._current_label or "unknown"
-        self.emit("WARN", f"{label} response_cap_reached", indent_level=1)
-        self.emit(
-            "INFO",
-            f"saved_partial={saved_partial}",
-            indent_level=2,
-        )
+        self.emit("WARN", f"{label} response_cap_reached", 1)
+        self.emit("INFO", f"saved_partial={saved_partial}", 2)
 
     def finish_target(
         self,
@@ -290,20 +510,47 @@ class HostCronReporter:
         label: str,
         total_collected: int,
         ref: str,
+        *,
         reason: str | None = None,
+        stored_new: int | None = None,
+        saved_after: int | str | None = None,
+        observed_after: int | str | None = None,
+        pages_ok: int | None = None,
+        elapsed_s: int | None = None,
     ) -> None:
-        tag = {
-            "success": "OK",
-            "partial": "WARN",
-            "fail": "ERROR",
-        }[status]
-        self.emit(
-            tag,
-            f"{label} {status} total_collected={total_collected}",
-            indent_level=1,
-        )
-        if reason:
-            self.emit("INFO", reason, indent_level=2)
+        had_step = self._compact_step_started
+        if self._compact_run and had_step:
+            self._flush_compact_pages()
+            self._emit_compact_step_end(
+                status=status,
+                label=label,
+                ref=ref,
+                reason=reason,
+                stored_new=stored_new,
+                saved_after=saved_after,
+                observed_after=observed_after,
+                pages_ok=pages_ok,
+                elapsed_s=elapsed_s,
+            )
+        if self._compact_run:
+            self._record_compact_digest(
+                had_step=had_step,
+                status=status,
+                label=label,
+                ref=ref,
+                reason=reason,
+                stored_new=stored_new,
+                observed_after=observed_after,
+            )
+        if not self._compact_run:
+            tag = {"success": "OK", "partial": "WARN", "fail": "ERROR"}[status]
+            self.emit(
+                tag,
+                f"{label} {status} total_collected={total_collected}",
+                1,
+            )
+            if reason:
+                self.emit("INFO", reason, 2)
 
         if status == "success":
             self._ok_targets += 1
@@ -316,15 +563,206 @@ class HostCronReporter:
 
         self._current_label = None
         self._current_page_count = 0
+        self._compact_step_started = False
+        self._page_tokens.clear()
+
+    def _emit_compact_step_end(
+        self,
+        *,
+        status: str,
+        label: str,
+        ref: str,
+        reason: str | None,
+        stored_new: int | None,
+        saved_after: int | str | None,
+        observed_after: int | str | None,
+        pages_ok: int | None,
+        elapsed_s: int | None,
+    ) -> None:
+        result_word = {
+            "success": "success",
+            "partial": "partial",
+            "fail": "fail",
+        }[status]
+        end_tag = {
+            "success": "STEP END OK 🟢",
+            "partial": "STEP END WARN 🟡",
+            "fail": "STEP END FAIL 🔴",
+        }[status]
+        sto = stored_new if stored_new is not None else 0
+        sa = observe_val(saved_after if saved_after is not None else None)
+        oa = observe_val(observed_after)
+        pg = pages_ok if pages_ok is not None else self._pages_ok_step
+        el = elapsed_s if elapsed_s is not None else 0
+        rsn = self._reason_token(reason, status)
+        aid = observe_val(self._step_article_id or ref)
+        body = (
+            f"ts={utc_ts_z()} step={self._step_index}/{self._step_total} "
+            f"article_id={aid} title=\"{title_for_log(label)}\" "
+            f"result={result_word} stored_new={sto} saved_after={sa} "
+            f"observed_after={oa} pages_ok={pg} elapsed={el}s reason={rsn}"
+        )
+        if self._interrupt_http is not None:
+            body += f" status={self._interrupt_http}"
+        self.emit(end_tag, body, 1)
+
+    def _reason_token(self, reason: str | None, status: str) -> str:
+        if self._response_cap_hit:
+            return digest_reason_token(
+                reason,
+                response_cap_hint=True,
+                status_fallback=status,
+            )
+        return digest_reason_token(
+            reason,
+            response_cap_hint=False,
+            status_fallback=status,
+        )
+
+    def _record_compact_digest(
+        self,
+        *,
+        had_step: bool,
+        status: str,
+        label: str,
+        ref: str,
+        reason: str | None,
+        stored_new: int | None,
+        observed_after: int | str | None,
+    ) -> None:
+        prog = (
+            f"{self._step_index}/{self._step_total}" if had_step else "?/?"
+        )
+        ttl = title_for_log(label or "?")
+        aid = observe_val(self._step_article_id or ref)
+        sn = stored_new if stored_new is not None else 0
+        o_lit = observe_val(observed_after)
+        skip = (
+            status == "fail"
+            and HostCronReporter._looks_like_skip(reason)
+        )
+        if skip:
+            self._compact_skip_display_total += 1
+            self._digest_skip_msgs.append(
+                f'progress={prog} article_id={aid} title="{ttl}" '
+                f"detail={self._reason_token(reason, status)}"
+            )
+            return
+        if observe_val(observed_after) == "unknown" and status in (
+            "fail",
+            "partial",
+        ):
+            self._unknown_obs_targets += 1
+        if status == "fail" and not had_step:
+            self._compact_plain_fail_total += 1
+            self._digest_fail_msgs.append(
+                f'article_id={aid} title="{ttl}" '
+                f"detail={self._reason_token(reason, status)} "
+                f"observed_after={o_lit}"
+            )
+            return
+        if status == "fail":
+            self._compact_plain_fail_total += 1
+            self._digest_fail_msgs.append(
+                f'progress={prog} article_id={aid} title="{ttl}" '
+                f"detail={self._reason_token(reason, status)} "
+                f"observed_after={o_lit}"
+            )
+            return
+        if status == "partial":
+            self._digest_warn_msgs.append(
+                f'progress={prog} article_id={aid} title="{ttl}" '
+                f"reason={self._reason_token(reason, status)} "
+                f"stored_partial={sn} observed_after={o_lit} "
+                f"http={observe_val(self._interrupt_http)}"
+            )
+            self._total_new_responses += max(sn, 0)
+            return
+        if sn > 0:
+            self._digest_hit_msgs.append(
+                f'progress={prog} article_id={aid} title="{ttl}" '
+                f"stored_new={sn} observed_after={o_lit}"
+            )
+            self._total_new_responses += max(sn, 0)
+        else:
+            self._digest_ok0 += 1
 
     def _append_error_ref(self, ref: str) -> None:
         if ref not in self._error_refs:
             self._error_refs.append(ref)
 
+    def _emit_compact_run_end(self, final_status: str) -> None:
+        ended_local = self._now_provider()
+        started_local = self._started_at or ended_local
+        duration_seconds = int(
+            max((ended_local - started_local).total_seconds(), 0),
+        )
+        logged = self.derive_run_status(final_status)
+        tag = {
+            "success": "RUN END OK 🟢",
+            "partial_failure": "RUN END WARN 🟡",
+            "failure": "RUN END FAIL 🔴",
+        }.get(logged, "RUN END WARN 🟡")
+        totals = self._batch_totals or {}
+        processed = totals.get(
+            "processed",
+            (
+                self._ok_targets + self._partial_targets
+                + self._hard_fail_targets
+            ),
+        )
+        remaining = totals.get("remaining", 0)
+        total_t = totals.get("total", self._total_targets)
+        ok_plain = self._ok_targets
+        warn_plain = self._partial_targets
+        fails = self._compact_plain_fail_total
+        skips = self._compact_skip_display_total
+        body = (
+            f"ts={utc_ts_z(ended_local.astimezone(timezone.utc))} "
+            f"run_id={self._compact_run_stamp} status={logged} "
+            f"duration={duration_seconds}s processed={processed} "
+            f"total={total_t} ok={ok_plain} warn={warn_plain} fail={fails} "
+            f"skip={skips} remaining={remaining}"
+        )
+        self.emit(tag, body, 0)
+
+    def _emit_compact_run_digest(self) -> None:
+        meta = (
+            f"hit_targets={len(self._digest_hit_msgs)} "
+            f"ok0_targets={self._digest_ok0} "
+            f"warn_targets={len(self._digest_warn_msgs)} "
+            f"fail_targets={len(self._digest_fail_msgs)} "
+            f"skip_targets={len(self._digest_skip_msgs)} "
+            f"total_new_responses={self._total_new_responses} "
+            "observed_max_unknown_targets="
+            f"{self._unknown_obs_targets}"
+        )
+        self.emit("RUN DIGEST", meta, 0)
+        for m in self._digest_hit_msgs:
+            self.emit("HIT", m, 1)
+        for m in self._digest_warn_msgs:
+            self.emit("WARN", m, 1)
+        for m in self._digest_fail_msgs:
+            self.emit("FAIL", m, 1)
+        for m in self._digest_skip_msgs:
+            self.emit("SKIP", m, 1)
+        self.emit(
+            "OK0",
+            f"others={self._digest_ok0}",
+            1,
+        )
+
     def finish_run(self, final_status: str) -> None:
+        if self._compact_run:
+            self._emit_compact_run_end(final_status)
+            self._emit_compact_run_digest()
+            return
+
         ended_at = self._now_provider()
-        started_at = self._started_at or ended_at
-        duration_seconds = int(max((ended_at - started_at).total_seconds(), 0))
+        started_at_m = self._started_at or ended_at
+        duration_seconds = int(
+            max((ended_at - started_at_m).total_seconds(), 0),
+        )
         logged_status = self.derive_run_status(final_status)
         failed_targets = self._hard_fail_targets + self._partial_targets
 
