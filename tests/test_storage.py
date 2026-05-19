@@ -104,6 +104,56 @@ def test_save_to_db_inserts_article_and_responses_and_mapping(tmp_path, monkeypa
         conn.close()
 
 
+def test_save_to_db_followup_with_empty_preserves_prior_responses(
+    tmp_path, monkeypatch,
+):
+    """Zero-response scrape pass must not delete existing archive responses."""
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    try:
+        article_id = "12345"
+        article_type = "a"
+        url = "https://dic.nicovideo.jp/a/12345"
+        responses = [
+            {
+                "res_no": 1,
+                "id_hash": "a",
+                "poster_name": "P1",
+                "posted_at": "2025-01-01 00:00",
+                "content": "C1",
+                "content_html": "<p>c1</p>",
+            },
+        ]
+        save_to_db(conn, article_id, article_type, "T", url, responses)
+        save_to_db(
+            conn,
+            article_id,
+            article_type,
+            "T",
+            url,
+            [],
+            latest_scraped_at="2099-12-31T00:00:00+00:00",
+        )
+
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM responses "
+            "WHERE article_id=? AND article_type=?",
+            (article_id, article_type),
+        )
+        assert cur.fetchone()[0] == 1
+
+        cur.execute(
+            "SELECT latest_scraped_at FROM articles "
+            "WHERE article_id=? AND article_type=?",
+            (article_id, article_type),
+        )
+        assert cur.fetchone()[0] == "2099-12-31T00:00:00+00:00"
+    finally:
+        conn.close()
+
+
 def test_save_to_db_insert_or_ignore_prevents_duplicate_growth(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 

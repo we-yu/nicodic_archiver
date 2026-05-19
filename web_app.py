@@ -1101,8 +1101,16 @@ def _registered_sort_header_cell(
     )
 
 
+def _registered_has_completed_scrape_check(row: dict) -> bool:
+    """Recorded responses exist and/or last-scrape timestamp is stored."""
+    if (row.get("saved_response_count") or 0) > 0:
+        return True
+    last_ts = row.get("last_scraped_at") or ""
+    return bool(last_ts.strip())
+
+
 def _registered_row_html(row: dict) -> str:
-    unscrapped = (row.get("saved_response_count") or 0) == 0
+    unscrapped = not _registered_has_completed_scrape_check(row)
     cls = ' class="not-scraped"' if unscrapped else ""
     cells = []
     for col in REGISTERED_ARTICLE_COLUMNS:

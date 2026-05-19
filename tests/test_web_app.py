@@ -1265,6 +1265,25 @@ def test_registered_page_highlights_not_scraped_rows():
     assert "not-scraped" in response["body"]
 
 
+def test_registered_page_checked_zero_responses_skips_highlight_class():
+    row = _make_reg_row(
+        title="スクレイプ済みゼロレス",
+        saved_response_count=0,
+        latest_scraped_max_res_no=0,
+        last_scraped_at="2026-06-06T06:06:06+00:00",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([row]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert '<tr class="not-scraped">' not in response["body"]
+    assert "2026-06-06 15:06 JST" in response["body"]
+    assert ">0<" in response["body"]
+
+
 def test_registered_page_uses_middle_vertical_alignment_for_cells():
     with patch(
         "web_app.query_registered_articles",
