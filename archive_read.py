@@ -736,7 +736,17 @@ def _registered_fallback_title(article_id, canonical_url):
     return ""
 
 
-def _registered_order_by_clause(sort_by, order_dir):
+def _registered_max_res_no_display_sql() -> str:
+    """SQL: numeric max saved res_no, or 0 when a scrape completed with zero."""
+    return (
+        "CASE WHEN rt.matched_last_scraped_at IS NOT NULL "
+        "AND COALESCE(rs.saved_response_count, 0) = 0 "
+        "THEN 0 "
+        "ELSE rs.latest_scraped_max_res_no END"
+    )
+
+
+def _registered_order_by_clause(sort_by, order_dir, *, max_res_sql: str):
     """Return a typed ORDER BY clause for a validated sort key."""
     numeric_article_id = (
         "rt.target_article_id != '' "
@@ -771,10 +781,10 @@ def _registered_order_by_clause(sort_by, order_dir):
         ],
         "latest_scraped_max_res_no": [
             (
-                "CASE WHEN rs.latest_scraped_max_res_no IS NULL "
+                f"CASE WHEN {max_res_sql} IS NULL "
                 "THEN 1 ELSE 0 END ASC"
             ),
-            f"rs.latest_scraped_max_res_no {order_dir}",
+            f"{max_res_sql} {order_dir}",
         ],
         "last_scraped_at": [
             "CASE WHEN rt.matched_last_scraped_at IS NULL THEN 1 ELSE 0 END ASC",
@@ -902,7 +912,10 @@ def query_registered_articles(
             )
         else:
             matched_title_sql = "COALESCE(a_exact.title, a_url.title)"
-        order_by_sql = _registered_order_by_clause(sort_by, order_dir)
+        max_res_sql = _registered_max_res_no_display_sql()
+        order_by_sql = _registered_order_by_clause(
+            sort_by, order_dir, max_res_sql=max_res_sql,
+        )
         base_cte_sql = f"""
             WITH resolved_targets AS (
                 SELECT
@@ -962,7 +975,7 @@ def query_registered_articles(
                 rt.target_canonical_url,
                 rt.target_created_at,
                 COALESCE(rs.saved_response_count, 0) AS saved_response_count,
-                rs.latest_scraped_max_res_no,
+                ({max_res_sql}) AS latest_scraped_max_res_no,
                 rt.matched_last_scraped_at AS last_scraped_at
             FROM resolved_targets AS rt
             LEFT JOIN (

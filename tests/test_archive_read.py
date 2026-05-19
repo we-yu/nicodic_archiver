@@ -142,6 +142,44 @@ def _seed_pending_target(
         conn.close()
 
 
+def _seed_checked_zero_board(
+    tmp_path,
+    monkeypatch,
+    *,
+    article_id="7711002",
+    latest_scraped_at="2026-06-07T08:09:10+00:00",
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            article_id,
+            "a",
+            f"https://dic.nicovideo.jp/a/{article_id}",
+            title="Checked Zero Posts",
+        )
+        conn.execute(
+            """
+            UPDATE target
+            SET created_at=?
+            WHERE article_id=? AND article_type=?
+            """,
+            ("2026-05-01T01:02:03+00:00", article_id, "a"),
+        )
+        save_to_db(
+            conn,
+            article_id,
+            "a",
+            "Checked Zero Posts",
+            f"https://dic.nicovideo.jp/a/{article_id}",
+            [],
+            latest_scraped_at=latest_scraped_at,
+        )
+    finally:
+        conn.close()
+
+
 def _seed_registered_sort_case(
     tmp_path,
     monkeypatch,
@@ -687,6 +725,77 @@ def test_query_registered_articles_includes_active_pending_targets(
     assert result["rows"][0]["saved_response_count"] == 0
     assert result["rows"][0]["latest_scraped_max_res_no"] is None
     assert result["rows"][0]["last_scraped_at"] is None
+
+
+def test_query_registered_completed_zero_board_shows_checked_state(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_checked_zero_board(tmp_path, monkeypatch)
+
+    result = query_registered_articles(search="7711002", paginate=False)
+
+    assert len(result["rows"]) == 1
+    row = result["rows"][0]
+    assert row["saved_response_count"] == 0
+    assert row["latest_scraped_max_res_no"] == 0
+    assert row["last_scraped_at"] == "2026-06-07T08:09:10+00:00"
+
+
+def test_query_registered_followup_empty_scrape_keeps_prior_responses(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    aid = "3322110"
+    url = f"https://dic.nicovideo.jp/a/{aid}"
+    conn = init_db()
+    try:
+        register_target(conn, aid, "a", url)
+        responses = [
+            {
+                "res_no": 1,
+                "id_hash": "h1",
+                "poster_name": "A",
+                "posted_at": "2025-01-01",
+                "content": "c1",
+                "content_html": "<p>c1</p>",
+            },
+            {
+                "res_no": 2,
+                "id_hash": "h2",
+                "poster_name": "B",
+                "posted_at": "2025-01-02",
+                "content": "c2",
+                "content_html": "<p>c2</p>",
+            },
+        ]
+        save_to_db(
+            conn,
+            aid,
+            "a",
+            "Kept Rows",
+            url,
+            responses,
+            latest_scraped_at="2026-01-01T01:01:01+00:00",
+        )
+        save_to_db(
+            conn,
+            aid,
+            "a",
+            "Kept Rows",
+            url,
+            [],
+            latest_scraped_at="2026-06-06T06:06:06+00:00",
+        )
+    finally:
+        conn.close()
+
+    result = query_registered_articles(search=aid, paginate=False)
+    row = result["rows"][0]
+    assert row["saved_response_count"] == 2
+    assert row["latest_scraped_max_res_no"] == 2
+    assert row["last_scraped_at"] == "2026-06-06T06:06:06+00:00"
 
 
 def test_query_registered_articles_search_finds_pending_target_by_article_id(

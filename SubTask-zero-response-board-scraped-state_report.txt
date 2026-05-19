@@ -1,0 +1,79 @@
+SubTask-zero-response-board-scraped-state — report
+
+Summary
+-------
+Registered Articles read-side now treats “scrape/check completed but zero saved
+responses” as distinct from “never scraped”. Rows use `articles.latest_scraped_at`
+(joined as `last_scraped_at`) plus a synthetic Max Res No of `0` when that
+timestamp is present and saved response count is `0`. The Web UI highlights
+pending rows using the same scrape-completion signal (`last_scraped_at` non-empty
+or `saved_response_count` > 0), not saved count alone.
+
+Files changed
+-------------
+- archive_read.py — shared SQL expression for displayed/sorted Max Res No; ORDER BY
+  uses the same expression for `latest_scraped_max_res_no` sorts.
+- web_app.py — `_registered_has_completed_scrape_check` replaces the prior
+  `saved_response_count == 0`-only `<tr class="not-scraped">` rule.
+- tests/test_archive_read.py — `_seed_checked_zero_board`; integration tests for
+  zero-response checked targets and follow-up empty save keeping prior counts.
+- tests/test_storage.py — `save_to_db` follow-up with `[]` does not shrink
+  responses.
+- tests/test_web_app.py — registered table row omit `not-scraped` TR when scraped
+  with zero responses.
+
+Tests added or updated
+----------------------
+- tests/test_archive_read.py:
+  - `test_query_registered_completed_zero_board_shows_checked_state`
+  - `test_query_registered_followup_empty_scrape_keeps_prior_responses`
+- tests/test_storage.py:
+  - `test_save_to_db_followup_with_empty_preserves_prior_responses`
+- tests/test_web_app.py:
+  - `test_registered_page_checked_zero_responses_skips_highlight_class`
+
+Design decision: representing zero-response scraped state
+---------------------------------------------------------
+- **Completion signal**: `articles.latest_scraped_at` (already set by `save_to_db`
+  on orchestrator scrape completion, including empty `responses` lists).
+- **Max Res No**: In `query_registered_articles`, projected column is `0` iff
+  `matched_last_scraped_at IS NOT NULL` AND `saved_response_count = 0`; else the
+  real `MAX(res_no)` aggregate (possibly NULL only when nothing was ever checked
+  according to timestamp rule).
+- **UI highlight**: Pending highlight only when there is neither saved responses
+  nor a non-empty `last_scraped_at` — backward compatible before
+  `latest_scraped_at` existed saved rows still classify as scraped via count.
+
+Confirmation: archive responses untouched
+-----------------------------------------
+Task did not alter `responses` semantics. `save_to_db` keeps `INSERT OR IGNORE`
+loops (empty follow-up inserts nothing); new tests prove response rows survive a
+later empty save and list queries still expose non-zero counts and max.
+
+Validation attempted or not attempted
+-------------------------------------
+Attempted and passed:
+
+  docker compose run --rm --entrypoint "" scraper pytest \\
+    tests/test_archive_read.py tests/test_web_app.py tests/test_storage.py -q
+
+(126 tests in that subset.)
+
+Known limitations
+-----------------
+- If `articles.latest_scraped_at` column is absent (unlikely after any
+  `storage.init_db` migration) or nothing ever persists that field, behaviour
+  remains “pending until first response”; this task does not widen metadata
+  beyond existing columns.
+- Distinguishes completion via scrape persistence already in product; orchestrator
+  was not reworked beyond relying on unchanged `save_to_db` empties-path.
+
+Explicit non-goals preserved
+----------------------------
+No response deletion/fakes, scrape_id, broad migrations, crawler/orchestrator
+redesign beyond read/UI surfacing of existing scrape timestamps, unrelated web
+Chrome, runtime/docker/root edits.
+
+Editor AI model / tool information
+----------------------------------
+Composer (Cursor agent); pytest via Docker Compose as logged above.
