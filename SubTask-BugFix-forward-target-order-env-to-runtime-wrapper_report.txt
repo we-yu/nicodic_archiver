@@ -1,0 +1,42 @@
+summary
+- Fixed runtime wrapper env plumbing so host inline target-order settings reach the container periodic-once process.
+- Preserved `.env.runtime.local` as the normal default source while allowing single-invocation host env override.
+
+files touched
+- tools/runtime_env.sh
+- runtime/periodic_once.sh
+- tests/test_runtime_local_ops.py
+- docs/PERSONAL_RUNTIME.md
+
+root cause
+- `runtime_local_load` sourced `.env.runtime.local` directly and overwrote already-exported host variables.
+- `runtime/periodic_once.sh` forwarded `HOST_CRON_LOG_PATH`, `SOFT_TERMINATE_FILE`, and `ONESHOT_LIMIT_DURATION_SECONDS`, but not `TARGET_ORDER_MODE` or `TARGET_ORDER_START_ARTICLE_ID`.
+
+behavior after fix
+- `TARGET_ORDER_MODE=reverse ./runtime/periodic_once.sh` now reaches the container process as `TARGET_ORDER_MODE=reverse`.
+- `TARGET_ORDER_START_ARTICLE_ID=5400838 ./runtime/periodic_once.sh` now reaches the container process as `TARGET_ORDER_START_ARTICLE_ID=5400838`.
+- `.env.runtime.local` still provides runtime defaults when host inline env is absent.
+- Host inline env now overrides `.env.runtime.local` for one invocation.
+- Existing `ONESHOT_LIMIT_DURATION_SECONDS`, `SOFT_TERMINATE_FILE`, lock handling, and host cron log flow remain in place.
+
+validation attempted
+- Focused runtime wrapper checks:
+	- `docker compose run --rm --entrypoint "" scraper pytest -q tests/test_runtime_local_ops.py`
+	- result: `7 passed in 0.04s`
+	- `bash -n tools/runtime_env.sh runtime/periodic_once.sh`
+	- result: no output
+- Existing repo validation workflow:
+	- `docker compose run --rm --entrypoint "" scraper pytest -q`
+	- result: `439 passed in 11.41s`
+	- `docker compose run --rm --entrypoint "" scraper flake8 .`
+	- result: no output
+- `validate_helix.sh` is not present in this child product repository, so no PASS claim was made against that script.
+
+known limitations
+- This task does not change crontab or scheduling policy.
+- This task does not verify live host-to-container forwarding against an already-running runtime service outside the existing test workflow.
+
+editor AI model/tool info if available
+- Agent: GitHub Copilot
+- Model: GPT-5.4
+- Tools used: workspace file reads/search, apply_patch, terminal validation

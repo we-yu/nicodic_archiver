@@ -34,6 +34,8 @@ echo "[periodic-once] bash tools/runtime_up.sh"
 
 docker compose -f "$COMPOSE_FILE_PATH" exec -T "$COMPOSE_SERVICE_NAME" \
   env HOST_CRON_LOG_PATH="$HOST_CRON_LOG_PATH" \
+  TARGET_ORDER_MODE="${TARGET_ORDER_MODE:-}" \
+  TARGET_ORDER_START_ARTICLE_ID="${TARGET_ORDER_START_ARTICLE_ID:-}" \
   SOFT_TERMINATE_FILE="${SOFT_TERMINATE_FILE:-runtime/control/stop_after_current}" \
   ONESHOT_LIMIT_DURATION_SECONDS="${ONESHOT_LIMIT_DURATION_SECONDS:-}" \
   python main.py periodic-once "$TARGET_DB_PATH"

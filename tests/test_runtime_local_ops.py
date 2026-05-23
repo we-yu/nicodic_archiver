@@ -39,6 +39,33 @@ def test_periodic_wrapper_loads_shared_runtime_env_helper():
     assert "runtime_local_validate" in text
 
 
+def test_runtime_env_helper_preserves_host_inline_target_order_overrides():
+    text = Path("tools/runtime_env.sh").read_text(encoding="utf-8")
+
+    assert "TARGET_ORDER_MODE" in text
+    assert "TARGET_ORDER_START_ARTICLE_ID" in text
+    assert "preserved_assignments" in text
+
+
+def test_periodic_wrapper_forwards_target_order_env_into_container_exec():
+    text = Path("runtime/periodic_once.sh").read_text(encoding="utf-8")
+
+    assert 'TARGET_ORDER_MODE="${TARGET_ORDER_MODE:-}"' in text
+    assert (
+        'TARGET_ORDER_START_ARTICLE_ID="${TARGET_ORDER_START_ARTICLE_ID:-}"'
+        in text
+    )
+    assert (
+        'ONESHOT_LIMIT_DURATION_SECONDS='
+        '"${ONESHOT_LIMIT_DURATION_SECONDS:-}"' in text
+    )
+    assert (
+        'SOFT_TERMINATE_FILE='
+        '"${SOFT_TERMINATE_FILE:-runtime/control/stop_after_current}"'
+        in text
+    )
+
+
 def test_personal_runtime_doc_mentions_local_env_and_wrapper():
     text = Path("docs/PERSONAL_RUNTIME.md").read_text(encoding="utf-8")
 

@@ -6,12 +6,35 @@ runtime_local_env_file() {
 
 runtime_local_load() {
   local env_file
+  local var_name
+  local -a preserved_assignments=()
   env_file=$(runtime_local_env_file)
 
   if [[ -f "$env_file" ]]; then
+    for var_name in \
+      WEB_BIND_HOST \
+      WEB_PORT \
+      LOCAL_UID \
+      LOCAL_GID \
+      SCRAPE_PAGE_DELAY_SECONDS \
+      BBS_RESPONSES_PER_PAGE \
+      TARGET_ORDER_MODE \
+      TARGET_ORDER_START_ARTICLE_ID \
+      SOFT_TERMINATE_FILE \
+      ONESHOT_LIMIT_DURATION_SECONDS; do
+      if [[ -n "${!var_name+x}" ]]; then
+        preserved_assignments+=("$var_name=${!var_name}")
+      fi
+    done
+
     set -a
     . "$env_file"
     set +a
+
+    for var_name in "${preserved_assignments[@]}"; do
+      export "$var_name"
+    done
+
     echo "[runtime-env] Loaded $env_file"
   else
     echo "[runtime-env] Local runtime env not found: $env_file"
