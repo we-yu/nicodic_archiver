@@ -1,36 +1,47 @@
 summary
 - Fixed runtime wrapper env plumbing so host inline target-order settings reach the container periodic-once process.
 - Preserved `.env.runtime.local` as the normal default source while allowing single-invocation host env override.
+- Fixed empty `TARGET_ORDER_START_ARTICLE_ID` normalization so blank env values no longer force `invalid_start_article_id` fallback.
 
 files touched
 - tools/runtime_env.sh
 - runtime/periodic_once.sh
+- target_ordering.py
+- tests/test_target_ordering.py
 - tests/test_runtime_local_ops.py
 - docs/PERSONAL_RUNTIME.md
 
 root cause
 - `runtime_local_load` sourced `.env.runtime.local` directly and overwrote already-exported host variables.
 - `runtime/periodic_once.sh` forwarded `HOST_CRON_LOG_PATH`, `SOFT_TERMINATE_FILE`, and `ONESHOT_LIMIT_DURATION_SECONDS`, but not `TARGET_ORDER_MODE` or `TARGET_ORDER_START_ARTICLE_ID`.
+- Runtime smoke then showed one remaining issue: an empty forwarded `TARGET_ORDER_START_ARTICLE_ID` was treated as an explicit invalid override instead of as “no start override”.
 
 behavior after fix
 - `TARGET_ORDER_MODE=reverse ./runtime/periodic_once.sh` now reaches the container process as `TARGET_ORDER_MODE=reverse`.
 - `TARGET_ORDER_START_ARTICLE_ID=5400838 ./runtime/periodic_once.sh` now reaches the container process as `TARGET_ORDER_START_ARTICLE_ID=5400838`.
+- Empty or whitespace-only `TARGET_ORDER_START_ARTICLE_ID` is now normalized to no override at the target-order config boundary.
+- `TARGET_ORDER_MODE=reverse` or `TARGET_ORDER_MODE=random_rotation` now stays effective when start article id is empty or unset.
 - `.env.runtime.local` still provides runtime defaults when host inline env is absent.
 - Host inline env now overrides `.env.runtime.local` for one invocation.
 - Existing `ONESHOT_LIMIT_DURATION_SECONDS`, `SOFT_TERMINATE_FILE`, lock handling, and host cron log flow remain in place.
 
 validation attempted
 - Focused runtime wrapper checks:
-	- `docker compose run --rm --entrypoint "" scraper pytest -q tests/test_runtime_local_ops.py`
-	- result: `7 passed in 0.04s`
+	- `docker compose run --rm --entrypoint "" scraper pytest -q tests/test_target_ordering.py tests/test_runtime_local_ops.py`
+	- result: `22 passed in 0.05s`
 	- `bash -n tools/runtime_env.sh runtime/periodic_once.sh`
 	- result: no output
 - Existing repo validation workflow:
 	- `docker compose run --rm --entrypoint "" scraper pytest -q`
-	- result: `439 passed in 11.41s`
+	- result: `442 passed in 11.62s`
 	- `docker compose run --rm --entrypoint "" scraper flake8 .`
 	- result: no output
 - `validate_helix.sh` is not present in this child product repository, so no PASS claim was made against that script.
+
+tests added or updated
+- Added focused target-order tests proving empty env `TARGET_ORDER_START_ARTICLE_ID` is treated as absent.
+- Covered `TARGET_ORDER_MODE=reverse` plus empty start id and `TARGET_ORDER_MODE=random_rotation` plus empty start id.
+- Preserved the existing non-empty invalid-id fallback test and valid-id success coverage.
 
 known limitations
 - This task does not change crontab or scheduling policy.
