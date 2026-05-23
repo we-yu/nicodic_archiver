@@ -60,6 +60,8 @@ Expected keys:
 - `LOCAL_GID`
 - `SCRAPE_PAGE_DELAY_SECONDS`
 - `BBS_RESPONSES_PER_PAGE`
+- `TARGET_ORDER_MODE`
+- `TARGET_ORDER_START_ARTICLE_ID`
 - `SOFT_TERMINATE_FILE`
 - `ONESHOT_LIMIT_DURATION_SECONDS`
 
@@ -79,6 +81,25 @@ scrape pagination. If it is unset or invalid, the application falls back to
 `BBS_RESPONSES_PER_PAGE` controls the BBS page boundary size used for resume
 and later-page progression. If it is unset or invalid, the application falls
 back to `30` responses per page.
+
+`TARGET_ORDER_MODE` controls the batch / periodic target traversal order. The
+supported values are `default`, `reverse`, and `random_rotation`. If it is
+unset, empty, or invalid, the runtime falls back to `default`.
+
+Use `random_rotation` for frequent normal runs so one-shot batches do not keep
+starting from the earliest registered targets.
+
+Use `reverse` for occasional newer-target-first runs when you want recently
+registered or Delete Feeder-appended targets to be reached sooner.
+
+`TARGET_ORDER_START_ARTICLE_ID` is an optional debug override. When it matches
+an active loaded target, the run rotates the current target list so that
+article starts first. If it is empty, invalid, or not found in the active
+target list, the runtime falls back to the default order and emits a compact
+warning line near run start.
+
+Use `--target-order-start-article-id` for focused verification around a known
+numeric article ID without editing the env file.
 
 `SOFT_TERMINATE_FILE` controls the file-based stop-after-current flag path.
 If it is unset or empty, the runtime uses
@@ -292,8 +313,33 @@ Useful environment overrides for external schedulers:
 - `COMPOSE_SERVICE_NAME` defaults to `personal_runtime`
 - `LOCK_DIR_PATH` defaults to `runtime/logs/periodic_once.lock`
 - `RUNTIME_LOCAL_ENV_FILE` defaults to `.env.runtime.local`
+- `TARGET_ORDER_MODE` defaults to `default`
+- `TARGET_ORDER_START_ARTICLE_ID` is disabled unless set
 - `SOFT_TERMINATE_FILE` defaults to `runtime/control/stop_after_current`
 - `ONESHOT_LIMIT_DURATION_SECONDS` is disabled unless set to a positive value
+
+Example target-order settings for `.env.runtime.local`:
+
+```sh
+TARGET_ORDER_MODE=default
+# TARGET_ORDER_MODE=random_rotation
+# TARGET_ORDER_MODE=reverse
+# TARGET_ORDER_START_ARTICLE_ID=
+```
+
+CLI options override those env defaults for one invocation. Examples:
+
+```sh
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py batch /app/data/nicodic.db --target-order-mode random_rotation
+
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py batch /app/data/nicodic.db --target-order-mode reverse
+
+docker compose -f docker-compose.runtime.yml exec personal_runtime \
+	python main.py periodic-once /app/data/nicodic.db \
+		--target-order-start-article-id 5400838
+```
 
 Example scheduler-facing invocation shape:
 

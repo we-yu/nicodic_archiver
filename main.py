@@ -40,10 +40,15 @@ from storage import (
     format_run_telemetry_csv_wide,
     init_db,
 )
+from target_ordering import TargetOrderConfig
+from target_ordering import format_target_order_log_line
+from target_ordering import order_targets_for_run
+from target_ordering import resolve_target_order_config
 from target_list import (
     handoff_redirected_target,
     import_targets_from_text_file,
     list_active_target_urls,
+    list_registered_targets,
     parse_target_identity,
     register_target_url,
 )
@@ -408,9 +413,103 @@ def _emit_delete_request_feed_summary(progress_reporter, summary: dict) -> None:
     )
 
 
+def _emit_target_order_summary(progress_reporter, log_path: Path, line: str) -> None:
+    if progress_reporter is None:
+        print(line)
+    elif hasattr(progress_reporter, "emit"):
+        progress_reporter.emit("INFO", line, indent_level=1)
+
+    _append_batch_log_lines(log_path, [line])
+
+
+def _load_active_targets_for_ordering(
+    target_db_path: str,
+) -> tuple[list[str], dict[str, str]]:
+    existing_target_entries = list_registered_targets(
+        target_db_path,
+        active_only=True,
+    )
+    if existing_target_entries:
+        return (
+            [entry["canonical_url"] for entry in existing_target_entries],
+            {
+                entry["canonical_url"]: entry["article_id"]
+                for entry in existing_target_entries
+            },
+        )
+
+    return list_active_target_urls(target_db_path), {}
+
+
+def _read_target_order_config(args: list[str]) -> TargetOrderConfig | None:
+    if not args:
+        return None
+
+    mode = None
+    start_article_id = None
+    index = 0
+
+    while index < len(args):
+        token = args[index]
+        if token == "--target-order-mode":
+            if index + 1 >= len(args):
+                raise ValueError("Missing value for --target-order-mode")
+            mode = args[index + 1]
+            index += 2
+            continue
+        if token == "--target-order-start-article-id":
+            if index + 1 >= len(args):
+                raise ValueError(
+                    "Missing value for --target-order-start-article-id"
+                )
+            start_article_id = args[index + 1]
+            index += 2
+            continue
+        raise ValueError(f"Unknown argument: {token}")
+
+    return resolve_target_order_config(
+        cli_mode=mode,
+        cli_start_article_id=start_article_id,
+        environ=os.environ,
+    )
+
+
+def _read_periodic_cli_options(
+    args: list[str],
+) -> tuple[int | None, TargetOrderConfig | None]:
+    max_runs = None
+    target_order_args: list[str] = []
+    index = 0
+
+    while index < len(args):
+        token = args[index]
+        if token == "--max-runs":
+            if index + 1 >= len(args):
+                raise ValueError("Missing value for --max-runs")
+            max_runs = int(args[index + 1])
+            index += 2
+            continue
+
+        target_order_args.append(token)
+        if token in {
+            "--target-order-mode",
+            "--target-order-start-article-id",
+        }:
+            if index + 1 >= len(args):
+                raise ValueError(f"Missing value for {token}")
+            target_order_args.append(args[index + 1])
+            index += 2
+            continue
+
+        raise ValueError(f"Unknown argument: {token}")
+
+    return max_runs, _read_target_order_config(target_order_args)
+
+
 def run_batch_scrape(
     target_db_path: str,
     progress_reporter=None,
+    target_order_config: TargetOrderConfig | None = None,
 ) -> tuple[str, int]:
     """Run one full batch pass and return (final_status, failed_targets)."""
 
@@ -430,7 +529,9 @@ def run_batch_scrape(
     else:
         batch_digest_tracker = None
 
-    existing_targets = list_active_target_urls(target_db_path)
+    existing_targets, stored_article_ids_by_url = _load_active_targets_for_ordering(
+        target_db_path
+    )
     delete_request_feed_summary = run_delete_request_feeder(
         target_db_path,
         archive_db_path=archive_db_path,
@@ -439,6 +540,17 @@ def run_batch_scrape(
         existing_targets,
         delete_request_feed_summary["queued_target_urls"],
     )
+    target_article_ids = [stored_article_ids_by_url.get(target) for target in targets]
+    effective_target_order_config = (
+        target_order_config or resolve_target_order_config(environ=os.environ)
+    )
+    target_order_decision = order_targets_for_run(
+        targets,
+        config=effective_target_order_config,
+        target_article_ids=target_article_ids,
+    )
+    targets = target_order_decision.ordered_targets
+    target_order_line = format_target_order_log_line(target_order_decision)
 
     bcm_fn = getattr(progress_reporter or None, "begin_compact_host_run", None)
     if callable(bcm_fn):
@@ -469,10 +581,14 @@ def run_batch_scrape(
                 progress_reporter,
                 delete_request_feed_summary,
             )
+        _emit_target_order_summary(progress_reporter, log_path, target_order_line)
         progress_reporter.note_targets_loaded(len(targets), target_db_path)
         nss = getattr(progress_reporter, "note_scrape_start_compact", None)
         if callable(nss):
             nss()
+
+    if progress_reporter is None:
+        _emit_target_order_summary(progress_reporter, log_path, target_order_line)
 
     _append_batch_run_start(
         log_path,
@@ -958,6 +1074,7 @@ def run_batch_scrape(
 def _run_periodic_once_with_host_cron(
     target_db_path: str,
     host_cron_log_path: str,
+    target_order_config: TargetOrderConfig | None = None,
 ) -> None:
     log_path = Path(host_cron_log_path)
     run_now = local_now()
@@ -984,7 +1101,12 @@ def _run_periodic_once_with_host_cron(
     try:
         stream = log_path.open("a", encoding="utf-8")
     except OSError:
-        run_periodic_scrape(target_db_path, 0.0, max_runs=1)
+        run_periodic_scrape(
+            target_db_path,
+            0.0,
+            max_runs=1,
+            target_order_config=target_order_config,
+        )
         return
 
     reporter = HostCronReporter(stream)
@@ -999,6 +1121,7 @@ def _run_periodic_once_with_host_cron(
             final_status, _failed_targets = run_batch_scrape(
                 target_db_path,
                 progress_reporter=reporter,
+                target_order_config=target_order_config,
             )
         except KeyboardInterrupt:
             reporter.note_maintenance_warning("periodic_execution_interrupted")
@@ -1024,6 +1147,7 @@ def run_periodic_scrape(
     target_db_path: str,
     interval_seconds: float,
     max_runs: int | None = None,
+    target_order_config: TargetOrderConfig | None = None,
 ) -> None:
     """Run full batch passes repeatedly with a fixed sleep interval."""
 
@@ -1038,7 +1162,13 @@ def run_periodic_scrape(
         _inside_periodic_batch = True
         try:
             try:
-                final_status, failed_targets = run_batch_scrape(target_db_path)
+                if target_order_config is not None:
+                    final_status, failed_targets = run_batch_scrape(
+                        target_db_path,
+                        target_order_config=target_order_config,
+                    )
+                else:
+                    final_status, failed_targets = run_batch_scrape(target_db_path)
             except KeyboardInterrupt:
                 print("Periodic execution interrupted. Exiting safely.")
                 return
@@ -1062,15 +1192,27 @@ def run_periodic_scrape(
             return
 
 
-def run_periodic_once(target_db_path: str) -> None:
+def run_periodic_once(
+    target_db_path: str,
+    target_order_config: TargetOrderConfig | None = None,
+) -> None:
     """Run one periodic cycle without requiring a sleep interval argument."""
 
     host_cron_log_path = os.environ.get("HOST_CRON_LOG_PATH")
     if host_cron_log_path:
-        _run_periodic_once_with_host_cron(target_db_path, host_cron_log_path)
+        _run_periodic_once_with_host_cron(
+            target_db_path,
+            host_cron_log_path,
+            target_order_config=target_order_config,
+        )
         return
 
-    run_periodic_scrape(target_db_path, 0.0, max_runs=1)
+    run_periodic_scrape(
+        target_db_path,
+        0.0,
+        max_runs=1,
+        target_order_config=target_order_config,
+    )
 
 
 def _read_optional_flag(args, flag_name, default=None):
@@ -1560,8 +1702,16 @@ def main():
         )
         print("  python main.py resolve-article <article_url_or_full_title>")
         print("  python main.py targets <target_db_path>")
-        print("  python main.py batch <target_db_path>")
-        print("  python main.py periodic-once <target_db_path>")
+        print(
+            "  python main.py batch <target_db_path> "
+            "[--target-order-mode MODE] "
+            "[--target-order-start-article-id ARTICLE_ID]"
+        )
+        print(
+            "  python main.py periodic-once <target_db_path> "
+            "[--target-order-mode MODE] "
+            "[--target-order-start-article-id ARTICLE_ID]"
+        )
         print(
             "  python main.py inspect-delete-request-feed "
             "[--archive-db PATH] [--state-path PATH] [--full-scan]"
@@ -1576,7 +1726,8 @@ def main():
         )
         print(
             "  python main.py periodic <target_db_path> <interval_seconds> "
-            "[--max-runs N]"
+            "[--max-runs N] [--target-order-mode MODE] "
+            "[--target-order-start-article-id ARTICLE_ID]"
         )
         print(
             "  python main.py export-run-telemetry-csv "
@@ -1798,10 +1949,25 @@ def main():
     if sys.argv[1] == "batch":
 
         if len(sys.argv) < 3:
-            print("Usage: batch <target_db_path>")
+            print(
+                "Usage: batch <target_db_path> [--target-order-mode MODE] "
+                "[--target-order-start-article-id ARTICLE_ID]"
+            )
             sys.exit(1)
 
-        _, failed_targets = run_batch_scrape(sys.argv[2])
+        try:
+            target_order_config = _read_target_order_config(sys.argv[3:])
+        except ValueError:
+            print(
+                "Usage: batch <target_db_path> [--target-order-mode MODE] "
+                "[--target-order-start-article-id ARTICLE_ID]"
+            )
+            sys.exit(1)
+
+        _, failed_targets = run_batch_scrape(
+            sys.argv[2],
+            target_order_config=target_order_config,
+        )
 
         if failed_targets:
             sys.exit(1)
@@ -1810,10 +1976,24 @@ def main():
     if sys.argv[1] == "periodic-once":
 
         if len(sys.argv) < 3:
-            print("Usage: periodic-once <target_db_path>")
+            print(
+                "Usage: periodic-once <target_db_path> "
+                "[--target-order-mode MODE] "
+                "[--target-order-start-article-id ARTICLE_ID]"
+            )
             sys.exit(1)
 
-        run_periodic_once(sys.argv[2])
+        try:
+            target_order_config = _read_target_order_config(sys.argv[3:])
+        except ValueError:
+            print(
+                "Usage: periodic-once <target_db_path> "
+                "[--target-order-mode MODE] "
+                "[--target-order-start-article-id ARTICLE_ID]"
+            )
+            sys.exit(1)
+
+        run_periodic_once(sys.argv[2], target_order_config=target_order_config)
         return
 
     if sys.argv[1] == "periodic":
@@ -1821,19 +2001,32 @@ def main():
         if len(sys.argv) < 4:
             print(
                 "Usage: periodic <target_db_path> <interval_seconds> "
-                "[--max-runs N]"
+                "[--max-runs N] [--target-order-mode MODE] "
+                "[--target-order-start-article-id ARTICLE_ID]"
             )
             sys.exit(1)
 
         target_db_path = sys.argv[2]
         interval_seconds = float(sys.argv[3])
 
-        max_runs = None
-        if "--max-runs" in sys.argv:
-            idx = sys.argv.index("--max-runs")
-            max_runs = int(sys.argv[idx + 1])
+        try:
+            max_runs, target_order_config = _read_periodic_cli_options(
+                sys.argv[4:]
+            )
+        except ValueError:
+            print(
+                "Usage: periodic <target_db_path> <interval_seconds> "
+                "[--max-runs N] [--target-order-mode MODE] "
+                "[--target-order-start-article-id ARTICLE_ID]"
+            )
+            sys.exit(1)
 
-        run_periodic_scrape(target_db_path, interval_seconds, max_runs=max_runs)
+        run_periodic_scrape(
+            target_db_path,
+            interval_seconds,
+            max_runs=max_runs,
+            target_order_config=target_order_config,
+        )
         return
 
     if sys.argv[1] == "web":

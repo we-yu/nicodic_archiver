@@ -1,0 +1,107 @@
+Summary
+- Added a bounded target-ordering boundary for batch and periodic scraping.
+- Supported default, reverse, random_rotation, and start article override.
+- Invalid or unknown configuration falls back to default order without aborting runs.
+- Added CLI overrides for batch, periodic-once, and periodic while preserving env fallback.
+
+Files touched
+- main.py
+- target_ordering.py
+- .env.runtime.local.example
+- docs/PERSONAL_RUNTIME.md
+- tests/test_main.py
+- tests/test_target_list.py
+- tests/test_runtime_local_ops.py
+- tests/test_target_ordering.py
+
+Implemented modes
+- default: preserves loaded target order.
+- reverse: reverses the loaded target list.
+- random_rotation: picks one start index at run start and rotates once through the list.
+- start article override: rotates the loaded target list so the matching article_id is first.
+
+CLI options added
+- --target-order-mode MODE
+- --target-order-start-article-id ARTICLE_ID
+
+Environment variables
+- TARGET_ORDER_MODE
+- TARGET_ORDER_START_ARTICLE_ID
+
+Ordering/fallback rules
+- CLI options override environment values.
+- Unset, empty, or invalid TARGET_ORDER_MODE falls back to default.
+- TARGET_ORDER_START_ARTICLE_ID takes precedence over reverse and random_rotation.
+- If TARGET_ORDER_START_ARTICLE_ID is empty, invalid, or not found in the active loaded target list, the effective order falls back to default.
+- Start override fallback does not continue into reverse or random_rotation.
+
+Precedence rules
+- CLI option values
+- Environment values
+- Default behavior
+
+Article_id override fix
+- Active target ordering now reads stored article_id values from the target table for already-registered targets.
+- This allows TARGET_ORDER_START_ARTICLE_ID to match numeric article_id even when canonical_url is a slug or encoded /a/<title> URL.
+- The final ordered sequence still passed to run_scrape remains canonical URLs.
+
+Logging behavior
+- Added one compact [TARGET ORDER] line near run start.
+- The line includes requested mode, effective mode, target count, and start_index/start_article_id when applicable.
+- The line also includes CLI/env source fields when available.
+- Fallback cases include fallback mode and reason fields.
+- The line is emitted to stdout or host-cron reporter output and is also appended to the batch log.
+
+Tests added or updated
+- Added unit tests for target_ordering.py covering default, reverse, random_rotation, override precedence, unknown mode fallback, invalid override fallback, empty list safety, and log formatting.
+- Added tests for CLI precedence resolution and stored article_id matching for slug URLs.
+- Updated main batch and periodic tests to verify CLI target-order options are parsed and forwarded.
+- Updated main batch tests to verify reverse ordering is applied and invalid start override falls back to default order with logging.
+- Updated runtime local ops tests to cover the new env example and runtime doc mentions.
+- Added a focused target-list compatibility test proving active default traversal order remains aligned with the legacy URL-only reader.
+
+E501 fix
+- Fixed flake8 E501 only in target_ordering.py, tests/test_main.py, and tests/test_target_ordering.py.
+
+Default-order compatibility confirmation
+- list_active_target_urls() reads active rows through list_targets(conn) with the storage query ordered by id ASC.
+- list_registered_targets(..., active_only=True) also reads through list_targets(conn, active_only=True) with the same ORDER BY id ASC clause.
+- Added a focused compatibility test to prove the active canonical_url projection from list_registered_targets(active_only=True) matches list_active_target_urls().
+
+Validation attempted or not attempted
+- Attempted a narrow Python compile check with python; the environment had no python alias.
+- Re-ran the narrow compile check with python3 and a temporary pycache prefix; that succeeded.
+- Ran the existing container-based test workflow with a focused scope:
+	docker compose run --rm --entrypoint "" scraper pytest -q tests/test_target_ordering.py tests/test_main.py tests/test_runtime_local_ops.py
+- Result after the follow-up CLI override changes: 94 passed in 1.08s.
+- Re-ran flake8 for the requested files to clear E501 issues:
+	docker compose run --rm --entrypoint "" scraper flake8 target_ordering.py tests/test_main.py tests/test_target_ordering.py
+- Result: no output, E501 cleared for the requested files.
+- Re-ran focused pytest including the target-list compatibility test after this follow-up fix:
+	docker compose run --rm --entrypoint "" scraper pytest -q tests/test_target_ordering.py tests/test_main.py tests/test_runtime_local_ops.py tests/test_target_list.py
+- Result: 115 passed in 2.18s.
+- validate_helix.sh is not present in this child product repository, so PASS against that script could not be claimed in this task.
+
+Runtime scheduling follow-up note
+- CLI options are now available for batch, periodic-once, and periodic.
+- .env settings remain available for normal runtime defaults.
+- Actual runtime scheduling policy such as daily reverse plus frequent random_rotation is a follow-up runtime-operation task and was not completed here.
+
+Known limitations
+- Start article override still expects a numeric article_id string.
+- Target ordering is in-memory per run only; no persistent resume cursor is introduced.
+
+Explicit non-goals preserved
+- No cron changes.
+- No Docker compose changes.
+- No DB schema changes.
+- No scrape semantics changes.
+- No response storage changes.
+- No delete feeder semantics changes.
+- No persistent continuation state or per-target shuffle.
+- No target registration order changes in storage.
+
+Editor AI model/tool information if available
+- Agent: GitHub Copilot
+- Model: GPT-5.4
+- Tools used: workspace file reads/search, apply_patch, terminal validation
