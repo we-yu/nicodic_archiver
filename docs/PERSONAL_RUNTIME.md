@@ -92,6 +92,11 @@ starting from the earliest registered targets.
 Use `reverse` for occasional newer-target-first runs when you want recently
 registered or Delete Feeder-appended targets to be reached sooner.
 
+For one wrapper invocation, host inline env overrides `.env.runtime.local`, for
+example:
+
+`TARGET_ORDER_MODE=reverse ./runtime/periodic_once.sh`
+
 `TARGET_ORDER_START_ARTICLE_ID` is an optional debug override. When it matches
 an active loaded target, the run rotates the current target list so that
 article starts first. If it is empty, invalid, or not found in the active
@@ -100,6 +105,10 @@ warning line near run start.
 
 Use `--target-order-start-article-id` for focused verification around a known
 numeric article ID without editing the env file.
+
+The same single-shot override also works through the wrapper path, for example:
+
+`TARGET_ORDER_START_ARTICLE_ID=5400838 ./runtime/periodic_once.sh`
 
 `SOFT_TERMINATE_FILE` controls the file-based stop-after-current flag path.
 If it is unset or empty, the runtime uses
