@@ -55,6 +55,50 @@ def test_random_rotation_rotates_without_shuffle_or_duplicates():
     assert decision.start_article_id == "3"
 
 
+def test_blank_env_start_article_id_allows_reverse_mode():
+    config = resolve_target_order_config(
+        environ={
+            "TARGET_ORDER_MODE": "reverse",
+            "TARGET_ORDER_START_ARTICLE_ID": "",
+        }
+    )
+
+    decision = order_targets_for_run(TARGETS, config=config)
+
+    assert config.start_article_id is None
+    assert config.start_article_id_source is None
+    assert decision.ordered_targets == list(reversed(TARGETS))
+    assert decision.effective_mode == "reverse"
+    assert decision.reason is None
+
+
+def test_blank_env_start_article_id_allows_random_rotation_mode():
+    config = resolve_target_order_config(
+        environ={
+            "TARGET_ORDER_MODE": "random_rotation",
+            "TARGET_ORDER_START_ARTICLE_ID": "   ",
+        }
+    )
+
+    decision = order_targets_for_run(
+        TARGETS,
+        config=config,
+        randrange_fn=lambda _limit: 2,
+    )
+
+    assert config.start_article_id is None
+    assert config.start_article_id_source is None
+    assert decision.ordered_targets == [
+        "https://dic.nicovideo.jp/a/3",
+        "https://dic.nicovideo.jp/a/4",
+        "https://dic.nicovideo.jp/a/5",
+        "https://dic.nicovideo.jp/a/1",
+        "https://dic.nicovideo.jp/a/2",
+    ]
+    assert decision.effective_mode == "random_rotation"
+    assert decision.reason is None
+
+
 def test_start_article_override_rotates_to_matching_article_id():
     decision = order_targets_for_run(
         TARGETS,
@@ -186,3 +230,17 @@ def test_env_values_are_used_when_cli_values_are_absent():
     assert config.mode_source == "env"
     assert config.start_article_id == "12345"
     assert config.start_article_id_source == "env"
+
+
+def test_blank_env_start_article_id_is_treated_as_absent():
+    config = resolve_target_order_config(
+        environ={
+            "TARGET_ORDER_MODE": "reverse",
+            "TARGET_ORDER_START_ARTICLE_ID": "",
+        }
+    )
+
+    assert config.mode == "reverse"
+    assert config.mode_source == "env"
+    assert config.start_article_id is None
+    assert config.start_article_id_source is None

@@ -49,7 +49,10 @@ def _normalized_mode(raw_mode: str | None) -> str:
 def _normalized_optional_text(raw_value: str | None) -> str | None:
     if raw_value is None:
         return None
-    return raw_value.strip()
+    text = raw_value.strip()
+    if not text:
+        return None
+    return text
 
 
 def _article_id_for_target(target_url: str) -> str | None:
@@ -96,10 +99,14 @@ def resolve_target_order_config(
         mode_source = "env" if mode is not None else "default"
 
     if cli_start_article_id is not None:
-        start_article_id = cli_start_article_id
-        start_article_id_source = "cli"
+        start_article_id = _normalized_optional_text(cli_start_article_id)
+        start_article_id_source = (
+            "cli" if start_article_id is not None else None
+        )
     else:
-        start_article_id = env.get("TARGET_ORDER_START_ARTICLE_ID")
+        start_article_id = _normalized_optional_text(
+            env.get("TARGET_ORDER_START_ARTICLE_ID")
+        )
         start_article_id_source = "env" if start_article_id is not None else None
 
     return TargetOrderConfig(
