@@ -9,6 +9,10 @@ def test_runtime_local_example_contains_expected_keys():
     assert "WEB_PORT=" in text
     assert "LOCAL_UID=" in text
     assert "LOCAL_GID=" in text
+    assert "TARGET_ORDER_MODE=default" in text
+    assert "# TARGET_ORDER_MODE=random_rotation" in text
+    assert "# TARGET_ORDER_MODE=reverse" in text
+    assert "# TARGET_ORDER_START_ARTICLE_ID=" in text
 
 
 def test_gitignore_treats_runtime_local_env_as_local_only():
@@ -42,3 +46,7 @@ def test_personal_runtime_doc_mentions_local_env_and_wrapper():
     assert "tools/runtime_up.sh" in text
     assert "LOCAL_UID" in text
     assert "WEB_PORT" in text
+    assert "TARGET_ORDER_MODE" in text
+    assert "TARGET_ORDER_START_ARTICLE_ID" in text
+    assert "--target-order-mode reverse" in text
+    assert "--target-order-start-article-id 5400838" in text

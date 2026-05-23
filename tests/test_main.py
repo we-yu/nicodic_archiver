@@ -1199,6 +1199,287 @@ def test_main_batch_without_path_exits_with_usage(capsys):
         "invalid_targets": 0,
     },
 )
+@patch(
+    "main.list_registered_targets",
+    return_value=[
+        {"canonical_url": "https://dic.nicovideo.jp/a/1", "article_id": "1"},
+        {"canonical_url": "https://dic.nicovideo.jp/a/2", "article_id": "2"},
+        {"canonical_url": "https://dic.nicovideo.jp/a/3", "article_id": "3"},
+    ],
+)
+@patch(
+    "main.list_active_target_urls",
+    return_value=[
+        "https://dic.nicovideo.jp/a/1",
+        "https://dic.nicovideo.jp/a/2",
+        "https://dic.nicovideo.jp/a/3",
+    ],
+)
+@patch(
+    "main.run_scrape",
+    side_effect=[
+        ScrapeResult(True, "ok", article_title="Third Title"),
+        ScrapeResult(True, "ok", article_title="Second Title"),
+        ScrapeResult(True, "ok", article_title="First Title"),
+    ],
+)
+def test_run_batch_scrape_applies_reverse_target_order(
+    mock_run_scrape,
+    mock_load_targets,
+    mock_list_registered_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    config = main_module.resolve_target_order_config(
+        cli_mode="reverse",
+        environ={},
+    )
+
+    final_status, failed_targets = main_module.run_batch_scrape(
+        "targets.db",
+        target_order_config=config,
+    )
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    assert [call.args[0] for call in mock_run_scrape.call_args_list] == [
+        "https://dic.nicovideo.jp/a/3",
+        "https://dic.nicovideo.jp/a/2",
+        "https://dic.nicovideo.jp/a/1",
+    ]
+
+    out = capsys.readouterr().out
+    assert (
+        "[TARGET ORDER] mode=reverse mode_source=cli targets=3 "
+        "effective=reverse" in out
+    )
+
+    logs = list(Path(tmp_path).glob("batch_*.log"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert (
+        "[TARGET ORDER] mode=reverse mode_source=cli targets=3 "
+        "effective=reverse" in text
+    )
+
+
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch(
+    "main.list_registered_targets",
+    return_value=[
+        {"canonical_url": "https://dic.nicovideo.jp/a/1", "article_id": "1"},
+        {"canonical_url": "https://dic.nicovideo.jp/a/2", "article_id": "2"},
+    ],
+)
+@patch(
+    "main.list_active_target_urls",
+    return_value=[
+        "https://dic.nicovideo.jp/a/1",
+        "https://dic.nicovideo.jp/a/2",
+    ],
+)
+@patch(
+    "main.run_scrape",
+    side_effect=[
+        ScrapeResult(True, "ok", article_title="First Title"),
+        ScrapeResult(True, "ok", article_title="Second Title"),
+    ],
+)
+def test_run_batch_scrape_invalid_start_override_falls_back_to_default_order(
+    mock_run_scrape,
+    mock_load_targets,
+    mock_list_registered_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("TARGET_ORDER_MODE", "random_rotation")
+    monkeypatch.setenv("TARGET_ORDER_START_ARTICLE_ID", "999999999")
+
+    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    assert [call.args[0] for call in mock_run_scrape.call_args_list] == [
+        "https://dic.nicovideo.jp/a/1",
+        "https://dic.nicovideo.jp/a/2",
+    ]
+
+    out = capsys.readouterr().out
+    assert "requested_start_article_id=999999999" in out
+    assert "requested_start_article_id_source=env" in out
+    assert "effective=default" in out
+    assert "fallback=default" in out
+    assert "reason=start_article_id_not_found" in out
+
+
+@patch("main.run_batch_scrape", return_value=("success", 0))
+def test_main_batch_cli_target_order_mode_is_passed_to_run_batch_scrape(
+    mock_run_batch_scrape,
+):
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "batch",
+            "targets.db",
+            "--target-order-mode",
+            "reverse",
+        ],
+    ):
+        main_module.main()
+
+    target_order_config = mock_run_batch_scrape.call_args.kwargs["target_order_config"]
+    assert target_order_config.mode == "reverse"
+    assert target_order_config.mode_source == "cli"
+
+
+@patch("main.run_batch_scrape", return_value=("success", 0))
+def test_main_batch_cli_target_order_overrides_environment(
+    mock_run_batch_scrape,
+    monkeypatch,
+):
+    monkeypatch.setenv("TARGET_ORDER_MODE", "default")
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "batch",
+            "targets.db",
+            "--target-order-mode",
+            "reverse",
+        ],
+    ):
+        main_module.main()
+
+    target_order_config = mock_run_batch_scrape.call_args.kwargs["target_order_config"]
+    assert target_order_config.mode == "reverse"
+    assert target_order_config.mode_source == "cli"
+
+
+@patch(
+    "main.list_registered_targets",
+    return_value=[
+        {
+            "canonical_url": "https://dic.nicovideo.jp/a/%E3%83%86%E3%82%B9%E3%83%88",
+            "article_id": "5400838",
+        },
+        {"canonical_url": "https://dic.nicovideo.jp/a/other", "article_id": "2"},
+    ],
+)
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch(
+    "main.run_scrape",
+    side_effect=[
+        ScrapeResult(True, "ok", article_title="Stored Numeric Match"),
+        ScrapeResult(True, "ok", article_title="Second Title"),
+    ],
+)
+def test_run_batch_scrape_start_override_matches_stored_article_id_for_slug_url(
+    mock_run_scrape,
+    mock_run_delete_request_feeder,
+    mock_list_registered_targets,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    config = main_module.resolve_target_order_config(
+        cli_start_article_id="5400838",
+        environ={},
+    )
+
+    final_status, failed_targets = main_module.run_batch_scrape(
+        "targets.db",
+        target_order_config=config,
+    )
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    assert [call.args[0] for call in mock_run_scrape.call_args_list] == [
+        "https://dic.nicovideo.jp/a/%E3%83%86%E3%82%B9%E3%83%88",
+        "https://dic.nicovideo.jp/a/other",
+    ]
+
+    out = capsys.readouterr().out
+    assert "requested_start_article_id=5400838" in out
+    assert "requested_start_article_id_source=cli" in out
+    assert "effective=start_article_id" in out
+
+
+@patch("main.run_batch_scrape", return_value=("success", 0))
+def test_main_batch_cli_random_rotation_is_passed_to_run_batch_scrape(
+    mock_run_batch_scrape,
+):
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "batch",
+            "targets.db",
+            "--target-order-mode",
+            "random_rotation",
+        ],
+    ):
+        main_module.main()
+
+    target_order_config = mock_run_batch_scrape.call_args.kwargs["target_order_config"]
+    assert target_order_config.mode == "random_rotation"
+    assert target_order_config.mode_source == "cli"
+
+
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
 @patch("main.list_active_target_urls", return_value=[
     "https://dic.nicovideo.jp/a/1",
     "https://dic.nicovideo.jp/a/2",
@@ -1426,10 +1707,26 @@ def test_run_batch_scrape_duration_limit_stops_after_current_target(
 
 @patch("main.run_periodic_once")
 def test_main_periodic_once_calls_run_periodic_once(mock_run_periodic_once):
-    with patch("sys.argv", ["main.py", "periodic-once", "targets.db"]):
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "periodic-once",
+            "targets.db",
+            "--target-order-mode",
+            "reverse",
+            "--target-order-start-article-id",
+            "5400838",
+        ],
+    ):
         main_module.main()
 
-    mock_run_periodic_once.assert_called_once_with("targets.db")
+    target_order_config = mock_run_periodic_once.call_args.kwargs["target_order_config"]
+    assert mock_run_periodic_once.call_args.args == ("targets.db",)
+    assert target_order_config.mode == "reverse"
+    assert target_order_config.mode_source == "cli"
+    assert target_order_config.start_article_id == "5400838"
+    assert target_order_config.start_article_id_source == "cli"
 
 
 def test_main_periodic_once_without_path_exits_with_usage(capsys):
@@ -1440,18 +1737,27 @@ def test_main_periodic_once_without_path_exits_with_usage(capsys):
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "Usage: periodic-once <target_db_path>" in out
+    assert "--target-order-mode MODE" in out
 
 
 @patch("main.run_periodic_scrape")
 def test_run_periodic_once_delegates_to_single_periodic_cycle(
     mock_run_periodic_scrape,
 ):
-    main_module.run_periodic_once("targets.db")
+    target_order_config = main_module.resolve_target_order_config(
+        cli_mode="reverse",
+        environ={},
+    )
+    main_module.run_periodic_once(
+        "targets.db",
+        target_order_config=target_order_config,
+    )
 
     mock_run_periodic_scrape.assert_called_once_with(
         "targets.db",
         0.0,
         max_runs=1,
+        target_order_config=target_order_config,
     )
 
 
@@ -1464,13 +1770,49 @@ def test_run_periodic_once_uses_host_cron_log_path_when_configured(
 ):
     monkeypatch.setenv("HOST_CRON_LOG_PATH", "/runtime/logs/host_cron.log")
 
-    main_module.run_periodic_once("targets.db")
+    target_order_config = main_module.resolve_target_order_config(
+        cli_mode="reverse",
+        environ={},
+    )
+
+    main_module.run_periodic_once(
+        "targets.db",
+        target_order_config=target_order_config,
+    )
 
     mock_host_cron_run.assert_called_once_with(
         "targets.db",
         "/runtime/logs/host_cron.log",
+        target_order_config=target_order_config,
     )
     mock_run_periodic_scrape.assert_not_called()
+
+
+@patch("main.run_batch_scrape", return_value=("success", 0))
+@patch("main.time.sleep")
+def test_main_periodic_accepts_target_order_cli_options(
+    mock_sleep,
+    mock_run_batch,
+):
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "periodic",
+            "targets.db",
+            "30",
+            "--max-runs",
+            "1",
+            "--target-order-mode",
+            "reverse",
+        ],
+    ):
+        main_module.main()
+
+    target_order_config = mock_run_batch.call_args.kwargs["target_order_config"]
+    assert target_order_config.mode == "reverse"
+    assert target_order_config.mode_source == "cli"
+    mock_sleep.assert_not_called()
 
 
 @patch(

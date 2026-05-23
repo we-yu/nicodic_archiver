@@ -343,6 +343,38 @@ def test_list_registered_targets_includes_inactive_entries_when_requested(tmp_pa
     assert active_entries == []
 
 
+def test_list_registered_targets_active_order_matches_active_target_urls(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+
+    with patch(
+        "target_list.resolve_article_input",
+        side_effect=[
+            _mock_resolve_for_slug_numeric_pair(
+                "https://dic.nicovideo.jp/a/100",
+                "100",
+            ),
+            _mock_resolve_for_slug_numeric_pair(
+                "https://dic.nicovideo.jp/a/200",
+                "200",
+            ),
+            _mock_resolve_for_slug_numeric_pair(
+                "https://dic.nicovideo.jp/a/300",
+                "300",
+            ),
+        ],
+    ):
+        register_target_url("https://dic.nicovideo.jp/a/100", str(target_db_path))
+        register_target_url("https://dic.nicovideo.jp/id/200", str(target_db_path))
+        register_target_url("https://dic.nicovideo.jp/a/300", str(target_db_path))
+
+    deactivate_target("200", "a", str(target_db_path))
+
+    active_urls = list_active_target_urls(str(target_db_path))
+    active_entries = list_registered_targets(str(target_db_path), active_only=True)
+
+    assert [entry["canonical_url"] for entry in active_entries] == active_urls
+
+
 def test_inspect_registered_target_returns_entry_by_identity(tmp_path):
     target_db_path = tmp_path / "targets.db"
     with patch(
