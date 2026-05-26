@@ -1,5 +1,6 @@
 import math
 import os
+import sqlite3
 import sys
 import uuid
 import time
@@ -94,6 +95,91 @@ def _record_scrape_run_observation(
         )
     finally:
         conn.close()
+
+
+def _is_locking_sqlite_operational_error(exc: sqlite3.OperationalError) -> bool:
+    error_text = " ".join(str(part) for part in exc.args if part)
+    lowered = error_text.lower()
+    return "locked" in lowered or "busy" in lowered
+
+
+def _append_batch_telemetry_warning(
+    log_path: Path,
+    run_kind: str,
+    identity: dict,
+    exc: sqlite3.OperationalError,
+) -> None:
+    _append_batch_log_lines(
+        log_path,
+        [
+            "  TELEMETRY_WARNING",
+            f"    run_kind={run_kind}",
+            f"    article_id={identity['article_id']}",
+            f"    article_type={identity['article_type']}",
+            "    warning=scrape_run_observation_skipped",
+            f"    detail={type(exc).__name__}:{exc}",
+        ],
+    )
+
+
+def _emit_telemetry_warning(
+    progress_reporter,
+    log_path: Path,
+    run_kind: str,
+    identity: dict,
+    exc: sqlite3.OperationalError,
+) -> None:
+    article_ref = f"{identity['article_id']}/{identity['article_type']}"
+    message = (
+        "scrape_run_observation_skipped "
+        f"run_kind={run_kind} article={article_ref} "
+        f"reason={type(exc).__name__}:{exc}"
+    )
+
+    if progress_reporter is None:
+        print(f"[WARN] {message}")
+    else:
+        note_warning = getattr(progress_reporter, "note_maintenance_warning", None)
+        if callable(note_warning):
+            note_warning(message)
+        else:
+            emit = getattr(progress_reporter, "emit", None)
+            if callable(emit):
+                emit("WARN", message, indent_level=1)
+
+    _append_batch_telemetry_warning(log_path, run_kind, identity, exc)
+
+
+def _record_scrape_run_observation_with_lock_tolerance(
+    archive_db_path: str,
+    run_id: str,
+    run_started_at: str,
+    run_kind: str,
+    identity: dict,
+    scrape_outcome: str,
+    *,
+    progress_reporter,
+    log_path: Path,
+) -> None:
+    try:
+        _record_scrape_run_observation(
+            archive_db_path,
+            run_id,
+            run_started_at,
+            run_kind,
+            identity,
+            scrape_outcome,
+        )
+    except sqlite3.OperationalError as exc:
+        if not _is_locking_sqlite_operational_error(exc):
+            raise
+        _emit_telemetry_warning(
+            progress_reporter,
+            log_path,
+            run_kind,
+            identity,
+            exc,
+        )
 
 
 # ============================================================
@@ -733,13 +819,15 @@ def run_batch_scrape(
                 None,
                 short_reason,
             )
-            _record_scrape_run_observation(
+            _record_scrape_run_observation_with_lock_tolerance(
                 archive_db_path,
                 run_id,
                 started_at,
                 run_kind,
                 identity,
                 scrape_outcome,
+                progress_reporter=progress_reporter,
+                log_path=log_path,
             )
             continue
 
@@ -822,13 +910,15 @@ def run_batch_scrape(
                     None,
                     redirect_status,
                 )
-                _record_scrape_run_observation(
+                _record_scrape_run_observation_with_lock_tolerance(
                     archive_db_path,
                     run_id,
                     started_at,
                     run_kind,
                     identity,
                     scrape_outcome,
+                    progress_reporter=progress_reporter,
+                    log_path=log_path,
                 )
                 continue
 
@@ -891,13 +981,15 @@ def run_batch_scrape(
                 redirect_status,
                 register_status,
             )
-            _record_scrape_run_observation(
+            _record_scrape_run_observation_with_lock_tolerance(
                 archive_db_path,
                 run_id,
                 started_at,
                 run_kind,
                 identity,
                 scrape_outcome,
+                progress_reporter=progress_reporter,
+                log_path=log_path,
             )
             continue
 
@@ -1000,13 +1092,15 @@ def run_batch_scrape(
                 getattr(scrape_result, "observed_max_res_no", None),
             )
 
-        _record_scrape_run_observation(
+        _record_scrape_run_observation_with_lock_tolerance(
             archive_db_path,
             run_id,
             started_at,
             run_kind,
             identity,
             scrape_outcome,
+            progress_reporter=progress_reporter,
+            log_path=log_path,
         )
 
     ended_at = datetime.now(timezone.utc).isoformat()

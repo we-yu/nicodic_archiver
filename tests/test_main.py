@@ -2,6 +2,7 @@
 from unittest.mock import call, patch
 
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -753,6 +754,108 @@ def test_main_batch_records_telemetry_once_per_target(
         main_module.main()
 
     assert mock_record.call_count == 1
+
+
+def test_record_scrape_run_observation_re_raises_non_lock_operational_error(
+    tmp_path,
+):
+    log_path = tmp_path / "batch.log"
+    mock_conn = type("Conn", (), {"close": lambda self: None})()
+    identity = {
+        "article_id": "1",
+        "article_type": "a",
+        "canonical_url": "https://dic.nicovideo.jp/a/1",
+    }
+
+    with patch("main.init_db", return_value=mock_conn):
+        with patch(
+            "main.append_scrape_run_observation",
+            side_effect=sqlite3.OperationalError(
+                "attempt to write a readonly database"
+            ),
+        ):
+            with pytest.raises(sqlite3.OperationalError):
+                main_module._record_scrape_run_observation_with_lock_tolerance(
+                    "archive.db",
+                    "run-1",
+                    "2026-05-23T00:00:00+00:00",
+                    "batch",
+                    identity,
+                    "ok",
+                    progress_reporter=None,
+                    log_path=log_path,
+                )
+
+    assert not log_path.exists()
+
+
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch(
+    "main.list_active_target_urls",
+    return_value=[
+        "https://dic.nicovideo.jp/a/1",
+        "https://dic.nicovideo.jp/a/2",
+    ],
+)
+@patch(
+    "main.run_scrape",
+    side_effect=[
+        ScrapeResult(True, "ok", article_title="First Title"),
+        ScrapeResult(True, "ok", article_title="Second Title"),
+    ],
+)
+def test_main_batch_continues_when_observation_append_hits_db_lock(
+    mock_run_scrape,
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    capsys,
+    monkeypatch,
+):
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    mock_conn = type("Conn", (), {"close": lambda self: None})()
+
+    with patch("main.init_db", return_value=mock_conn):
+        with patch(
+            "main.append_scrape_run_observation",
+            side_effect=[
+                sqlite3.OperationalError("database is locked"),
+                None,
+            ],
+        ):
+            with patch("sys.argv", ["main.py", "batch", "targets.db"]):
+                main_module.main()
+
+    assert mock_run_scrape.call_count == 2
+    out = capsys.readouterr().out
+    assert "[WARN] scrape_run_observation_skipped" in out
+    assert "article=1/a" in out
+    assert "database is locked" in out
+    assert "[OK] https://dic.nicovideo.jp/a/2" in out
+
+    logs = list(Path(tmp_path).glob("batch_*.log"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert "TELEMETRY_WARNING" in text
+    assert "run_kind=batch" in text
+    assert "article_id=1" in text
+    assert "warning=scrape_run_observation_skipped" in text
+    assert "detail=OperationalError:database is locked" in text
 
 
 def test_main_export_run_telemetry_csv_prints_header(capsys, tmp_path, monkeypatch):
