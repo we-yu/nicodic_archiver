@@ -31,6 +31,8 @@ echo "[periodic-once] Starting one periodic cycle"
 echo "[periodic-once] target_db_path=$TARGET_DB_PATH"
 echo "[periodic-once] If the runtime code looks stale, recreate with"
 echo "[periodic-once] bash tools/runtime_up.sh"
+echo "[periodic-once] Progress is written to $HOST_CRON_LOG_PATH"
+echo "[periodic-once] Follow progress with: tail -f $HOST_CRON_LOG_PATH"
 
 docker compose -f "$COMPOSE_FILE_PATH" exec -T "$COMPOSE_SERVICE_NAME" \
   env HOST_CRON_LOG_PATH="$HOST_CRON_LOG_PATH" \

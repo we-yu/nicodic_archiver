@@ -1,0 +1,38 @@
+Editor AI model: GitHub Copilot GPT-5.4
+
+Summary
+- Added operator-facing guidance in runtime/periodic_once.sh so the wrapper
+  points to the host cron log before docker compose exec runs.
+- Added focused coverage in tests/test_runtime_local_ops.py for the new
+  periodic_once guidance text.
+
+Files changed
+- runtime/periodic_once.sh
+- tests/test_runtime_local_ops.py
+- SubTask-Improve-periodic-once-host-cron-log-guidance_report.txt
+
+Exact guidance text added
+- [periodic-once] Progress is written to $HOST_CRON_LOG_PATH
+- [periodic-once] Follow progress with: tail -f $HOST_CRON_LOG_PATH
+
+Why behavior is unchanged except terminal guidance
+- The change only adds two echo lines in the host-side wrapper before the
+  existing docker compose exec call.
+- The wrapper still passes HOST_CRON_LOG_PATH and the existing periodic
+  environment variables into python main.py periodic-once unchanged.
+- No scrape logic, host_cron log format, Docker compose behavior, runtime DB,
+  or cron configuration was modified.
+
+Tests added or updated
+- Updated tests/test_runtime_local_ops.py with a focused assertion that the
+  wrapper prints the host cron log path guidance and suggested tail command.
+
+Validation status
+- Passed: docker compose run --rm --entrypoint "" scraper pytest -q
+  tests/test_runtime_local_ops.py
+
+Known limitations
+- The guidance prints the effective host-side path available to the wrapper,
+  but it does not verify that the operator has already opened or tailed the
+  file.
+- The wrapper still does not auto-tail the log by design.

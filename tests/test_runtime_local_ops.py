@@ -66,6 +66,20 @@ def test_periodic_wrapper_forwards_target_order_env_into_container_exec():
     )
 
 
+def test_periodic_wrapper_prints_host_cron_log_guidance_before_exec():
+    text = Path("runtime/periodic_once.sh").read_text(encoding="utf-8")
+
+    assert (
+        'echo "[periodic-once] Progress is written '
+        'to $HOST_CRON_LOG_PATH"' in text
+    )
+    assert (
+        'echo "[periodic-once] Follow progress with: '
+        'tail -f $HOST_CRON_LOG_PATH"' in text
+    )
+    assert 'env HOST_CRON_LOG_PATH="$HOST_CRON_LOG_PATH"' in text
+
+
 def test_personal_runtime_doc_mentions_local_env_and_wrapper():
     text = Path("docs/PERSONAL_RUNTIME.md").read_text(encoding="utf-8")
 
