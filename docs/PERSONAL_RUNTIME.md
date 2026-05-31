@@ -360,7 +360,29 @@ Request a soft stop after the current article finishes:
 
 `mkdir -p runtime/control && : > runtime/control/stop_after_current`
 
-Remove the flag after the run has stopped or before the next run starts:
+You can also request a bounded countdown stop by writing a natural number.
+Values `0` and `1`, empty content, and malformed content are treated as one
+soft stop and the file is removed after that stop is consumed. Values `2` and
+above are consumed once at the next safe article boundary and then decremented.
+Very large values are clamped to `255` before decrementing.
+
+Show, set, or clear the stop file and inspect local lock / process state with:
+
+`bash tools/runtime_periodic_ops.sh status`
+
+`bash tools/runtime_periodic_ops.sh stop-once`
+
+`bash tools/runtime_periodic_ops.sh stop-count 3`
+
+`bash tools/runtime_periodic_ops.sh clear-stop`
+
+The helper can also remove `runtime/logs/periodic_once.lock`, but only when no
+scrape-like periodic / batch work appears active:
+
+`bash tools/runtime_periodic_ops.sh clear-lock`
+
+Remove the flag after the run has stopped or before the next run starts if you
+set it manually:
 
 `rm -f runtime/control/stop_after_current`
 

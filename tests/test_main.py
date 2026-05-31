@@ -1622,6 +1622,7 @@ def test_run_batch_scrape_soft_terminate_before_first_target(
     assert "  remaining_targets=2" in text
     assert "  failed_targets=0" in text
     assert "  final_status=success" in text
+    assert not stop_file.exists()
 
 
 @patch(
@@ -1687,6 +1688,182 @@ def test_run_batch_scrape_soft_terminate_after_current_target(
     assert "  success_targets=1" in text
     assert "  failed_targets=0" in text
     assert "  final_status=success" in text
+    assert not stop_file.exists()
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [" ", "abc", "-5", "1.5", "0", "1"],
+)
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch("main.list_active_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.run_scrape")
+def test_run_batch_scrape_soft_terminate_invalid_values_are_removed(
+    mock_run_scrape,
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    raw_value,
+    tmp_path,
+    monkeypatch,
+):
+    stop_file = tmp_path / "stop_after_current"
+    stop_file.write_text(raw_value, encoding="utf-8")
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("SOFT_TERMINATE_FILE", str(stop_file))
+
+    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    mock_run_scrape.assert_not_called()
+    assert not stop_file.exists()
+
+
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch("main.list_active_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.run_scrape")
+def test_run_batch_scrape_soft_terminate_countdown_two_rewrites_to_one(
+    mock_run_scrape,
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    monkeypatch,
+):
+    stop_file = tmp_path / "stop_after_current"
+    stop_file.write_text("2", encoding="utf-8")
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("SOFT_TERMINATE_FILE", str(stop_file))
+
+    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    mock_run_scrape.assert_not_called()
+    assert stop_file.read_text(encoding="utf-8") == "1\n"
+
+
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch("main.list_active_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch("main.run_scrape")
+def test_run_batch_scrape_soft_terminate_large_values_are_clamped(
+    mock_run_scrape,
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    monkeypatch,
+):
+    stop_file = tmp_path / "stop_after_current"
+    stop_file.write_text("9999", encoding="utf-8")
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("SOFT_TERMINATE_FILE", str(stop_file))
+
+    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    mock_run_scrape.assert_not_called()
+    expected = f"{main_module.MAX_SOFT_TERMINATE_COUNT - 1}\n"
+    assert stop_file.read_text(encoding="utf-8") == expected
+
+
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch("main.list_active_target_urls", return_value=[
+    "https://dic.nicovideo.jp/a/1",
+    "https://dic.nicovideo.jp/a/2",
+])
+@patch(
+    "main.run_scrape",
+    side_effect=[
+        ScrapeResult(True, "ok", article_title="First Title"),
+        ScrapeResult(True, "ok", article_title="Second Title"),
+    ],
+)
+def test_run_batch_scrape_missing_soft_terminate_file_keeps_processing(
+    mock_run_scrape,
+    mock_load_targets,
+    mock_run_delete_request_feeder,
+    tmp_path,
+    monkeypatch,
+):
+    stop_file = tmp_path / "missing_stop_after_current"
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("SOFT_TERMINATE_FILE", str(stop_file))
+
+    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
+
+    assert final_status == "success"
+    assert failed_targets == 0
+    assert mock_run_scrape.call_count == 2
+    assert not stop_file.exists()
 
 
 @pytest.mark.parametrize(
