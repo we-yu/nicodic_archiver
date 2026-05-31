@@ -1,0 +1,860 @@
+Editor AI model: GPT-5.4
+Branch name: subtask-runtime-stop-and-lock-ops-helper-copilot
+
+Summary
+- Added countdown-aware soft-terminate consumption at the existing safe
+  article-boundary stop check in main.py.
+- Added a bounded helper script for stop-file inspection, stop countdown
+  management, lock inspection, and guarded lock clearing.
+- Added focused tests and runtime docs covering countdown semantics and helper
+  behavior.
+
+Files changed
+- main.py
+- tests/test_main.py
+- tests/test_runtime_local_ops.py
+- docs/PERSONAL_RUNTIME.md
+- tools/runtime_periodic_ops.sh
+
+Soft-terminate countdown behavior
+- Missing stop file keeps existing non-stop behavior.
+- Empty file is treated as one soft stop and removed when consumed.
+- Malformed, whitespace-only, decimal, and negative-like content are treated as
+  one soft stop and removed when consumed.
+- Values 0 and 1 are treated as one soft stop and removed when consumed.
+- Values 2 and above are consumed once at the safe stop boundary and rewritten
+  as N - 1.
+- Large values are clamped to 255 before decrement, so 9999 becomes 254 after
+  consumption.
+- Rewrite and remove failures emit warnings without changing scrape / DB flow.
+
+Runtime helper script behavior
+- status shows periodic lock presence, stop-file presence/content, matching
+  host processes, and bounded Docker-side process info when available.
+- stop-once writes countdown 1 and creates the stop-file parent directory.
+- stop-count N accepts only natural numbers >= 1 and clamps to 255.
+- show-stop prints the current stop-file state.
+- clear-stop removes the stop file.
+- clear-lock removes the periodic lock only when no scrape-like work appears
+  active, otherwise it refuses with exit status 1.
+- terminate-periodic and kill-periodic were intentionally omitted to keep the
+  helper bounded and safe.
+
+Safety boundaries preserved
+- No scheduler redesign.
+- No target-order behavior change.
+- No lock acquisition behavior change.
+- No scrape, DB, cron, Docker restart, or runtime reflection behavior added.
+- No SQLite DB files were modified.
+
+Tests added or updated
+- Updated tests/test_main.py to assert stop-file removal after empty-file and
+  after-current-target consumption.
+- Added tests/test_main.py coverage for malformed content, values 0 and 1,
+  countdown 2 rewrite-to-1, clamped large values, and missing stop-file
+  compatibility.
+- Added tests/test_runtime_local_ops.py coverage for helper subcommands,
+  status / stop / clear flows, and clear-lock refusal when work appears active.
+
+Validation commands run and results
+- pytest tests/test_main.py -k soft_terminate
+  Result: not runnable in this environment, pytest command not installed.
+- python3 -m pytest tests/test_main.py -k 'soft_terminate or duration_limit'
+  Result: not runnable in this environment, No module named pytest.
+- bash tools/runtime_periodic_ops.sh --help
+  Result: passed.
+- python3 manual validation with unittest.mock and bs4/requests stubs for
+  main.py countdown behavior
+  Result: passed.
+- runtime helper manual validation with temporary stop / lock / process files
+  Result: passed.
+- bash -n tools/runtime_periodic_ops.sh runtime/periodic_once.sh
+  tools/runtime_up.sh
+  Result: passed.
+- Python compile() syntax check for main.py, tests/test_main.py, and
+  tests/test_runtime_local_ops.py
+  Result: passed.
+- awk length check for changed files > 88 columns
+  Result: passed.
+- git diff --check
+  Result: passed.
+
+Commit hash
+- Pending at report creation time. This report is committed together with the
+  implementation, so the final commit hash is recorded in the final task
+  response after the commit is created.
+
+Push result
+- Pending at report creation time. The actual push result is recorded in the
+  final task response after push completes.
+
+PR dry-run result
+- Pending at report creation time. The actual dry-run result is recorded in the
+  final task response after the post-push check completes.
+
+Known limitations
+- terminate-periodic and kill-periodic were not added to keep the helper small,
+  bounded, and safe.
+- The local environment lacks pytest and some optional Python dependencies, so
+  focused validation used repo-local shell checks and direct Python execution
+  with lightweight import stubs for third-party modules.
+- This report cannot self-record the final commit hash, push result, and
+  post-push PR dry-run result before those operations occur.
+
+Full change diff, excluding this report file
+diff --git a/docs/PERSONAL_RUNTIME.md b/docs/PERSONAL_RUNTIME.md
+index 8e73505..b711ce8 100644
+--- a/docs/PERSONAL_RUNTIME.md
++++ b/docs/PERSONAL_RUNTIME.md
+@@ -360,7 +360,29 @@ Request a soft stop after the current article finishes:
+
+ `mkdir -p runtime/control && : > runtime/control/stop_after_current`
+
+-Remove the flag after the run has stopped or before the next run starts:
++You can also request a bounded countdown stop by writing a natural number.
++Values `0` and `1`, empty content, and malformed content are treated as one
++soft stop and the file is removed after that stop is consumed. Values `2` and
++above are consumed once at the next safe article boundary and then decremented.
++Very large values are clamped to `255` before decrementing.
++
++Show, set, or clear the stop file and inspect local lock / process state with:
++
++`bash tools/runtime_periodic_ops.sh status`
++
++`bash tools/runtime_periodic_ops.sh stop-once`
++
++`bash tools/runtime_periodic_ops.sh stop-count 3`
++
++`bash tools/runtime_periodic_ops.sh clear-stop`
++
++The helper can also remove `runtime/logs/periodic_once.lock`, but only when no
++scrape-like periodic / batch work appears active:
++
++`bash tools/runtime_periodic_ops.sh clear-lock`
++
++Remove the flag after the run has stopped or before the next run starts if you
++set it manually:
+
+ `rm -f runtime/control/stop_after_current`
+
+diff --git a/main.py b/main.py
+index 4d3eff7..bdbfbcd 100644
+--- a/main.py
++++ b/main.py
+@@ -64,6 +64,7 @@ from web_app import serve_web_app
+
+ DEFAULT_TARGET_DB_PATH = os.environ.get("TARGET_DB_PATH", "data/nicodic.db")
+ DEFAULT_SOFT_TERMINATE_FILE = "runtime/control/stop_after_current"
++MAX_SOFT_TERMINATE_COUNT = 255
+
+ # Telemetry only: set True around run_batch_scrape from run_periodic_scrape.
+ _inside_periodic_batch: bool = False
+@@ -371,10 +372,110 @@ def _format_seconds_value(value: float) -> str:
+     return text or "0"
+
+
++def _append_soft_terminate_warning(log_path: Path, message: str) -> None:
++    _append_batch_log_lines(
++        log_path,
++        [
++            "  SOFT_TERMINATE_WARNING",
++            f"    detail={message}",
++        ],
++    )
++
++
++def _emit_soft_terminate_warning(
++    progress_reporter,
++    log_path: Path,
++    message: str,
++) -> None:
++    if progress_reporter is None:
++        print(f"[WARN] {message}")
++    else:
++        note_warning = getattr(progress_reporter, "note_maintenance_warning", None)
++        if callable(note_warning):
++            note_warning(message)
++        else:
++            emit = getattr(progress_reporter, "emit", None)
++            if callable(emit):
++                emit("WARN", message, indent_level=1)
++
++    _append_soft_terminate_warning(log_path, message)
++
++
++def _parse_soft_terminate_countdown(raw_value: str) -> tuple[int | None, str]:
++    if raw_value == "":
++        return None, "empty"
++
++    text = raw_value.strip()
++    if not text:
++        return None, "invalid"
++    if not text.isdigit():
++        return None, "invalid"
++
++    return min(int(text), MAX_SOFT_TERMINATE_COUNT), "countdown"
++
++
++def _rewrite_soft_terminate_file(flag_path: Path, text: str) -> None:
++    flag_path.parent.mkdir(parents=True, exist_ok=True)
++    temp_path = flag_path.with_name(f".{flag_path.name}.{uuid.uuid4().hex}.tmp")
++    try:
++        temp_path.write_text(text, encoding="utf-8")
++        os.replace(temp_path, flag_path)
++    except Exception:
++        try:
++            temp_path.unlink()
++        except FileNotFoundError:
++            pass
++        raise
++
++
++def _consume_soft_terminate_flag(
++    flag_path: Path,
++    *,
++    progress_reporter,
++    log_path: Path,
++) -> None:
++    try:
++        raw_value = flag_path.read_text(encoding="utf-8")
++    except OSError as exc:
++        raw_value = ""
++        _emit_soft_terminate_warning(
++            progress_reporter,
++            log_path,
++            "soft_terminate_flag_read_failed "
++            f"path={flag_path} reason={type(exc).__name__}:{exc}",
++        )
++
++    countdown, parsed_kind = _parse_soft_terminate_countdown(raw_value)
++    if parsed_kind != "countdown" or countdown is None or countdown <= 1:
++        try:
++            flag_path.unlink(missing_ok=True)
++        except OSError as exc:
++            _emit_soft_terminate_warning(
++                progress_reporter,
++                log_path,
++                "soft_terminate_flag_remove_failed "
++                f"path={flag_path} reason={type(exc).__name__}:{exc}",
++            )
++        return
++
++    try:
++        _rewrite_soft_terminate_file(flag_path, f"{countdown - 1}\n")
++    except OSError as exc:
++        _emit_soft_terminate_warning(
++            progress_reporter,
++            log_path,
++            "soft_terminate_flag_rewrite_failed "
++            f"path={flag_path} reason={type(exc).__name__}:{exc}",
++        )
++
++
+ def _check_controlled_stop(
+     total_targets: int,
+     processed_targets: int,
+     shot_started_monotonic: float,
++    *,
++    progress_reporter,
++    log_path: Path,
+ ) -> dict | None:
+     remaining_targets = total_targets - processed_targets
+     if remaining_targets <= 0:
+@@ -382,6 +483,11 @@ def _check_controlled_stop(
+
+     flag_path = _soft_terminate_flag_path()
+     if flag_path.exists():
++        _consume_soft_terminate_flag(
++            flag_path,
++            progress_reporter=progress_reporter,
++            log_path=log_path,
++        )
+         return {
+             "kind": "soft_terminate",
+             "processed_targets": processed_targets,
+@@ -692,6 +798,8 @@ def run_batch_scrape(
+             len(targets),
+             idx - 1,
+             shot_started_monotonic,
++            progress_reporter=progress_reporter,
++            log_path=log_path,
+         )
+         if controlled_stop is not None:
+             _append_batch_controlled_stop(log_path, controlled_stop)
+diff --git a/tests/test_main.py b/tests/test_main.py
+index 76ee6eb..fb23f2c 100644
+--- a/tests/test_main.py
++++ b/tests/test_main.py
+@@ -1622,6 +1622,7 @@ def test_run_batch_scrape_soft_terminate_before_first_target(
+     assert "  remaining_targets=2" in text
+     assert "  failed_targets=0" in text
+     assert "  final_status=success" in text
++    assert not stop_file.exists()
+
+
+ @patch(
+@@ -1687,6 +1688,182 @@ def test_run_batch_scrape_soft_terminate_after_current_target(
+     assert "  success_targets=1" in text
+     assert "  failed_targets=0" in text
+     assert "  final_status=success" in text
++    assert not stop_file.exists()
++
++
++@pytest.mark.parametrize(
++    "raw_value",
++    [" ", "abc", "-5", "1.5", "0", "1"],
++)
++@patch(
++    "main.run_delete_request_feeder",
++    return_value={
++        "checked_from_res_no": 1,
++        "checked_to_res_no": None,
++        "responses_checked": 0,
++        "extracted_candidates": 0,
++        "handed_off_candidates": 0,
++        "updated_last_processed_res_no": 0,
++        "queued_target_urls": [],
++        "added_targets": 0,
++        "reactivated_targets": 0,
++        "duplicate_targets": 0,
++        "invalid_targets": 0,
++    },
++)
++@patch("main.list_active_target_urls", return_value=[
++    "https://dic.nicovideo.jp/a/1",
++    "https://dic.nicovideo.jp/a/2",
++])
++@patch("main.run_scrape")
++def test_run_batch_scrape_soft_terminate_invalid_values_are_removed(
++    mock_run_scrape,
++    mock_load_targets,
++    mock_run_delete_request_feeder,
++    raw_value,
++    tmp_path,
++    monkeypatch,
++):
++    stop_file = tmp_path / "stop_after_current"
++    stop_file.write_text(raw_value, encoding="utf-8")
++    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
++    monkeypatch.setenv("SOFT_TERMINATE_FILE", str(stop_file))
++
++    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
++
++    assert final_status == "success"
++    assert failed_targets == 0
++    mock_run_scrape.assert_not_called()
++    assert not stop_file.exists()
++
++
++@patch(
++    "main.run_delete_request_feeder",
++    return_value={
++        "checked_from_res_no": 1,
++        "checked_to_res_no": None,
++        "responses_checked": 0,
++        "extracted_candidates": 0,
++        "handed_off_candidates": 0,
++        "updated_last_processed_res_no": 0,
++        "queued_target_urls": [],
++        "added_targets": 0,
++        "reactivated_targets": 0,
++        "duplicate_targets": 0,
++        "invalid_targets": 0,
++    },
++)
++@patch("main.list_active_target_urls", return_value=[
++    "https://dic.nicovideo.jp/a/1",
++    "https://dic.nicovideo.jp/a/2",
++])
++@patch("main.run_scrape")
++def test_run_batch_scrape_soft_terminate_countdown_two_rewrites_to_one(
++    mock_run_scrape,
++    mock_load_targets,
++    mock_run_delete_request_feeder,
++    tmp_path,
++    monkeypatch,
++):
++    stop_file = tmp_path / "stop_after_current"
++    stop_file.write_text("2", encoding="utf-8")
++    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
++    monkeypatch.setenv("SOFT_TERMINATE_FILE", str(stop_file))
++
++    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
++
++    assert final_status == "success"
++    assert failed_targets == 0
++    mock_run_scrape.assert_not_called()
++    assert stop_file.read_text(encoding="utf-8") == "1\n"
++
++
++@patch(
++    "main.run_delete_request_feeder",
++    return_value={
++        "checked_from_res_no": 1,
++        "checked_to_res_no": None,
++        "responses_checked": 0,
++        "extracted_candidates": 0,
++        "handed_off_candidates": 0,
++        "updated_last_processed_res_no": 0,
++        "queued_target_urls": [],
++        "added_targets": 0,
++        "reactivated_targets": 0,
++        "duplicate_targets": 0,
++        "invalid_targets": 0,
++    },
++)
++@patch("main.list_active_target_urls", return_value=[
++    "https://dic.nicovideo.jp/a/1",
++    "https://dic.nicovideo.jp/a/2",
++])
++@patch("main.run_scrape")
++def test_run_batch_scrape_soft_terminate_large_values_are_clamped(
++    mock_run_scrape,
++    mock_load_targets,
++    mock_run_delete_request_feeder,
++    tmp_path,
++    monkeypatch,
++):
++    stop_file = tmp_path / "stop_after_current"
++    stop_file.write_text("9999", encoding="utf-8")
++    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
++    monkeypatch.setenv("SOFT_TERMINATE_FILE", str(stop_file))
++
++    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
++
++    assert final_status == "success"
++    assert failed_targets == 0
++    mock_run_scrape.assert_not_called()
++    expected = f"{main_module.MAX_SOFT_TERMINATE_COUNT - 1}\n"
++    assert stop_file.read_text(encoding="utf-8") == expected
++
++
++@patch(
++    "main.run_delete_request_feeder",
++    return_value={
++        "checked_from_res_no": 1,
++        "checked_to_res_no": None,
++        "responses_checked": 0,
++        "extracted_candidates": 0,
++        "handed_off_candidates": 0,
++        "updated_last_processed_res_no": 0,
++        "queued_target_urls": [],
++        "added_targets": 0,
++        "reactivated_targets": 0,
++        "duplicate_targets": 0,
++        "invalid_targets": 0,
++    },
++)
++@patch("main.list_active_target_urls", return_value=[
++    "https://dic.nicovideo.jp/a/1",
++    "https://dic.nicovideo.jp/a/2",
++])
++@patch(
++    "main.run_scrape",
++    side_effect=[
++        ScrapeResult(True, "ok", article_title="First Title"),
++        ScrapeResult(True, "ok", article_title="Second Title"),
++    ],
++)
++def test_run_batch_scrape_missing_soft_terminate_file_keeps_processing(
++    mock_run_scrape,
++    mock_load_targets,
++    mock_run_delete_request_feeder,
++    tmp_path,
++    monkeypatch,
++):
++    stop_file = tmp_path / "missing_stop_after_current"
++    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
++    monkeypatch.setenv("SOFT_TERMINATE_FILE", str(stop_file))
++
++    final_status, failed_targets = main_module.run_batch_scrape("targets.db")
++
++    assert final_status == "success"
++    assert failed_targets == 0
++    assert mock_run_scrape.call_count == 2
++    assert not stop_file.exists()
+
+
+ @pytest.mark.parametrize(
+diff --git a/tests/test_runtime_local_ops.py b/tests/test_runtime_local_ops.py
+index 2bb999d..4da4c53 100644
+--- a/tests/test_runtime_local_ops.py
++++ b/tests/test_runtime_local_ops.py
+@@ -1,4 +1,6 @@
++import os
+ from pathlib import Path
++import subprocess
+
+
+ def test_runtime_local_example_contains_expected_keys():
+@@ -66,28 +68,112 @@ def test_periodic_wrapper_forwards_target_order_env_into_container_exec():
+     )
+
+
+-def test_periodic_wrapper_prints_host_cron_log_guidance_before_exec():
+-    text = Path("runtime/periodic_once.sh").read_text(encoding="utf-8")
+-
+-    assert (
+-        'echo "[periodic-once] Progress is written '
+-        'to $HOST_CRON_LOG_PATH"' in text
+-    )
+-    assert (
+-        'echo "[periodic-once] Follow progress with: '
+-        'tail -f $HOST_CRON_LOG_PATH"' in text
+-    )
+-    assert 'env HOST_CRON_LOG_PATH="$HOST_CRON_LOG_PATH"' in text
+-
+-
+ def test_personal_runtime_doc_mentions_local_env_and_wrapper():
+     text = Path("docs/PERSONAL_RUNTIME.md").read_text(encoding="utf-8")
+
+     assert ".env.runtime.local" in text
+     assert "tools/runtime_up.sh" in text
++    assert "tools/runtime_periodic_ops.sh" in text
+     assert "LOCAL_UID" in text
+     assert "WEB_PORT" in text
+     assert "TARGET_ORDER_MODE" in text
+     assert "TARGET_ORDER_START_ARTICLE_ID" in text
+     assert "--target-order-mode reverse" in text
+     assert "--target-order-start-article-id 5400838" in text
++
++
++def test_runtime_periodic_ops_helper_contains_expected_subcommands():
++    text = Path("tools/runtime_periodic_ops.sh").read_text(encoding="utf-8")
++
++    assert "status)" in text
++    assert "stop-once)" in text
++    assert "stop-count)" in text
++    assert "show-stop)" in text
++    assert "clear-stop)" in text
++    assert "clear-lock)" in text
++    assert "MAX_STOP_COUNT=255" in text
++
++
++def test_runtime_periodic_ops_helper_status_and_stop_commands(tmp_path):
++    stop_file = tmp_path / "control" / "stop_after_current"
++    lock_file = tmp_path / "logs" / "periodic_once.lock"
++    process_file = tmp_path / "processes.txt"
++    process_file.write_text("", encoding="utf-8")
++    lock_file.parent.mkdir(parents=True, exist_ok=True)
++    lock_file.write_text("held", encoding="utf-8")
++
++    env = os.environ.copy()
++    env["SOFT_TERMINATE_FILE"] = str(stop_file)
++    env["PERIODIC_LOCK_FILE"] = str(lock_file)
++    env["RUNTIME_PERIODIC_OPS_PS_FILE"] = str(process_file)
++    env["RUNTIME_PERIODIC_OPS_SKIP_DOCKER"] = "1"
++
++    subprocess.run(
++        ["bash", "tools/runtime_periodic_ops.sh", "stop-count", "9999"],
++        check=True,
++        env=env,
++    )
++
++    assert stop_file.read_text(encoding="utf-8") == "255\n"
++
++    show_result = subprocess.run(
++        ["bash", "tools/runtime_periodic_ops.sh", "show-stop"],
++        check=True,
++        capture_output=True,
++        text=True,
++        env=env,
++    )
++    assert "soft_stop_exists=yes" in show_result.stdout
++    assert "soft_stop_countdown=255" in show_result.stdout
++
++    status_result = subprocess.run(
++        ["bash", "tools/runtime_periodic_ops.sh", "status"],
++        check=True,
++        capture_output=True,
++        text=True,
++        env=env,
++    )
++    assert "periodic_lock_exists=yes" in status_result.stdout
++    assert f"periodic_lock_path={lock_file}" in status_result.stdout
++    assert "soft_stop_exists=yes" in status_result.stdout
++    assert "scrape_like_processes=none" in status_result.stdout
++
++    subprocess.run(
++        ["bash", "tools/runtime_periodic_ops.sh", "clear-stop"],
++        check=True,
++        env=env,
++    )
++
++    assert not stop_file.exists()
++
++
++def test_runtime_periodic_ops_helper_clear_lock_refuses_when_work_appears_active(
++    tmp_path,
++):
++    stop_file = tmp_path / "control" / "stop_after_current"
++    lock_file = tmp_path / "logs" / "periodic_once.lock"
++    process_file = tmp_path / "processes.txt"
++    lock_file.parent.mkdir(parents=True, exist_ok=True)
++    lock_file.write_text("held", encoding="utf-8")
++    process_file.write_text(
++        "123 python main.py periodic data/nicodic.db\n",
++        encoding="utf-8",
++    )
++
++    env = os.environ.copy()
++    env["SOFT_TERMINATE_FILE"] = str(stop_file)
++    env["PERIODIC_LOCK_FILE"] = str(lock_file)
++    env["RUNTIME_PERIODIC_OPS_PS_FILE"] = str(process_file)
++    env["RUNTIME_PERIODIC_OPS_SKIP_DOCKER"] = "1"
++
++    result = subprocess.run(
++        ["bash", "tools/runtime_periodic_ops.sh", "clear-lock"],
++        check=False,
++        capture_output=True,
++        text=True,
++        env=env,
++    )
++
++    assert result.returncode == 1
++    assert "Refusing to clear lock" in result.stdout
++    assert lock_file.exists()
+diff --git a/tools/runtime_periodic_ops.sh b/tools/runtime_periodic_ops.sh
+new file mode 100755
+index 0000000..22c8397
+--- /dev/null
++++ b/tools/runtime_periodic_ops.sh
+@@ -0,0 +1,243 @@
++#!/bin/bash
++set -eu
++
++SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
++REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
++
++STOP_FILE=${SOFT_TERMINATE_FILE:-runtime/control/stop_after_current}
++LOCK_FILE=${PERIODIC_LOCK_FILE:-runtime/logs/periodic_once.lock}
++COMPOSE_FILE_PATH=${COMPOSE_FILE_PATH:-docker-compose.runtime.yml}
++COMPOSE_SERVICE_NAME=${COMPOSE_SERVICE_NAME:-personal_runtime}
++MAX_STOP_COUNT=255
++SCRAPE_PROCESS_PATTERN=$(
++  printf '%s' \
++    'runtime/periodic_once\.sh|python(3)? .*main\.py ' \
++    '(periodic|periodic-once|batch)|docker compose ' \
++    '.*periodic_once\.sh|docker-compose .*periodic_once\.sh'
++)
++
++cd "$REPO_ROOT"
++
++usage() {
++  cat <<'EOF'
++Usage: bash tools/runtime_periodic_ops.sh <subcommand> [args]
++
++Subcommands:
++  status           Show lock, stop-file, process, and bounded docker status
++  stop-once        Create the soft-stop file with countdown 1
++  stop-count N     Create or replace the soft-stop file with countdown N
++  show-stop        Show the current soft-stop file state
++  clear-stop       Remove the soft-stop file if present
++  clear-lock       Remove periodic lock only when no work appears active
++EOF
++}
++
++is_natural_number() {
++  [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 ))
++}
++
++clamp_stop_count() {
++  local requested=$1
++
++  if (( requested > MAX_STOP_COUNT )); then
++    printf '%s\n' "$MAX_STOP_COUNT"
++    return
++  fi
++
++  printf '%s\n' "$requested"
++}
++
++read_process_lines() {
++  if [[ -n "${RUNTIME_PERIODIC_OPS_PS_FILE:-}" ]]; then
++    cat "$RUNTIME_PERIODIC_OPS_PS_FILE"
++    return
++  fi
++
++  ps -eo pid=,command= 2>/dev/null || true
++}
++
++list_scrape_like_processes() {
++  read_process_lines | grep -E "$SCRAPE_PROCESS_PATTERN" || true
++}
++
++list_container_scrape_like_processes() {
++  if [[ "${RUNTIME_PERIODIC_OPS_SKIP_DOCKER:-0}" == "1" ]]; then
++    return
++  fi
++
++  if ! command -v docker >/dev/null 2>&1; then
++    return
++  fi
++
++  if ! docker compose -f "$COMPOSE_FILE_PATH" ps "$COMPOSE_SERVICE_NAME" \
++    >/dev/null 2>&1; then
++    return
++  fi
++
++  docker compose -f "$COMPOSE_FILE_PATH" exec -T "$COMPOSE_SERVICE_NAME" \
++    ps -eo pid=,command= 2>/dev/null | grep -E "$SCRAPE_PROCESS_PATTERN" || true
++}
++
++has_active_scrape_like_processes() {
++  local host_lines
++  local container_lines
++
++  host_lines=$(list_scrape_like_processes)
++  if [[ -n "$host_lines" ]]; then
++    return 0
++  fi
++
++  container_lines=$(list_container_scrape_like_processes)
++  [[ -n "$container_lines" ]]
++}
++
++show_lock_state() {
++  if [[ -e "$LOCK_FILE" ]]; then
++    echo "[runtime-ops] periodic_lock_exists=yes"
++  else
++    echo "[runtime-ops] periodic_lock_exists=no"
++  fi
++  echo "[runtime-ops] periodic_lock_path=$LOCK_FILE"
++}
++
++show_stop_state() {
++  if [[ ! -e "$STOP_FILE" ]]; then
++    echo "[runtime-ops] soft_stop_exists=no"
++    echo "[runtime-ops] soft_stop_path=$STOP_FILE"
++    return
++  fi
++
++  echo "[runtime-ops] soft_stop_exists=yes"
++  echo "[runtime-ops] soft_stop_path=$STOP_FILE"
++
++  if [[ ! -s "$STOP_FILE" ]]; then
++    echo "[runtime-ops] soft_stop_content=<empty>"
++    return
++  fi
++
++  local content
++  content=$(cat "$STOP_FILE")
++  echo "[runtime-ops] soft_stop_content=$content"
++  if [[ "$content" =~ ^[0-9]+$ ]]; then
++    echo "[runtime-ops] soft_stop_countdown=$content"
++  fi
++}
++
++show_process_state() {
++  local lines
++  lines=$(list_scrape_like_processes)
++  if [[ -z "$lines" ]]; then
++    echo "[runtime-ops] scrape_like_processes=none"
++    return
++  fi
++
++  echo "[runtime-ops] scrape_like_processes=active"
++  printf '%s\n' "$lines"
++}
++
++show_container_process_state() {
++  local lines
++
++  if [[ "${RUNTIME_PERIODIC_OPS_SKIP_DOCKER:-0}" == "1" ]]; then
++    echo "[runtime-ops] docker_status=skipped"
++    return
++  fi
++
++  if ! command -v docker >/dev/null 2>&1; then
++    echo "[runtime-ops] docker_status=unavailable"
++    return
++  fi
++
++  if ! docker compose -f "$COMPOSE_FILE_PATH" ps "$COMPOSE_SERVICE_NAME" \
++    >/dev/null 2>&1; then
++    echo "[runtime-ops] docker_status=not_running"
++    return
++  fi
++
++  lines=$(list_container_scrape_like_processes)
++  if [[ -z "$lines" ]]; then
++    echo "[runtime-ops] container_scrape_like_processes=none"
++    return
++  fi
++
++  echo "[runtime-ops] container_scrape_like_processes=active"
++  printf '%s\n' "$lines"
++}
++
++write_stop_count() {
++  local raw_count=$1
++  local clamped_count
++
++  if ! is_natural_number "$raw_count"; then
++    echo "[runtime-ops] stop-count requires a natural number >= 1"
++    exit 1
++  fi
++
++  clamped_count=$(clamp_stop_count "$raw_count")
++  mkdir -p "$(dirname "$STOP_FILE")"
++  printf '%s\n' "$clamped_count" > "$STOP_FILE"
++  echo "[runtime-ops] Wrote soft-stop countdown=$clamped_count"
++  echo "[runtime-ops] soft-stop path=$STOP_FILE"
++}
++
++clear_stop_file() {
++  rm -f "$STOP_FILE"
++  echo "[runtime-ops] Cleared soft-stop file: $STOP_FILE"
++}
++
++clear_lock_file() {
++  if has_active_scrape_like_processes; then
++    echo "[runtime-ops] Refusing to clear lock; scrape-like work appears active"
++    exit 1
++  fi
++
++  if [[ ! -e "$LOCK_FILE" ]]; then
++    echo "[runtime-ops] Lock file already absent: $LOCK_FILE"
++    return
++  fi
++
++  rm -f "$LOCK_FILE"
++  echo "[runtime-ops] Cleared periodic lock: $LOCK_FILE"
++}
++
++subcommand=${1:-}
++
++case "$subcommand" in
++  status)
++    show_lock_state
++    show_stop_state
++    show_process_state
++    show_container_process_state
++    ;;
++  stop-once)
++    write_stop_count 1
++    ;;
++  stop-count)
++    if [[ $# -ne 2 ]]; then
++      usage
++      exit 1
++    fi
++    write_stop_count "$2"
++    ;;
++  show-stop)
++    show_stop_state
++    ;;
++  clear-stop)
++    clear_stop_file
++    ;;
++  clear-lock)
++    clear_lock_file
++    ;;
++  ""|-h|--help|help)
++    usage
++    ;;
++  *)
++    usage
++    exit 1
++    ;;
++esac

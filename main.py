@@ -64,6 +64,7 @@ from web_app import serve_web_app
 
 DEFAULT_TARGET_DB_PATH = os.environ.get("TARGET_DB_PATH", "data/nicodic.db")
 DEFAULT_SOFT_TERMINATE_FILE = "runtime/control/stop_after_current"
+MAX_SOFT_TERMINATE_COUNT = 255
 
 # Telemetry only: set True around run_batch_scrape from run_periodic_scrape.
 _inside_periodic_batch: bool = False
@@ -371,10 +372,110 @@ def _format_seconds_value(value: float) -> str:
     return text or "0"
 
 
+def _append_soft_terminate_warning(log_path: Path, message: str) -> None:
+    _append_batch_log_lines(
+        log_path,
+        [
+            "  SOFT_TERMINATE_WARNING",
+            f"    detail={message}",
+        ],
+    )
+
+
+def _emit_soft_terminate_warning(
+    progress_reporter,
+    log_path: Path,
+    message: str,
+) -> None:
+    if progress_reporter is None:
+        print(f"[WARN] {message}")
+    else:
+        note_warning = getattr(progress_reporter, "note_maintenance_warning", None)
+        if callable(note_warning):
+            note_warning(message)
+        else:
+            emit = getattr(progress_reporter, "emit", None)
+            if callable(emit):
+                emit("WARN", message, indent_level=1)
+
+    _append_soft_terminate_warning(log_path, message)
+
+
+def _parse_soft_terminate_countdown(raw_value: str) -> tuple[int | None, str]:
+    if raw_value == "":
+        return None, "empty"
+
+    text = raw_value.strip()
+    if not text:
+        return None, "invalid"
+    if not text.isdigit():
+        return None, "invalid"
+
+    return min(int(text), MAX_SOFT_TERMINATE_COUNT), "countdown"
+
+
+def _rewrite_soft_terminate_file(flag_path: Path, text: str) -> None:
+    flag_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = flag_path.with_name(f".{flag_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp_path.write_text(text, encoding="utf-8")
+        os.replace(temp_path, flag_path)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _consume_soft_terminate_flag(
+    flag_path: Path,
+    *,
+    progress_reporter,
+    log_path: Path,
+) -> None:
+    try:
+        raw_value = flag_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raw_value = ""
+        _emit_soft_terminate_warning(
+            progress_reporter,
+            log_path,
+            "soft_terminate_flag_read_failed "
+            f"path={flag_path} reason={type(exc).__name__}:{exc}",
+        )
+
+    countdown, parsed_kind = _parse_soft_terminate_countdown(raw_value)
+    if parsed_kind != "countdown" or countdown is None or countdown <= 1:
+        try:
+            flag_path.unlink(missing_ok=True)
+        except OSError as exc:
+            _emit_soft_terminate_warning(
+                progress_reporter,
+                log_path,
+                "soft_terminate_flag_remove_failed "
+                f"path={flag_path} reason={type(exc).__name__}:{exc}",
+            )
+        return
+
+    try:
+        _rewrite_soft_terminate_file(flag_path, f"{countdown - 1}\n")
+    except OSError as exc:
+        _emit_soft_terminate_warning(
+            progress_reporter,
+            log_path,
+            "soft_terminate_flag_rewrite_failed "
+            f"path={flag_path} reason={type(exc).__name__}:{exc}",
+        )
+
+
 def _check_controlled_stop(
     total_targets: int,
     processed_targets: int,
     shot_started_monotonic: float,
+    *,
+    progress_reporter,
+    log_path: Path,
 ) -> dict | None:
     remaining_targets = total_targets - processed_targets
     if remaining_targets <= 0:
@@ -382,6 +483,11 @@ def _check_controlled_stop(
 
     flag_path = _soft_terminate_flag_path()
     if flag_path.exists():
+        _consume_soft_terminate_flag(
+            flag_path,
+            progress_reporter=progress_reporter,
+            log_path=log_path,
+        )
         return {
             "kind": "soft_terminate",
             "processed_targets": processed_targets,
@@ -692,6 +798,8 @@ def run_batch_scrape(
             len(targets),
             idx - 1,
             shot_started_monotonic,
+            progress_reporter=progress_reporter,
+            log_path=log_path,
         )
         if controlled_stop is not None:
             _append_batch_controlled_stop(log_path, controlled_stop)
