@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "============================================================"
-echo "REVIEW SNAPSHOT: copilot"
+echo "REVIEW SNAPSHOT: $(basename "$(cd "$(dirname "$0")" && pwd)")"
 echo "repo   : ${REPO_DIR}"
 echo "branch : $(git -C "${REPO_DIR}" branch --show-current)"
 echo "============================================================"

@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "============================================================"
-echo "VALIDATE: copilot"
+echo "VALIDATE: $(basename "$(cd "$(dirname "$0")" && pwd)")"
 echo "repo   : ${REPO_DIR}"
 echo "scope  : repo-local lint and test only"
 echo "============================================================"
