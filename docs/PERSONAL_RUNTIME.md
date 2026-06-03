@@ -162,6 +162,27 @@ The web UI is intentionally separated from immediate execution. It performs
 bounded validation / existence checks, target registration, and saved article
 TXT download only.
 
+## Dev Web Smoke Sample DB
+
+For editor-facing Web smoke checks in this child repo, prefer the lightweight
+Dev sample DB at:
+
+`runtime/data/nicodic.db`
+
+Check that this repo-local DB looks usable without modifying it:
+
+`bash tools/dev_web_smoke.sh`
+
+The helper is read-only. It checks that the DB exists, opens read-only,
+contains the expected Web-facing tables, has non-zero article/response/target
+data, excludes responses for `article_id=5511090` with `article_type=a`, and
+stays within the expected per-article response cap for the distributed sample.
+
+If the DB is missing or looks too large for a Dev sample, the helper fails with
+guidance and points back to the root/meta sample DB builder task
+`RuntimeOps-build-dev-sample-db`. This child repo does not build or copy the
+sample DB itself.
+
 ## Stop
 
 Stop and remove the provisional runtime container:
