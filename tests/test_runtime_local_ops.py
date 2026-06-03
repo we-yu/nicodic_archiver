@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 
 
@@ -177,3 +178,111 @@ def test_runtime_periodic_ops_helper_clear_lock_refuses_when_work_appears_active
     assert result.returncode == 1
     assert "Refusing to clear lock" in result.stdout
     assert lock_file.exists()
+
+
+def test_dev_web_smoke_helper_reports_missing_sample_db_guidance(tmp_path):
+    missing_db = tmp_path / "runtime" / "data" / "nicodic.db"
+
+    env = os.environ.copy()
+    env["DEV_WEB_SMOKE_DB_PATH"] = str(missing_db)
+
+    result = subprocess.run(
+        ["bash", "tools/dev_web_smoke.sh"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert f"db_path={missing_db}" in result.stdout
+    assert "Missing dev sample DB" in result.stderr
+    assert "RuntimeOps-build-dev-sample-db" in result.stderr
+
+
+def test_dev_web_smoke_helper_validates_read_only_sample_db(tmp_path):
+    db_path = tmp_path / "runtime" / "data" / "nicodic.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE articles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id TEXT NOT NULL,
+            article_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            canonical_url TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE responses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id TEXT NOT NULL,
+            article_type TEXT NOT NULL,
+            res_no INTEGER NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE target (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id TEXT NOT NULL,
+            article_type TEXT NOT NULL,
+            canonical_url TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+
+    cur.execute(
+        "INSERT INTO articles (article_id, article_type, title, canonical_url) "
+        "VALUES (?, ?, ?, ?)",
+        (
+            "694740",
+            "a",
+            "UNIX",
+            "https://dic.nicovideo.jp/a/UNIX",
+        ),
+    )
+    cur.execute(
+        "INSERT INTO target (article_id, article_type, canonical_url, is_active) "
+        "VALUES (?, ?, ?, 1)",
+        (
+            "694740",
+            "a",
+            "https://dic.nicovideo.jp/a/UNIX",
+        ),
+    )
+    cur.executemany(
+        "INSERT INTO responses (article_id, article_type, res_no) VALUES (?, ?, ?)",
+        [("694740", "a", index) for index in range(1, 6)],
+    )
+    conn.commit()
+    conn.close()
+
+    env = os.environ.copy()
+    env["DEV_WEB_SMOKE_DB_PATH"] = str(db_path)
+    env["DEV_WEB_SMOKE_MAX_DB_BYTES"] = str(1024 * 1024)
+    env["DEV_WEB_SMOKE_RESPONSE_CAP"] = "10"
+
+    result = subprocess.run(
+        ["bash", "tools/dev_web_smoke.sh"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert f"db_path={db_path}" in result.stdout
+    assert "article_count=1" in result.stdout
+    assert "response_count=5" in result.stdout
+    assert "forbidden_delete_request_responses=0" in result.stdout
+    assert "max_saved_responses_per_article=5" in result.stdout
+    assert "smoke_ready=yes" in result.stdout
