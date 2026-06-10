@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from storage import DEFAULT_DB_PATH
+from storage import DEFAULT_DB_PATH, open_readonly_db
 
 # --- Registered Articles query configuration ---
 
@@ -15,7 +15,7 @@ REGISTERED_SORT_ALLOWLIST = frozenset({
     "article_id",
     "created_at",
     "saved_response_count",
-    "latest_scraped_max_res_no",
+    "saved_max_res_no",
     "last_scraped_at",
 })
 
@@ -42,18 +42,16 @@ REGISTERED_ARTICLE_COLUMNS = [
      "csv_header": "created_at"},
     {"key": "saved_response_count", "label": "Saved Responses",
      "csv_header": "saved_response_count"},
-    {"key": "latest_scraped_max_res_no", "label": "Max Res No",
-     "csv_header": "latest_scraped_max_res_no"},
+    # saved_max_res_no is MAX(res_no) over saved rows, not live board max.
+    {"key": "saved_max_res_no", "label": "Saved Max Res No",
+     "csv_header": "saved_max_res_no"},
     {"key": "last_scraped_at", "label": "Last Scraped",
      "csv_header": "last_scraped_at"},
 ]
 
 
 def _open_archive_read_conn() -> sqlite3.Connection | None:
-    db_path = Path(DEFAULT_DB_PATH)
-    if not db_path.exists():
-        return None
-    return sqlite3.connect(str(db_path))
+    return open_readonly_db(DEFAULT_DB_PATH)
 
 
 def _article_select_columns(conn) -> str:
@@ -736,13 +734,13 @@ def _registered_fallback_title(article_id, canonical_url):
     return ""
 
 
-def _registered_max_res_no_display_sql() -> str:
-    """SQL: numeric max saved res_no, or 0 when a scrape completed with zero."""
+def _registered_saved_max_res_no_display_sql() -> str:
+    """SQL: MAX(saved res_no), or 0 when scrape completed with zero responses."""
     return (
         "CASE WHEN rt.matched_last_scraped_at IS NOT NULL "
         "AND COALESCE(rs.saved_response_count, 0) = 0 "
         "THEN 0 "
-        "ELSE rs.latest_scraped_max_res_no END"
+        "ELSE rs.saved_max_res_no END"
     )
 
 
@@ -779,7 +777,7 @@ def _registered_order_by_clause(sort_by, order_dir, *, max_res_sql: str):
         "saved_response_count": [
             f"COALESCE(rs.saved_response_count, 0) {order_dir}",
         ],
-        "latest_scraped_max_res_no": [
+        "saved_max_res_no": [
             (
                 f"CASE WHEN {max_res_sql} IS NULL "
                 "THEN 1 ELSE 0 END ASC"
@@ -850,7 +848,7 @@ def _registered_row_to_dict(row):
         canonical_url,
         created_at,
         saved_response_count,
-        latest_scraped_max_res_no,
+        saved_max_res_no,
         last_scraped_at,
     ) = row
     aid = (article_id or "").strip()
@@ -866,7 +864,7 @@ def _registered_row_to_dict(row):
         "canonical_url": canonical_url or "",
         "created_at": created_at or "",
         "saved_response_count": saved_response_count or 0,
-        "latest_scraped_max_res_no": latest_scraped_max_res_no,
+        "saved_max_res_no": saved_max_res_no,
         "last_scraped_at": last_scraped_at,
     }
 
@@ -888,6 +886,8 @@ def query_registered_articles(
     Set paginate=False to return all matching rows without LIMIT/OFFSET;
     that is the internal all-records export route.
     """
+    if sort_by == "latest_scraped_max_res_no":
+        sort_by = "saved_max_res_no"
     if sort_by not in REGISTERED_SORT_ALLOWLIST:
         sort_by = DEFAULT_REGISTERED_SORT_BY
     order_dir = "ASC" if sort_order == "asc" else "DESC"
@@ -912,7 +912,7 @@ def query_registered_articles(
             )
         else:
             matched_title_sql = "COALESCE(a_exact.title, a_url.title)"
-        max_res_sql = _registered_max_res_no_display_sql()
+        max_res_sql = _registered_saved_max_res_no_display_sql()
         order_by_sql = _registered_order_by_clause(
             sort_by, order_dir, max_res_sql=max_res_sql,
         )
@@ -975,7 +975,7 @@ def query_registered_articles(
                 rt.target_canonical_url,
                 rt.target_created_at,
                 COALESCE(rs.saved_response_count, 0) AS saved_response_count,
-                ({max_res_sql}) AS latest_scraped_max_res_no,
+                ({max_res_sql}) AS saved_max_res_no,
                 rt.matched_last_scraped_at AS last_scraped_at
             FROM resolved_targets AS rt
             LEFT JOIN (
@@ -983,7 +983,7 @@ def query_registered_articles(
                     article_id,
                     article_type,
                     COUNT(id) AS saved_response_count,
-                    MAX(res_no) AS latest_scraped_max_res_no
+                    MAX(res_no) AS saved_max_res_no
                 FROM responses
                 GROUP BY article_id, article_type
             ) AS rs
@@ -1065,11 +1065,11 @@ def write_scrape_targets_txt(data_dir="data"):
     ]
     for row in articles:
         last_scraped = row.get("last_scraped_at") or "-"
-        max_res = row["latest_scraped_max_res_no"]
+        saved_max = row["saved_max_res_no"]
         lines.append(
             f"type={row['article_type']}"
             f" | responses={row['saved_response_count']}"
-            f" | max_res_no={max_res if max_res is not None else '-'}"
+            f" | saved_max_res_no={saved_max if saved_max is not None else '-'}"
             f" | last_scraped={last_scraped}"
             f" | title={row['title']}"
         )

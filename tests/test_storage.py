@@ -17,6 +17,7 @@ from storage import (
     list_queue_requests,
     list_targets,
     mark_target_redirected,
+    open_readonly_db,
     register_target,
     save_json,
     save_to_db,
@@ -28,6 +29,31 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
     cur = conn.cursor()
     cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
     return {row[0] for row in cur.fetchall()}
+
+
+def test_open_readonly_db_returns_none_without_creating_file(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    conn = open_readonly_db()
+
+    assert conn is None
+    assert not (tmp_path / "data").exists()
+
+
+def test_open_readonly_db_uses_query_only_on_existing_db(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    writer = init_db()
+    writer.close()
+
+    conn = open_readonly_db()
+    assert conn is not None
+    try:
+        assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
+    finally:
+        conn.close()
 
 
 def test_init_db_creates_data_dir_db_and_tables(tmp_path, monkeypatch):

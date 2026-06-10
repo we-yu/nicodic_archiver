@@ -1,0 +1,137 @@
+MainTask-sqlite-read-boundary-and-response-semantics — implementation report
+
+Editor AI model
+---------------
+Auto (Cursor agent router)
+
+Summary
+-------
+Clarified SQLite read vs write boundaries by introducing `open_readonly_db()` and
+routing read-like paths through it. Registered Articles now labels and keys the
+saved MAX(res_no) column as **Saved Max Res No** (`saved_max_res_no`) instead of
+the misleading **Max Res No** / `latest_scraped_max_res_no` wording. Underlying
+SQL still uses `COUNT(id)` and `MAX(res_no)` over saved `responses` rows.
+True live-board observed max remains deferred.
+
+Files changed
+-------------
+- storage.py
+- archive_read.py
+- target_list.py
+- delete_request_feeder.py
+- orchestrator.py
+- main.py
+- web_app.py
+- tests/test_storage.py
+- tests/test_archive_read.py
+- tests/test_target_list.py
+- tests/test_web_app.py
+- tests/test_orchestrator.py
+
+SQLite read-boundary changes
+----------------------------
+Added `storage.open_readonly_db()`:
+- Opens existing DB via SQLite URI `mode=ro` (no file creation).
+- Returns `None` when the path is missing.
+- Sets connect `timeout` and `PRAGMA busy_timeout=5000` (ms).
+- Sets `PRAGMA query_only=ON` on file-backed connections.
+- Does not run `CREATE TABLE`, compatibility ALTERs, or commits.
+
+Switched read paths from `init_db()` to `open_readonly_db()`:
+- archive_read._open_archive_read_conn (all archive read/export/registered queries)
+- target_list.list_active_target_urls
+- target_list.list_registered_targets
+- target_list.inspect_registered_target
+- delete_request_feeder.resolve_internal_article_id_input
+- delete_request_feeder._load_delete_request_responses
+- orchestrator.get_max_saved_res_no
+- orchestrator.load_saved_responses
+- main.py `export-run-telemetry-csv` (read-only CSV export)
+
+Write paths still use `init_db()` (unchanged):
+- target_list.register_target_url, deactivate/reactivate, handoff_redirect
+- orchestrator scrape save / queue drain paths
+- main._record_scrape_run_observation and other archive writes
+
+`init_db()` now also sets the same busy_timeout on writer connections.
+
+SQLite write-boundary changes
+-----------------------------
+No behavioral change to archive-critical writes (`save_to_db`, target
+registration, etc.). Telemetry observation append path unchanged.
+
+Registered Articles semantic/label changes
+------------------------------------------
+- Column key: `latest_scraped_max_res_no` → `saved_max_res_no`
+- UI label: **Max Res No** → **Saved Max Res No**
+- CSV header: `saved_max_res_no`
+- Sort allowlist key: `saved_max_res_no`
+- Legacy sort alias: `sort_by=latest_scraped_max_res_no` maps to
+  `saved_max_res_no` in `archive_read.query_registered_articles` and
+  `web_app._normalize_registered_sort_by`
+- Internal helper renamed to `_registered_saved_max_res_no_display_sql`
+- scrape_targets.txt field: `saved_max_res_no=` (was `max_res_no=`)
+- Web CSS class: `col-saved-max-res` (was `col-max-res`)
+- Comment in REGISTERED_ARTICLE_COLUMNS notes this is not live board max
+
+SQL behavior unchanged: still `MAX(res_no)` over saved rows with zero-response
+checked-board synthetic `0` when `latest_scraped_at` is set.
+
+True observed-board Max Res No
+------------------------------
+Deferred.
+
+Reason: requires reliable capture at scrape/article-top observation time and a
+dedicated persisted field (e.g. on `articles` or telemetry) distinct from saved
+`MAX(res_no)`. `orchestrator.ScrapeResult.observed_max_res_no` already exists at
+runtime for batch logs but is not persisted as the Registered Articles display
+value. Adding schema + backfill in this task would mix historical semantics.
+
+Future seam notes:
+- `get_max_saved_res_no` docstring clarifies saved vs observed.
+- `read_saved_response_observation_stats` docstring clarifies saved stats.
+- Registered column comment documents intent for a future observed-board column.
+
+Schema changes
+--------------
+None.
+
+Index changes
+-------------
+None.
+
+Tests / validation run
+----------------------
+Added/updated tests:
+- test_storage: open_readonly_db missing file (no create), query_only on existing
+- test_archive_read: read path does not call init_db; open_readonly_db behavior;
+  Saved Max Res No column label
+- test_target_list: missing target DB does not create file on list
+- test_web_app: Saved Max Res No header; col-saved-max-res class
+- test_orchestrator: get_max_saved_res_no / load_saved_responses patch
+  `open_readonly_db`
+
+Checks run:
+- git diff --check — passed
+- ./validate.sh — passed (464 tests, flake8 clean)
+- Root `./validate_helix.sh` — Cursor side passed
+
+Safety boundaries preserved
+---------------------------
+- No runtime DB or local nicodic.db files modified
+- No sibling repos, root/meta, runtime checkout, cron, or Docker changes
+- No .vscode/ files created
+- No commits or pushes
+
+Known limitations
+---------------
+- Read-only open fails if DB file missing; callers return empty/None (no implicit
+  schema bootstrap on read paths).
+- `verification_cli.py` still uses `init_db` for read paths (out of task scope).
+- `:memory:` connections skip URI `mode=ro` and `PRAGMA query_only=ON`.
+
+Recommended follow-up tasks
+---------------------------
+1. Persist `observed_board_max_res_no` at scrape time and surface separately in
+   Registered Articles (e.g. **Observed Max Res No**).
+2. Route `verification_cli.py` read paths through `open_readonly_db`.

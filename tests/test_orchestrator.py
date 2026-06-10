@@ -1243,12 +1243,12 @@ def test_run_scrape_representative_skip_path_regression(
 
 
 def test_get_max_saved_res_no_returns_none_when_article_has_no_saved_responses():
-    with patch("orchestrator.init_db") as mock_init:
+    with patch("orchestrator.open_readonly_db") as mock_open:
         conn = MagicMock()
         cur = MagicMock()
         cur.fetchone.return_value = (None,)
         conn.cursor.return_value = cur
-        mock_init.return_value = conn
+        mock_open.return_value = conn
 
         result = get_max_saved_res_no("12345", "a")
 
@@ -1258,7 +1258,7 @@ def test_get_max_saved_res_no_returns_none_when_article_has_no_saved_responses()
 
 
 def test_load_saved_responses_returns_response_dicts_in_res_no_order():
-    with patch("orchestrator.init_db") as mock_init:
+    with patch("orchestrator.open_readonly_db") as mock_open:
         conn = MagicMock()
         cur = MagicMock()
         cur.fetchall.return_value = [
@@ -1266,7 +1266,7 @@ def test_load_saved_responses_returns_response_dicts_in_res_no_order():
             (2, None, None, None, "World", None),
         ]
         conn.cursor.return_value = cur
-        mock_init.return_value = conn
+        mock_open.return_value = conn
 
         result = load_saved_responses("12345", "a")
 

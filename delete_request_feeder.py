@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from article_resolver import resolve_article_input
 from collection_policy import find_denylisted_article_id
-from storage import DEFAULT_DB_PATH, init_db
+from storage import DEFAULT_DB_PATH, open_readonly_db
 from target_list import register_target_url
 
 
@@ -177,7 +177,9 @@ def resolve_internal_article_id_input(
     if not _can_open_archive_db(archive_db_path):
         return None
 
-    conn = init_db(archive_db_path)
+    conn = open_readonly_db(archive_db_path)
+    if conn is None:
+        return None
     try:
         row = conn.execute(
             """
@@ -556,7 +558,9 @@ def _load_delete_request_responses(
     if not _can_open_archive_db(archive_db_path):
         return []
 
-    conn = init_db(archive_db_path)
+    conn = open_readonly_db(archive_db_path)
+    if conn is None:
+        return []
     try:
         rows = conn.execute(
             """

@@ -16,7 +16,7 @@ from archive_read import (
     query_registered_articles,
     write_scrape_targets_txt,
 )
-from storage import init_db, register_target, save_to_db
+from storage import init_db, open_readonly_db, register_target, save_to_db
 
 
 def _seed_archive(tmp_path, monkeypatch):
@@ -573,14 +573,44 @@ def test_archive_read_does_not_call_init_db_on_read_path(
 ):
     _seed_archive(tmp_path, monkeypatch)
 
-    with patch(
-        "archive_read.sqlite3.connect",
-        wraps=sqlite3.connect,
-    ) as mock_connect:
-        result = get_saved_article_summary("12345", "a")
+    with patch("storage.init_db") as mock_init:
+        with patch(
+            "archive_read.open_readonly_db",
+            wraps=open_readonly_db,
+        ) as mock_ro:
+            result = get_saved_article_summary("12345", "a")
 
-    mock_connect.assert_called_once()
+    mock_init.assert_not_called()
+    mock_ro.assert_called_once()
     assert result["found"] is True
+
+
+def test_open_readonly_db_does_not_create_missing_db(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    conn = open_readonly_db()
+
+    assert conn is None
+    assert not (tmp_path / "data" / "nicodic.db").exists()
+
+
+def test_open_readonly_db_opens_existing_db_read_only(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _seed_archive(tmp_path, monkeypatch)
+
+    conn = open_readonly_db()
+    assert conn is not None
+    try:
+        assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_registered_articles_column_label_saved_max_res_no():
+    from archive_read import REGISTERED_ARTICLE_COLUMNS
+
+    col = next(c for c in REGISTERED_ARTICLE_COLUMNS if c["key"] == "saved_max_res_no")
+    assert col["label"] == "Saved Max Res No"
 
 
 def test_get_saved_article_summary_by_id_returns_first_match(
@@ -625,7 +655,7 @@ def test_list_registered_articles_returns_expected_columns(
     assert row["title"] == "First Title"
     assert row["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
     assert row["saved_response_count"] == 1
-    assert row["latest_scraped_max_res_no"] == 1
+    assert row["saved_max_res_no"] == 1
     assert "last_scraped_at" in row
     assert row["article_id"] == "12345"
     assert "created_at" in row
@@ -655,7 +685,7 @@ def test_write_scrape_targets_txt_creates_artifact(
     assert "scrape_targets:" in content
     assert "First Title" in content
     assert "responses=1" in content
-    assert "max_res_no=1" in content
+    assert "saved_max_res_no=1" in content
 
 
 def test_write_scrape_targets_txt_empty_when_no_db(
@@ -723,7 +753,7 @@ def test_query_registered_articles_includes_active_pending_targets(
     assert result["rows"][0]["article_id"] == "8880001"
     assert result["rows"][0]["title"] == "Pending Display Title"
     assert result["rows"][0]["saved_response_count"] == 0
-    assert result["rows"][0]["latest_scraped_max_res_no"] is None
+    assert result["rows"][0]["saved_max_res_no"] is None
     assert result["rows"][0]["last_scraped_at"] is None
 
 
@@ -738,7 +768,7 @@ def test_query_registered_completed_zero_board_shows_checked_state(
     assert len(result["rows"]) == 1
     row = result["rows"][0]
     assert row["saved_response_count"] == 0
-    assert row["latest_scraped_max_res_no"] == 0
+    assert row["saved_max_res_no"] == 0
     assert row["last_scraped_at"] == "2026-06-07T08:09:10+00:00"
 
 
@@ -794,7 +824,7 @@ def test_query_registered_followup_empty_scrape_keeps_prior_responses(
     result = query_registered_articles(search=aid, paginate=False)
     row = result["rows"][0]
     assert row["saved_response_count"] == 2
-    assert row["latest_scraped_max_res_no"] == 2
+    assert row["saved_max_res_no"] == 2
     assert row["last_scraped_at"] == "2026-06-06T06:06:06+00:00"
 
 
@@ -881,7 +911,7 @@ def test_query_registered_articles_matches_saved_numeric_article_by_canonical_ur
     assert row["title"] == "Saved Numeric Title"
     assert row["canonical_url"] == seeded["canonical_url"]
     assert row["saved_response_count"] == 2
-    assert row["latest_scraped_max_res_no"] == 2
+    assert row["saved_max_res_no"] == 2
     assert row["last_scraped_at"] == "2026-04-02T00:00:00+00:00"
 
 
@@ -1089,7 +1119,7 @@ def test_query_registered_articles_sorts_max_res_no_numerically(
     )
 
     result = query_registered_articles(
-        sort_by="latest_scraped_max_res_no",
+        sort_by="saved_max_res_no",
         sort_order="asc",
         paginate=False,
     )
