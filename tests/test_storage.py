@@ -6,6 +6,8 @@ These tests run in a temp working directory so production `data/` is untouched.
 import json
 import sqlite3
 
+import pytest
+
 import storage
 from storage import (
     append_scrape_run_observation,
@@ -17,6 +19,7 @@ from storage import (
     list_queue_requests,
     list_targets,
     mark_target_redirected,
+    open_db_readonly,
     register_target,
     save_json,
     save_to_db,
@@ -47,6 +50,36 @@ def test_init_db_creates_data_dir_db_and_tables(tmp_path, monkeypatch):
         assert "scrape_run_observation" in tables
     finally:
         conn.close()
+
+
+def test_open_db_readonly_returns_none_without_creating_missing_db(tmp_path):
+    missing_db_path = tmp_path / "missing.db"
+
+    conn = open_db_readonly(str(missing_db_path))
+
+    assert conn is None
+    assert missing_db_path.exists() is False
+
+
+def test_open_db_readonly_opens_existing_db_without_write_init(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    writable_conn = init_db()
+    writable_conn.close()
+
+    conn = open_db_readonly(str(tmp_path / "data" / "nicodic.db"))
+    try:
+        assert conn is not None
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM sqlite_master")
+        assert cur.fetchone()[0] > 0
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("CREATE TABLE should_fail (id INTEGER)")
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def test_save_to_db_inserts_article_and_responses_and_mapping(tmp_path, monkeypatch):

@@ -1061,7 +1061,7 @@ def _make_reg_row(
     title="テスト記事",
     canonical_url="https://dic.nicovideo.jp/a/12345",
     saved_response_count=42,
-    latest_scraped_max_res_no=50,
+    saved_max_res_no=50,
     last_scraped_at="2026-01-01T00:00:00+00:00",
     created_at="2026-01-01T00:00:00+00:00",
 ):
@@ -1071,7 +1071,7 @@ def _make_reg_row(
         "title": title,
         "canonical_url": canonical_url,
         "saved_response_count": saved_response_count,
-        "latest_scraped_max_res_no": latest_scraped_max_res_no,
+        "saved_max_res_no": saved_max_res_no,
         "last_scraped_at": last_scraped_at,
         "created_at": created_at,
     }
@@ -1253,7 +1253,7 @@ def test_registered_page_highlights_not_scraped_rows():
     unscrapped = _make_reg_row(
         title="未スクレイプ",
         saved_response_count=0,
-        latest_scraped_max_res_no=None,
+        saved_max_res_no=None,
         last_scraped_at=None,
     )
     with patch(
@@ -1269,7 +1269,7 @@ def test_registered_page_checked_zero_responses_skips_highlight_class():
     row = _make_reg_row(
         title="スクレイプ済みゼロレス",
         saved_response_count=0,
-        latest_scraped_max_res_no=0,
+        saved_max_res_no=0,
         last_scraped_at="2026-06-06T06:06:06+00:00",
         created_at="2026-01-01T00:00:00+00:00",
     )
@@ -1337,7 +1337,7 @@ def test_registered_page_lists_multiple_articles():
             title="記事A",
             canonical_url="https://dic.nicovideo.jp/a/1",
             saved_response_count=10,
-            latest_scraped_max_res_no=10,
+            saved_max_res_no=10,
             last_scraped_at=None,
         ),
         _make_reg_row(
@@ -1346,7 +1346,7 @@ def test_registered_page_lists_multiple_articles():
             title="記事B",
             canonical_url="https://dic.nicovideo.jp/id/2",
             saved_response_count=5,
-            latest_scraped_max_res_no=None,
+            saved_max_res_no=None,
             last_scraped_at=None,
         ),
     ]
@@ -1396,7 +1396,7 @@ def test_registered_page_csv_renders_pending_target_rows():
         title="pending-slug",
         canonical_url="https://dic.nicovideo.jp/a/pending-slug",
         saved_response_count=0,
-        latest_scraped_max_res_no=None,
+        saved_max_res_no=None,
         last_scraped_at=None,
     )
     with patch(

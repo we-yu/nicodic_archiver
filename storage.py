@@ -11,6 +11,22 @@ from pathlib import Path
 DEFAULT_DB_PATH = "data/nicodic.db"
 
 
+def open_db_readonly(
+    db_path: str = DEFAULT_DB_PATH,
+) -> sqlite3.Connection | None:
+    """Open an existing SQLite DB in read-only mode without schema init."""
+
+    if db_path == ":memory:":
+        return sqlite3.connect(db_path)
+
+    path = Path(db_path)
+    if not path.exists():
+        return None
+
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    return sqlite3.connect(uri, uri=True)
+
+
 def validate_saved_article_identity(article_id: str, article_type: str) -> None:
     """
     Validate saved archive identity at the persistence boundary.

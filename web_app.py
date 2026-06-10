@@ -1036,7 +1036,7 @@ def _registered_column_class(key: str) -> str:
         "canonical_url": "col-canonical-url",
         "created_at": "col-created-at",
         "saved_response_count": "col-saved-count",
-        "latest_scraped_max_res_no": "col-max-res",
+        "saved_max_res_no": "col-max-res",
         "last_scraped_at": "col-last-scraped",
     }
     return classes.get(key, "")
@@ -1045,7 +1045,7 @@ def _registered_column_class(key: str) -> str:
 def _registered_align_class(key: str) -> str:
     if key in {"title", "canonical_url"}:
         return "align-left"
-    if key in {"article_id", "saved_response_count", "latest_scraped_max_res_no"}:
+    if key in {"article_id", "saved_response_count", "saved_max_res_no"}:
         return "align-right"
     return "align-center"
 

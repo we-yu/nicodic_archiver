@@ -1,0 +1,116 @@
+Editor AI model: GitHub Copilot GPT-5.4
+
+Summary
+- Added a small SQLite read-only connection helper so selected read paths no
+  longer call schema-initializing init_db(...).
+- Switched archive, target registry, delete-feeder archive reads, and
+  orchestrator resume reads onto that read-only helper where safe.
+- Renamed Registered Articles current MAX(res_no) semantics to saved-max
+  wording so the UI and CSV no longer imply a true board-observed max.
+- Preserved archive-critical write behavior and existing telemetry lock
+  tolerance behavior.
+
+Files changed
+- storage.py
+- archive_read.py
+- target_list.py
+- delete_request_feeder.py
+- orchestrator.py
+- web_app.py
+- tests/test_storage.py
+- tests/test_archive_read.py
+- tests/test_orchestrator.py
+- tests/test_web_app.py
+- MainTask-sqlite-read-boundary-and-response-semantics_report.txt
+
+SQLite read-boundary changes
+- Added storage.open_db_readonly(...), which opens an existing SQLite DB in
+  read-only mode and does not perform schema creation or compatibility ALTERs.
+- archive_read.py now uses the read-only helper for archive summary/export and
+  Registered Articles queries.
+- target_list.py now uses the read-only helper for list and inspect paths:
+  list_active_target_urls(...), list_registered_targets(...), and
+  inspect_registered_target(...).
+- delete_request_feeder.py now uses the read-only helper for
+  resolve_internal_article_id_input(...) and _load_delete_request_responses(...).
+- orchestrator.py now uses the read-only helper for resume/read-side helpers:
+  get_max_saved_res_no(...) and load_saved_responses(...).
+
+SQLite write-boundary changes, if any
+- No archive-critical write path was downgraded or relaxed.
+- init_db(...) remains the explicit schema-initializing write-capable entry
+  point for write flows.
+- save_to_db(...), target registry writes, and redirect handoff writes remain
+  strict and fatal on failure.
+
+Registered Articles semantic/label changes
+- Registered Articles column key and CSV header changed from
+  latest_scraped_max_res_no to saved_max_res_no.
+- Registered Articles visible label changed from Max Res No to
+  Saved Max Res No.
+- The current SQL meaning is still MAX(res_no) over saved response rows, with
+  the existing zero-response checked-state display rule preserved.
+- write_scrape_targets_txt(...) now uses saved_max_res_no wording in the human
+  readable snapshot output so the saved-only meaning is explicit there too.
+- web_app.py column class and alignment mapping were updated to the new key.
+- query_registered_articles(...) keeps a bounded legacy sort alias so older
+  sort_by=latest_scraped_max_res_no requests still resolve to the new saved-max
+  sort behavior.
+
+Whether true observed-board Max Res No was implemented or deferred
+- Deferred.
+
+If deferred, why
+- The current persistence layer does not store a distinct board-observed final
+  response number separately from saved rows.
+- Adding true observed-board max cleanly would require an explicit persistence
+  seam and likely schema evolution, which is larger and riskier than this task.
+- This task focused on making the current semantics honest and preparing the
+  codebase for a future split without introducing mixed historical semantics.
+
+Schema changes, if any
+- None.
+
+Index changes, if any
+- None.
+
+Tests / validation run
+- docker compose run --rm --entrypoint "" scraper pytest -q
+  tests/test_storage.py tests/test_archive_read.py tests/test_target_list.py
+  tests/test_delete_request_feeder.py tests/test_orchestrator.py
+  tests/test_web_app.py
+  -> 231 passed in 6.80s
+- docker compose run --rm --entrypoint "" scraper flake8 storage.py
+  archive_read.py target_list.py delete_request_feeder.py orchestrator.py
+  web_app.py tests/test_storage.py tests/test_archive_read.py
+  tests/test_orchestrator.py tests/test_web_app.py
+  -> passed with no output
+- git diff --check
+  -> passed with no output
+- ./validate.sh
+  -> 460 passed in 12.09s
+
+Safety boundaries preserved
+- No runtime DB files were edited.
+- No Docker restart or runtime operation was performed.
+- No cron changes were made.
+- No root/meta files were touched.
+- No sibling repository outside this child repo was modified.
+- No schema migration or index addition was introduced.
+
+Known limitations
+- archive_read.py still uses defensive OperationalError-to-empty/not-found
+  behavior on several read paths; this task did not redesign that policy.
+- The new read-only helper returns a normal :memory: connection for that special
+  case because SQLite read-only URI semantics do not apply usefully there.
+- Saved Max Res No is still derived from saved rows, not from explicit observed
+  board state.
+
+Recommended follow-up tasks
+- Add an explicit persisted observed board max response number if a clean write
+  seam and migration plan are approved.
+- Review whether archive read paths should distinguish transient DB-unavailable
+  states from true not-found states for UI/operator consumers.
+- Consider whether remaining read-only CLI/reporting paths that still use
+  init_db(...) should be migrated to the read-only helper in a similarly small,
+  well-tested follow-up.
