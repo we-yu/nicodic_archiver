@@ -40,6 +40,7 @@ from storage import (
     append_scrape_run_observation,
     format_run_telemetry_csv_wide,
     init_db,
+    open_readonly_db,
 )
 from target_ordering import TargetOrderConfig
 from target_ordering import format_target_order_log_line
@@ -2045,7 +2046,10 @@ def main():
             )
             sys.exit(1)
 
-        conn = init_db(db_path)
+        conn = open_readonly_db(db_path)
+        if conn is None:
+            print(f"ERROR: database not found: {db_path}", file=sys.stderr)
+            sys.exit(1)
         try:
             csv_text = format_run_telemetry_csv_wide(conn)
         finally:

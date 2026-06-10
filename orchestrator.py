@@ -16,6 +16,7 @@ from storage import (
     dequeue_canonical_target,
     init_db,
     list_queue_requests,
+    open_readonly_db,
     save_to_db,
     validate_saved_article_identity,
 )
@@ -341,9 +342,11 @@ def is_redirect_article_page(article_url: str, soup) -> bool:
 
 
 def get_max_saved_res_no(article_id: str, article_type: str) -> int | None:
-    """Return the highest saved response number for the article, if any."""
+    """Return MAX(res_no) among saved rows (not live board-observed max)."""
 
-    conn = init_db()
+    conn = open_readonly_db()
+    if conn is None:
+        return None
     try:
         cur = conn.cursor()
         cur.execute(
@@ -365,7 +368,9 @@ def get_max_saved_res_no(article_id: str, article_type: str) -> int | None:
 def load_saved_responses(article_id: str, article_type: str) -> list[dict]:
     """Load saved responses in res_no order for JSON refresh after resume."""
 
-    conn = init_db()
+    conn = open_readonly_db()
+    if conn is None:
+        return []
     try:
         cur = conn.cursor()
         cur.execute(

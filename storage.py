@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 DEFAULT_DB_PATH = "data/nicodic.db"
+DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5000
 
 
 def validate_saved_article_identity(article_id: str, article_type: str) -> None:
@@ -118,6 +119,35 @@ def _ensure_article_metadata_columns(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def open_readonly_db(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection | None:
+    """
+    Open an existing SQLite database for read-only queries.
+
+    Does not create the database file, run schema initialization, or commit
+    compatibility ALTERs. Returns None when the path is missing.
+    """
+
+    if db_path == ":memory:":
+        return sqlite3.connect(
+            db_path,
+            timeout=DEFAULT_SQLITE_BUSY_TIMEOUT_MS / 1000.0,
+        )
+
+    path = Path(db_path)
+    if not path.exists():
+        return None
+
+    uri = f"file:{path.resolve()}?mode=ro"
+    conn = sqlite3.connect(
+        uri,
+        uri=True,
+        timeout=DEFAULT_SQLITE_BUSY_TIMEOUT_MS / 1000.0,
+    )
+    conn.execute(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA query_only=ON")
+    return conn
+
+
 def init_db(db_path: str = DEFAULT_DB_PATH):
     """
     SQLite初期化（テーブル作成）。
@@ -127,7 +157,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     db_dir = Path(db_path).parent
     db_dir.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(
+        db_path,
+        timeout=DEFAULT_SQLITE_BUSY_TIMEOUT_MS / 1000.0,
+    )
+    conn.execute(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
     cur = conn.cursor()
 
     cur.execute("""
@@ -693,7 +727,7 @@ _OUTCOMES = frozenset(
 
 
 def read_saved_response_observation_stats(conn, article_id, article_type):
-    """Read-only counts for telemetry (OUT path; no writes)."""
+    """Read-only saved archive stats (COUNT + MAX(res_no)); not board-observed max."""
 
     cur = conn.cursor()
     cur.execute(

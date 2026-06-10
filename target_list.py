@@ -3,9 +3,15 @@ from pathlib import Path
 from article_resolver import resolve_article_input
 from collection_policy import find_denylisted_article_id
 from dicopedia_urls import parse_target_identity
-from storage import get_target, init_db, list_targets, mark_target_redirected
-from storage import register_target
-from storage import set_target_active_state
+from storage import (
+    get_target,
+    init_db,
+    list_targets,
+    mark_target_redirected,
+    open_readonly_db,
+    register_target,
+    set_target_active_state,
+)
 
 
 def _parse_target_line(raw_line: str) -> str | None:
@@ -20,7 +26,9 @@ def _parse_target_line(raw_line: str) -> str | None:
 def list_active_target_urls(target_db_path: str) -> list[str]:
     """Load active target URLs from the SQLite-backed target registry."""
 
-    conn = init_db(target_db_path)
+    conn = open_readonly_db(target_db_path)
+    if conn is None:
+        return []
     try:
         return [entry["canonical_url"] for entry in list_targets(conn)]
     finally:
@@ -34,7 +42,9 @@ def list_registered_targets(
 ) -> list[dict]:
     """Load registry entries for operator-facing list views."""
 
-    conn = init_db(target_db_path)
+    conn = open_readonly_db(target_db_path)
+    if conn is None:
+        return []
     try:
         return list_targets(conn, active_only=active_only)
     finally:
@@ -107,7 +117,9 @@ def inspect_registered_target(
 ) -> dict | None:
     """Load one target registry entry for operator-facing inspection."""
 
-    conn = init_db(target_db_path)
+    conn = open_readonly_db(target_db_path)
+    if conn is None:
+        return None
     try:
         return get_target(conn, article_id, article_type)
     finally:

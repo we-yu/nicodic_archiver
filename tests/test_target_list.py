@@ -28,6 +28,13 @@ def _mock_resolve_for_slug_numeric_pair(canonical_url: str, numeric_id: str):
     }
 
 
+def test_list_active_target_urls_missing_db_does_not_create_file(tmp_path):
+    target_db_path = tmp_path / "missing.db"
+
+    assert list_active_target_urls(str(target_db_path)) == []
+    assert not target_db_path.exists()
+
+
 def test_list_active_target_urls_reads_registered_targets_stably(tmp_path):
     target_db_path = tmp_path / "targets.db"
 
