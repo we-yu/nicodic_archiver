@@ -19,6 +19,14 @@ REGISTERED_SORT_ALLOWLIST = frozenset({
     "last_scraped_at",
 })
 
+# Sorts that order on target/article fields only; stats are fetched after paging.
+REGISTERED_PAGE_FIRST_SORTS = frozenset({
+    "created_at",
+    "last_scraped_at",
+    "title",
+    "article_id",
+})
+
 # Search only fields users can understand from the visible table.
 REGISTERED_SEARCH_COLUMNS = ("title", "article_id")
 
@@ -734,6 +742,168 @@ def _registered_fallback_title(article_id, canonical_url):
     return ""
 
 
+def _registered_uses_page_first_sort(sort_by: str) -> bool:
+    return sort_by in REGISTERED_PAGE_FIRST_SORTS
+
+
+def _registered_build_resolved_targets_cte(
+    *,
+    matched_title_sql: str,
+    matched_last_scraped_expr: str,
+) -> str:
+    return f"""
+            WITH resolved_targets AS (
+                SELECT
+                    t.id AS target_row_id,
+                    t.article_id AS target_article_id,
+                    t.article_type AS target_article_type,
+                    t.canonical_url AS target_canonical_url,
+                    t.created_at AS target_created_at,
+                    COALESCE(a_exact.article_id, a_url.article_id)
+                        AS matched_article_id,
+                    COALESCE(a_exact.article_type, a_url.article_type)
+                        AS matched_article_type,
+                    {matched_title_sql}
+                        AS matched_title,
+                    {matched_last_scraped_expr} AS matched_last_scraped_at
+                FROM target AS t
+                LEFT JOIN articles AS a_exact
+                    ON t.article_id = a_exact.article_id
+                    AND t.article_type = a_exact.article_type
+                LEFT JOIN articles AS a_url
+                    ON a_exact.id IS NULL
+                    AND a_url.id = (
+                        SELECT a2.id
+                        FROM articles AS a2
+                        WHERE a2.article_type = t.article_type
+                          AND a2.canonical_url = t.canonical_url
+                        ORDER BY a2.id ASC
+                        LIMIT 1
+                    )
+                WHERE t.is_active = 1
+            )
+        """
+
+
+def _registered_build_search_clause(search):
+    if not search:
+        return "", []
+    conds = []
+    for col in REGISTERED_SEARCH_COLUMNS:
+        expr = _registered_search_sql_expr(col)
+        conds.append(f"{expr} LIKE ? ESCAPE '\\'")
+    where_sql = "WHERE (" + " OR ".join(conds) + ")"
+    escaped_search = _escape_registered_like_term(search)
+    where_params = [
+        f"%{escaped_search}%" for _ in REGISTERED_SEARCH_COLUMNS
+    ]
+    return where_sql, where_params
+
+
+def _registered_fetch_response_stats(conn, identities):
+    """Read saved COUNT/MAX(res_no) for explicit article identities only."""
+
+    unique = []
+    seen = set()
+    for article_id, article_type in identities:
+        if article_id is None or article_type is None:
+            continue
+        key = (article_id, article_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(key)
+    if not unique:
+        return {}
+
+    placeholders = ",".join(["(?, ?)"] * len(unique))
+    params = [part for pair in unique for part in pair]
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT article_id, article_type, COUNT(id), MAX(res_no)
+        FROM responses
+        WHERE (article_id, article_type) IN ({placeholders})
+        GROUP BY article_id, article_type
+        """,
+        params,
+    )
+    return {
+        (row[0], row[1]): {"count": int(row[2]), "max_res": row[3]}
+        for row in cur.fetchall()
+    }
+
+
+def _registered_display_saved_max_res_no(
+    matched_last_scraped_at,
+    saved_response_count,
+    saved_max_res_no,
+):
+    if (
+        matched_last_scraped_at
+        and saved_response_count == 0
+    ):
+        return 0
+    return saved_max_res_no
+
+
+def _registered_page_shell_row_to_dict(shell_row, stats_map):
+    (
+        article_id,
+        article_type,
+        title,
+        canonical_url,
+        created_at,
+        matched_article_id,
+        matched_article_type,
+        last_scraped_at,
+    ) = shell_row
+    stat = None
+    if matched_article_id is not None and matched_article_type is not None:
+        stat = stats_map.get((matched_article_id, matched_article_type))
+    saved_response_count = stat["count"] if stat else 0
+    saved_max_res_no = stat["max_res"] if stat else None
+    display_max = _registered_display_saved_max_res_no(
+        last_scraped_at,
+        saved_response_count,
+        saved_max_res_no,
+    )
+    return _registered_row_to_dict(
+        (
+            article_id,
+            article_type,
+            title,
+            canonical_url,
+            created_at,
+            saved_response_count,
+            display_max,
+            last_scraped_at,
+        )
+    )
+
+
+def _registered_target_scoped_response_stats_sql() -> str:
+    return """
+            SELECT
+                r.article_id,
+                r.article_type,
+                COUNT(r.id) AS saved_response_count,
+                MAX(r.res_no) AS saved_max_res_no
+            FROM responses AS r
+            INNER JOIN (
+                SELECT DISTINCT
+                    matched_article_id AS article_id,
+                    matched_article_type AS article_type
+                FROM resolved_targets
+                WHERE matched_article_id IS NOT NULL
+                  AND matched_article_type IS NOT NULL
+            ) AS target_ids
+                ON r.article_id = target_ids.article_id
+                AND r.article_type = target_ids.article_type
+            GROUP BY r.article_id, r.article_type
+        """
+
+
 def _registered_saved_max_res_no_display_sql() -> str:
     """SQL: MAX(saved res_no), or 0 when scrape completed with zero responses."""
     return (
@@ -912,102 +1082,96 @@ def query_registered_articles(
             )
         else:
             matched_title_sql = "COALESCE(a_exact.title, a_url.title)"
+        base_cte_sql = _registered_build_resolved_targets_cte(
+            matched_title_sql=matched_title_sql,
+            matched_last_scraped_expr=matched_last_scraped_expr,
+        )
+        where_sql, where_params = _registered_build_search_clause(search)
         max_res_sql = _registered_saved_max_res_no_display_sql()
         order_by_sql = _registered_order_by_clause(
             sort_by, order_dir, max_res_sql=max_res_sql,
         )
-        base_cte_sql = f"""
-            WITH resolved_targets AS (
-                SELECT
-                    t.id AS target_row_id,
-                    t.article_id AS target_article_id,
-                    t.article_type AS target_article_type,
-                    t.canonical_url AS target_canonical_url,
-                    t.created_at AS target_created_at,
-                    COALESCE(a_exact.article_id, a_url.article_id)
-                        AS matched_article_id,
-                    COALESCE(a_exact.article_type, a_url.article_type)
-                        AS matched_article_type,
-                    {matched_title_sql}
-                        AS matched_title,
-                    {matched_last_scraped_expr} AS matched_last_scraped_at
-                FROM target AS t
-                LEFT JOIN articles AS a_exact
-                    ON t.article_id = a_exact.article_id
-                    AND t.article_type = a_exact.article_type
-                LEFT JOIN articles AS a_url
-                    ON a_exact.id IS NULL
-                    AND a_url.id = (
-                        SELECT a2.id
-                        FROM articles AS a2
-                        WHERE a2.article_type = t.article_type
-                          AND a2.canonical_url = t.canonical_url
-                        ORDER BY a2.id ASC
-                        LIMIT 1
-                    )
-                WHERE t.is_active = 1
-            )
-        """
 
-        where_params: list = []
-        where_sql = ""
-        if search:
-            conds = []
-            for col in REGISTERED_SEARCH_COLUMNS:
-                expr = _registered_search_sql_expr(col)
-                conds.append(f"{expr} LIKE ? ESCAPE '\\'")
-            where_sql = "WHERE (" + " OR ".join(conds) + ")"
-            escaped_search = _escape_registered_like_term(search)
-            where_params = [
-                f"%{escaped_search}%" for _ in REGISTERED_SEARCH_COLUMNS
-            ]
-
-        count_sql = base_cte_sql + f"""
+        cur = conn.cursor()
+        cur.execute(
+            base_cte_sql + f"""
             SELECT COUNT(*)
             FROM resolved_targets AS rt
             {where_sql}
-        """
-        data_sql = base_cte_sql + f"""
-            SELECT
-                rt.target_article_id,
-                rt.target_article_type,
-                rt.matched_title,
-                rt.target_canonical_url,
-                rt.target_created_at,
-                COALESCE(rs.saved_response_count, 0) AS saved_response_count,
-                ({max_res_sql}) AS saved_max_res_no,
-                rt.matched_last_scraped_at AS last_scraped_at
-            FROM resolved_targets AS rt
-            LEFT JOIN (
-                SELECT
-                    article_id,
-                    article_type,
-                    COUNT(id) AS saved_response_count,
-                    MAX(res_no) AS saved_max_res_no
-                FROM responses
-                GROUP BY article_id, article_type
-            ) AS rs
-                ON rt.matched_article_id = rs.article_id
-                AND rt.matched_article_type = rs.article_type
-            {where_sql}
-            ORDER BY
-                {order_by_sql}
-        """
-
-        cur = conn.cursor()
-        cur.execute(count_sql, where_params)
+            """,
+            where_params,
+        )
         total = cur.fetchone()[0]
 
-        if paginate:
-            offset = (page - 1) * per_page
-            cur.execute(
-                data_sql + " LIMIT ? OFFSET ?",
-                where_params + [per_page, offset],
-            )
-        else:
-            cur.execute(data_sql, where_params)
+        if _registered_uses_page_first_sort(sort_by):
+            page_sql = base_cte_sql + f"""
+                SELECT
+                    rt.target_article_id,
+                    rt.target_article_type,
+                    rt.matched_title,
+                    rt.target_canonical_url,
+                    rt.target_created_at,
+                    rt.matched_article_id,
+                    rt.matched_article_type,
+                    rt.matched_last_scraped_at
+                FROM resolved_targets AS rt
+                {where_sql}
+                ORDER BY
+                    {order_by_sql}
+            """
+            if paginate:
+                offset = (page - 1) * per_page
+                cur.execute(
+                    page_sql + " LIMIT ? OFFSET ?",
+                    where_params + [per_page, offset],
+                )
+            else:
+                cur.execute(page_sql, where_params)
 
-        rows = [_registered_row_to_dict(r) for r in cur.fetchall()]
+            shell_rows = cur.fetchall()
+            stats_map = _registered_fetch_response_stats(
+                conn,
+                [
+                    (row[5], row[6])
+                    for row in shell_rows
+                ],
+            )
+            rows = [
+                _registered_page_shell_row_to_dict(shell_row, stats_map)
+                for shell_row in shell_rows
+            ]
+        else:
+            stats_sql = _registered_target_scoped_response_stats_sql()
+            data_sql = base_cte_sql + f"""
+                SELECT
+                    rt.target_article_id,
+                    rt.target_article_type,
+                    rt.matched_title,
+                    rt.target_canonical_url,
+                    rt.target_created_at,
+                    COALESCE(rs.saved_response_count, 0) AS saved_response_count,
+                    ({max_res_sql}) AS saved_max_res_no,
+                    rt.matched_last_scraped_at AS last_scraped_at
+                FROM resolved_targets AS rt
+                LEFT JOIN (
+                    {stats_sql}
+                ) AS rs
+                    ON rt.matched_article_id = rs.article_id
+                    AND rt.matched_article_type = rs.article_type
+                {where_sql}
+                ORDER BY
+                    {order_by_sql}
+            """
+            if paginate:
+                offset = (page - 1) * per_page
+                cur.execute(
+                    data_sql + " LIMIT ? OFFSET ?",
+                    where_params + [per_page, offset],
+                )
+            else:
+                cur.execute(data_sql, where_params)
+
+            rows = [_registered_row_to_dict(r) for r in cur.fetchall()]
     except sqlite3.OperationalError:
         return {"rows": [], "total": 0, "page": page, "per_page": per_page}
     finally:
