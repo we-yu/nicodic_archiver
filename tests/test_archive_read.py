@@ -16,6 +16,7 @@ from archive_read import (
     query_registered_articles,
     write_scrape_targets_txt,
 )
+import archive_read
 from storage import init_db, open_readonly_db, register_target, save_to_db
 
 
@@ -1242,6 +1243,166 @@ def test_query_registered_articles_no_db_returns_empty(
 
     assert result["rows"] == []
     assert result["total"] == 0
+
+
+def test_query_registered_fast_path_fetches_stats_only_for_page_identities(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+    _seed_pending_target(
+        tmp_path,
+        monkeypatch,
+        article_id="8880002",
+        canonical_url="https://dic.nicovideo.jp/a/pending-two",
+        created_at="2026-02-02T00:00:00+00:00",
+    )
+
+    captured = []
+    real_fetch = archive_read._registered_fetch_response_stats
+
+    def spy_fetch(conn, identities):
+        captured.append(list(identities))
+        return real_fetch(conn, identities)
+
+    with patch(
+        "archive_read._registered_fetch_response_stats",
+        side_effect=spy_fetch,
+    ):
+        query_registered_articles(
+            sort_by="created_at",
+            per_page=1,
+            page=1,
+        )
+
+    assert len(captured) == 1
+    assert len(captured[0]) == 1
+
+
+def test_query_registered_fast_path_page_choice_ignores_off_page_responses(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "100",
+            "a",
+            "https://dic.nicovideo.jp/a/100",
+            title="Old Many",
+        )
+        conn.execute(
+            """
+            UPDATE target
+            SET created_at=?
+            WHERE article_id=? AND article_type=?
+            """,
+            ("2026-01-01T00:00:00+00:00", "100", "a"),
+        )
+        save_to_db(
+            conn,
+            "100",
+            "a",
+            "Old Many",
+            "https://dic.nicovideo.jp/a/100",
+            [
+                {
+                    "res_no": res_no,
+                    "id_hash": f"h{res_no}",
+                    "poster_name": "A",
+                    "posted_at": "2025-01-01",
+                    "content": f"c{res_no}",
+                    "content_html": f"<p>c{res_no}</p>",
+                }
+                for res_no in range(1, 51)
+            ],
+            latest_scraped_at="2026-01-02T00:00:00+00:00",
+        )
+        register_target(
+            conn,
+            "200",
+            "a",
+            "https://dic.nicovideo.jp/a/200",
+            title="New Empty",
+        )
+        conn.execute(
+            """
+            UPDATE target
+            SET created_at=?
+            WHERE article_id=? AND article_type=?
+            """,
+            ("2026-06-01T00:00:00+00:00", "200", "a"),
+        )
+    finally:
+        conn.close()
+
+    result = query_registered_articles(
+        sort_by="created_at",
+        sort_order="desc",
+        per_page=1,
+        page=1,
+    )
+
+    assert result["rows"][0]["article_id"] == "200"
+    assert result["rows"][0]["saved_response_count"] == 0
+    assert result["rows"][0]["saved_max_res_no"] is None
+
+
+def test_query_registered_fast_path_includes_page_response_stats(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    result = query_registered_articles(
+        sort_by="created_at",
+        sort_order="desc",
+        per_page=1,
+        page=1,
+    )
+
+    row = result["rows"][0]
+    assert row["saved_response_count"] == 1
+    assert row["saved_max_res_no"] == 1
+
+
+def test_query_registered_legacy_sort_alias_maps_to_saved_max_res_no(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "21",
+        created_at="2026-01-01T00:00:00+00:00",
+        response_numbers=[2],
+        latest_scraped_at="2026-01-01T00:00:00+00:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "22",
+        created_at="2026-01-01T00:00:00+00:00",
+        response_numbers=[10],
+        latest_scraped_at="2026-01-01T00:00:00+00:00",
+    )
+
+    legacy = query_registered_articles(
+        sort_by="latest_scraped_max_res_no",
+        sort_order="asc",
+        paginate=False,
+    )
+    current = query_registered_articles(
+        sort_by="saved_max_res_no",
+        sort_order="asc",
+        paginate=False,
+    )
+
+    assert [row["article_id"] for row in legacy["rows"]] == [
+        row["article_id"] for row in current["rows"]
+    ]
 
 
 def test_registered_article_columns_keys_are_consistent():
