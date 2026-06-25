@@ -800,9 +800,18 @@ def _registered_build_search_clause(search):
     return where_sql, where_params
 
 
-def _registered_fetch_response_stats(conn, identities):
-    """Read saved COUNT/MAX(res_no) for explicit article identities only."""
+def _registered_has_article_response_stats_table(conn):
+    """Return whether the materialized summary table exists (older DB compat)."""
 
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='article_response_stats'"
+    )
+    return cur.fetchone() is not None
+
+
+def _registered_unique_identities(identities):
     unique = []
     seen = set()
     for article_id, article_type in identities:
@@ -813,8 +822,33 @@ def _registered_fetch_response_stats(conn, identities):
             continue
         seen.add(key)
         unique.append(key)
-    if not unique:
-        return {}
+    return unique
+
+
+def _registered_stats_from_summary(conn, unique):
+    placeholders = ",".join(["(?, ?)"] * len(unique))
+    params = [part for pair in unique for part in pair]
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT article_id, article_type, saved_response_count, saved_max_res_no
+        FROM article_response_stats
+        WHERE (article_id, article_type) IN ({placeholders})
+        """,
+        params,
+    )
+    return {
+        (row[0], row[1]): {"count": int(row[2]), "max_res": row[3]}
+        for row in cur.fetchall()
+    }
+
+
+def _registered_stats_from_responses(conn, unique):
+    """Bounded fallback: aggregate responses for the given identities only.
+
+    Bounded to the page identities (at most one page worth), so this never
+    performs an unbounded full-table aggregation.
+    """
 
     placeholders = ",".join(["(?, ?)"] * len(unique))
     params = [part for pair in unique for part in pair]
@@ -832,6 +866,28 @@ def _registered_fetch_response_stats(conn, identities):
         (row[0], row[1]): {"count": int(row[2]), "max_res": row[3]}
         for row in cur.fetchall()
     }
+
+
+def _registered_fetch_response_stats(conn, identities):
+    """Read saved stats for explicit page identities from the summary table.
+
+    Falls back to a bounded responses aggregation only for identities that are
+    missing from the summary (e.g. a not-yet-backfilled DB).
+    """
+
+    unique = _registered_unique_identities(identities)
+    if not unique:
+        return {}
+
+    if _registered_has_article_response_stats_table(conn):
+        stats = _registered_stats_from_summary(conn, unique)
+    else:
+        stats = {}
+
+    missing = [key for key in unique if key not in stats]
+    if missing:
+        stats.update(_registered_stats_from_responses(conn, missing))
+    return stats
 
 
 def _registered_display_saved_max_res_no(
@@ -1141,7 +1197,12 @@ def query_registered_articles(
                 for shell_row in shell_rows
             ]
         else:
-            stats_sql = _registered_target_scoped_response_stats_sql()
+            if _registered_has_article_response_stats_table(conn):
+                stats_source_sql = "article_response_stats"
+            else:
+                stats_source_sql = (
+                    "(" + _registered_target_scoped_response_stats_sql() + ")"
+                )
             data_sql = base_cte_sql + f"""
                 SELECT
                     rt.target_article_id,
@@ -1153,9 +1214,7 @@ def query_registered_articles(
                     ({max_res_sql}) AS saved_max_res_no,
                     rt.matched_last_scraped_at AS last_scraped_at
                 FROM resolved_targets AS rt
-                LEFT JOIN (
-                    {stats_sql}
-                ) AS rs
+                LEFT JOIN {stats_source_sql} AS rs
                     ON rt.matched_article_id = rs.article_id
                     AND rt.matched_article_type = rs.article_type
                 {where_sql}

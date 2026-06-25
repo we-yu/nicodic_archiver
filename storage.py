@@ -246,8 +246,176 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     )
     """)
 
+    # Materialized per-article saved response summary.
+    # saved_max_res_no stores raw MAX(res_no); NULL when no saved rows.
+    # The checked-zero -> 0 display rule stays in the read layer.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS article_response_stats (
+        article_id TEXT NOT NULL,
+        article_type TEXT NOT NULL,
+        saved_response_count INTEGER NOT NULL DEFAULT 0,
+        saved_max_res_no INTEGER,
+        stats_updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (article_id, article_type)
+    )
+    """)
+
     conn.commit()
     return conn
+
+
+def recompute_article_response_stats(conn, article_id, article_type):
+    """Recompute the saved response summary for one article identity.
+
+    Bounded to a single ``(article_id, article_type)`` so it uses the
+    responses UNIQUE index; safe against duplicate saves (recomputes from
+    the authoritative ``responses`` rows rather than incrementing).
+    """
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(id), MAX(res_no)
+        FROM responses
+        WHERE article_id = ? AND article_type = ?
+        """,
+        (article_id, article_type),
+    )
+    count_row = cur.fetchone()
+    saved_response_count = int(count_row[0]) if count_row else 0
+    saved_max_res_no = count_row[1] if count_row else None
+    updated_at = datetime.now(timezone.utc).isoformat()
+
+    cur.execute(
+        """
+        INSERT INTO article_response_stats
+            (article_id, article_type, saved_response_count,
+             saved_max_res_no, stats_updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(article_id, article_type) DO UPDATE SET
+            saved_response_count = excluded.saved_response_count,
+            saved_max_res_no = excluded.saved_max_res_no,
+            stats_updated_at = excluded.stats_updated_at
+        """,
+        (
+            article_id,
+            article_type,
+            saved_response_count,
+            saved_max_res_no,
+            updated_at,
+        ),
+    )
+    return {
+        "saved_response_count": saved_response_count,
+        "saved_max_res_no": saved_max_res_no,
+    }
+
+
+def compute_all_article_response_stats(conn):
+    """Return per-article saved response stats from the responses table."""
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT article_id, article_type, COUNT(id), MAX(res_no)
+        FROM responses
+        GROUP BY article_id, article_type
+        """
+    )
+    return [
+        (row[0], row[1], int(row[2]), row[3])
+        for row in cur.fetchall()
+    ]
+
+
+def rebuild_article_response_stats(conn, *, dry_run=True):
+    """Rebuild the whole summary table from the responses table.
+
+    ``dry_run=True`` computes counts without writing. Returns a summary dict.
+    """
+
+    computed = compute_all_article_response_stats(conn)
+
+    try:
+        existing_row = conn.execute(
+            "SELECT COUNT(*) FROM article_response_stats"
+        ).fetchone()
+        existing_summary_rows = int(existing_row[0]) if existing_row else 0
+    except sqlite3.OperationalError:
+        existing_summary_rows = None
+
+    written_rows = 0
+    if not dry_run:
+        updated_at = datetime.now(timezone.utc).isoformat()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM article_response_stats")
+        cur.executemany(
+            """
+            INSERT INTO article_response_stats
+                (article_id, article_type, saved_response_count,
+                 saved_max_res_no, stats_updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (aid, atype, count, max_res, updated_at)
+                for (aid, atype, count, max_res) in computed
+            ],
+        )
+        written_rows = cur.rowcount if cur.rowcount != -1 else len(computed)
+        conn.commit()
+
+    return {
+        "dry_run": dry_run,
+        "computed_articles": len(computed),
+        "existing_summary_rows": existing_summary_rows,
+        "written_rows": written_rows,
+    }
+
+
+def rebuild_article_response_stats_for_db(db_path, *, apply=False):
+    """Operator-facing seam to rebuild the summary from responses.
+
+    Requires an explicit DB path. ``apply=False`` (default) is a safe dry-run
+    that does not modify the database (opened read-only).
+    """
+
+    if not db_path:
+        raise ValueError(
+            "explicit db_path is required; refusing implicit default"
+        )
+    if not Path(db_path).exists():
+        raise FileNotFoundError(f"db_path does not exist: {db_path}")
+
+    if apply:
+        conn = init_db(db_path)
+        try:
+            return rebuild_article_response_stats(conn, dry_run=False)
+        finally:
+            conn.close()
+
+    conn = open_readonly_db(db_path)
+    if conn is None:
+        raise FileNotFoundError(f"db_path does not exist: {db_path}")
+    try:
+        return rebuild_article_response_stats(conn, dry_run=True)
+    finally:
+        conn.close()
+
+
+def format_response_stats_rebuild_lines(db_path, summary):
+    """Human-readable, line-oriented operator output for the rebuild."""
+
+    mode = "apply" if not summary["dry_run"] else "dry-run"
+    existing = summary["existing_summary_rows"]
+    existing_display = "unknown" if existing is None else str(existing)
+    return [
+        "=== ARTICLE RESPONSE STATS REBUILD ===",
+        f"DB: {db_path}",
+        f"Mode: {mode}",
+        f"Computed articles: {summary['computed_articles']}",
+        f"Existing summary rows: {existing_display}",
+        f"Written rows: {summary['written_rows']}",
+    ]
 
 
 def save_to_db(
@@ -318,6 +486,8 @@ def save_to_db(
             r.get("content"),
             r.get("content_html"),
         ))
+
+    recompute_article_response_stats(conn, article_id, article_type)
 
     conn.commit()
 
