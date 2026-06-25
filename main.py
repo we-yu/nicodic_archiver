@@ -38,9 +38,11 @@ from orchestrator import run_scrape
 from storage import (
     DEFAULT_DB_PATH,
     append_scrape_run_observation,
+    format_response_stats_rebuild_lines,
     format_run_telemetry_csv_wide,
     init_db,
     open_readonly_db,
+    rebuild_article_response_stats_for_db,
 )
 from target_ordering import TargetOrderConfig
 from target_ordering import format_target_order_log_line
@@ -1461,6 +1463,10 @@ def _print_operator_usage():
         "  python main.py operator registered-articles export-csv "
         "[--output PATH]"
     )
+    print(
+        "  python main.py operator stats rebuild-response-summary "
+        "--db PATH [--apply]"
+    )
 
 
 def _handle_show_scraped_res(args):
@@ -1725,9 +1731,55 @@ def _handle_operator_cli(args):
     if area == "registered-articles":
         _handle_operator_registered_articles(args[1:])
         return
+    if area == "stats":
+        _handle_operator_stats(args[1:])
+        return
 
     _print_operator_usage()
     sys.exit(1)
+
+
+def _handle_operator_stats(args):
+    usage = (
+        "Usage: operator stats rebuild-response-summary --db PATH [--apply]"
+    )
+    if not args or args[0] != "rebuild-response-summary":
+        print(usage, file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        db_path = _read_optional_flag(args, "--db", None)
+    except ValueError:
+        print(usage, file=sys.stderr)
+        sys.exit(1)
+
+    if not db_path:
+        print(
+            "operator stats rebuild-response-summary requires an explicit "
+            "--db PATH",
+            file=sys.stderr,
+        )
+        print(
+            "Refusing to use the runtime DB as an implicit default.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    apply_flag = "--apply" in args[1:]
+
+    try:
+        summary = rebuild_article_response_stats_for_db(
+            db_path, apply=apply_flag
+        )
+    except FileNotFoundError as exc:
+        print(f"DB path does not exist: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as exc:
+        print(f"Invalid input: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    for line in format_response_stats_rebuild_lines(db_path, summary):
+        print(line)
 
 
 def _handle_operator_registered_articles(args):

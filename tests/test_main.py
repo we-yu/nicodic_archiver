@@ -8,7 +8,130 @@ import pytest
 
 import main as main_module
 from orchestrator import ScrapeResult
-from storage import init_db
+from storage import init_db, save_to_db
+
+
+def test_main_operator_stats_rebuild_requires_explicit_db(capsys):
+    with patch("sys.argv", ["main.py", "operator", "stats",
+                            "rebuild-response-summary"]):
+        with pytest.raises(SystemExit) as exc:
+            main_module.main()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "requires an explicit --db PATH" in err
+
+
+def test_main_operator_stats_rebuild_dry_run_reports_counts(
+    tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "data" / "nicodic.db"
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "111",
+            "a",
+            "A",
+            "https://dic.nicovideo.jp/a/111",
+            [
+                {
+                    "res_no": 1,
+                    "id_hash": "h1",
+                    "poster_name": "P",
+                    "posted_at": "2025-01-01 00:00",
+                    "content": "c1",
+                    "content_html": "<p>c1</p>",
+                }
+            ],
+        )
+        conn.execute("DELETE FROM article_response_stats")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with patch(
+        "sys.argv",
+        ["main.py", "operator", "stats", "rebuild-response-summary",
+         "--db", str(db_path)],
+    ):
+        main_module.main()
+
+    out = capsys.readouterr().out
+    assert "ARTICLE RESPONSE STATS REBUILD" in out
+    assert "Mode: dry-run" in out
+    assert "Computed articles: 1" in out
+
+    check = init_db(str(db_path))
+    try:
+        cur = check.cursor()
+        cur.execute("SELECT COUNT(*) FROM article_response_stats")
+        assert cur.fetchone()[0] == 0
+    finally:
+        check.close()
+
+
+def test_main_operator_stats_rebuild_apply_writes_summary(
+    tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "data" / "nicodic.db"
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "111",
+            "a",
+            "A",
+            "https://dic.nicovideo.jp/a/111",
+            [
+                {
+                    "res_no": 1,
+                    "id_hash": "h1",
+                    "poster_name": "P",
+                    "posted_at": "2025-01-01 00:00",
+                    "content": "c1",
+                    "content_html": "<p>c1</p>",
+                },
+                {
+                    "res_no": 4,
+                    "id_hash": "h4",
+                    "poster_name": "P",
+                    "posted_at": "2025-01-01 00:00",
+                    "content": "c4",
+                    "content_html": "<p>c4</p>",
+                },
+            ],
+        )
+        conn.execute("DELETE FROM article_response_stats")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with patch(
+        "sys.argv",
+        ["main.py", "operator", "stats", "rebuild-response-summary",
+         "--db", str(db_path), "--apply"],
+    ):
+        main_module.main()
+
+    out = capsys.readouterr().out
+    assert "Mode: apply" in out
+
+    check = init_db(str(db_path))
+    try:
+        cur = check.cursor()
+        cur.execute(
+            """
+            SELECT saved_response_count, saved_max_res_no
+            FROM article_response_stats
+            WHERE article_id=? AND article_type=?
+            """,
+            ("111", "a"),
+        )
+        assert cur.fetchone() == (2, 4)
+    finally:
+        check.close()
 
 
 @patch("main.run_scrape")

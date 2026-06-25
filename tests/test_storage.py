@@ -9,8 +9,10 @@ import sqlite3
 import storage
 from storage import (
     append_scrape_run_observation,
+    compute_all_article_response_stats,
     dequeue_canonical_target,
     enqueue_canonical_target,
+    format_response_stats_rebuild_lines,
     format_run_telemetry_csv_wide,
     get_target,
     init_db,
@@ -18,11 +20,37 @@ from storage import (
     list_targets,
     mark_target_redirected,
     open_readonly_db,
+    rebuild_article_response_stats,
+    rebuild_article_response_stats_for_db,
     register_target,
     save_json,
     save_to_db,
     set_target_active_state,
 )
+
+
+def _read_stats_row(conn, article_id, article_type):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT saved_response_count, saved_max_res_no
+        FROM article_response_stats
+        WHERE article_id=? AND article_type=?
+        """,
+        (article_id, article_type),
+    )
+    return cur.fetchone()
+
+
+def _make_response(res_no):
+    return {
+        "res_no": res_no,
+        "id_hash": f"h{res_no}",
+        "poster_name": "P",
+        "posted_at": "2025-01-01 00:00",
+        "content": f"c{res_no}",
+        "content_html": f"<p>c{res_no}</p>",
+    }
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
@@ -71,8 +99,239 @@ def test_init_db_creates_data_dir_db_and_tables(tmp_path, monkeypatch):
         assert "queue_requests" in tables
         assert "target" in tables
         assert "scrape_run_observation" in tables
+        assert "article_response_stats" in tables
     finally:
         conn.close()
+
+
+def test_save_to_db_updates_response_summary(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "12345",
+            "a",
+            "Title",
+            "https://dic.nicovideo.jp/a/12345",
+            [_make_response(1), _make_response(2)],
+        )
+        assert _read_stats_row(conn, "12345", "a") == (2, 2)
+    finally:
+        conn.close()
+
+
+def test_save_to_db_summary_grows_with_more_responses(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        url = "https://dic.nicovideo.jp/a/12345"
+        save_to_db(conn, "12345", "a", "Title", url, [_make_response(1)])
+        assert _read_stats_row(conn, "12345", "a") == (1, 1)
+
+        save_to_db(
+            conn,
+            "12345",
+            "a",
+            "Title",
+            url,
+            [_make_response(2), _make_response(3)],
+        )
+        assert _read_stats_row(conn, "12345", "a") == (3, 3)
+    finally:
+        conn.close()
+
+
+def test_save_to_db_summary_does_not_overcount_duplicates(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        url = "https://dic.nicovideo.jp/a/12345"
+        responses = [_make_response(1), _make_response(2)]
+        save_to_db(conn, "12345", "a", "Title", url, responses)
+        save_to_db(conn, "12345", "a", "Title", url, responses)
+        assert _read_stats_row(conn, "12345", "a") == (2, 2)
+    finally:
+        conn.close()
+
+
+def test_save_to_db_summary_zero_response_checked_article(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "7711002",
+            "a",
+            "Checked Zero",
+            "https://dic.nicovideo.jp/a/7711002",
+            [],
+            latest_scraped_at="2026-06-07T08:09:10+00:00",
+        )
+        # Raw summary: count 0, max NULL. The 0-display rule lives in the
+        # read layer (keyed on last_scraped_at), not the stored summary.
+        assert _read_stats_row(conn, "7711002", "a") == (0, None)
+    finally:
+        conn.close()
+
+
+def test_compute_all_article_response_stats_groups_by_identity(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "111",
+            "a",
+            "A",
+            "https://dic.nicovideo.jp/a/111",
+            [_make_response(1), _make_response(2)],
+        )
+        save_to_db(
+            conn,
+            "222",
+            "a",
+            "B",
+            "https://dic.nicovideo.jp/a/222",
+            [_make_response(5)],
+        )
+        computed = dict(
+            ((aid, atype), (count, max_res))
+            for (aid, atype, count, max_res) in (
+                compute_all_article_response_stats(conn)
+            )
+        )
+        assert computed[("111", "a")] == (2, 2)
+        assert computed[("222", "a")] == (1, 5)
+    finally:
+        conn.close()
+
+
+def test_rebuild_article_response_stats_dry_run_does_not_write(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "111",
+            "a",
+            "A",
+            "https://dic.nicovideo.jp/a/111",
+            [_make_response(1)],
+        )
+        conn.execute("DELETE FROM article_response_stats")
+        conn.commit()
+
+        summary = rebuild_article_response_stats(conn, dry_run=True)
+        assert summary["dry_run"] is True
+        assert summary["computed_articles"] == 1
+        assert summary["existing_summary_rows"] == 0
+        assert summary["written_rows"] == 0
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM article_response_stats")
+        assert cur.fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_rebuild_article_response_stats_apply_writes_expected_rows(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "111",
+            "a",
+            "A",
+            "https://dic.nicovideo.jp/a/111",
+            [_make_response(1), _make_response(7)],
+        )
+        conn.execute("DELETE FROM article_response_stats")
+        conn.commit()
+
+        summary = rebuild_article_response_stats(conn, dry_run=False)
+        assert summary["dry_run"] is False
+        assert summary["computed_articles"] == 1
+        assert _read_stats_row(conn, "111", "a") == (2, 7)
+    finally:
+        conn.close()
+
+
+def test_rebuild_article_response_stats_for_db_dry_run_default(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "data" / "nicodic.db"
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "111",
+            "a",
+            "A",
+            "https://dic.nicovideo.jp/a/111",
+            [_make_response(1)],
+        )
+        conn.execute("DELETE FROM article_response_stats")
+        conn.commit()
+    finally:
+        conn.close()
+
+    summary = rebuild_article_response_stats_for_db(str(db_path))
+    assert summary["dry_run"] is True
+    assert summary["computed_articles"] == 1
+
+    check = init_db(str(db_path))
+    try:
+        cur = check.cursor()
+        cur.execute("SELECT COUNT(*) FROM article_response_stats")
+        # dry-run wrote nothing; init_db re-open does not backfill
+        assert cur.fetchone()[0] == 0
+    finally:
+        check.close()
+
+    lines = format_response_stats_rebuild_lines(str(db_path), summary)
+    assert any("Mode: dry-run" in line for line in lines)
+
+
+def test_rebuild_article_response_stats_for_db_apply_writes(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "data" / "nicodic.db"
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "111",
+            "a",
+            "A",
+            "https://dic.nicovideo.jp/a/111",
+            [_make_response(1), _make_response(2)],
+        )
+        conn.execute("DELETE FROM article_response_stats")
+        conn.commit()
+    finally:
+        conn.close()
+
+    summary = rebuild_article_response_stats_for_db(str(db_path), apply=True)
+    assert summary["dry_run"] is False
+
+    check = init_db(str(db_path))
+    try:
+        assert _read_stats_row(check, "111", "a") == (2, 2)
+    finally:
+        check.close()
 
 
 def test_save_to_db_inserts_article_and_responses_and_mapping(tmp_path, monkeypatch):

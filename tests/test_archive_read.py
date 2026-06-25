@@ -1405,6 +1405,107 @@ def test_query_registered_legacy_sort_alias_maps_to_saved_max_res_no(
     ]
 
 
+def test_query_registered_fast_path_reads_display_stats_from_summary(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    conn = init_db()
+    try:
+        conn.execute(
+            """
+            UPDATE article_response_stats
+            SET saved_response_count=99, saved_max_res_no=99
+            WHERE article_id=? AND article_type=?
+            """,
+            ("12345", "a"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = query_registered_articles(sort_by="created_at")
+
+    row = result["rows"][0]
+    assert row["saved_response_count"] == 99
+    assert row["saved_max_res_no"] == 99
+
+
+def test_query_registered_aggregate_sort_reads_stats_from_summary(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    conn = init_db()
+    try:
+        conn.execute(
+            """
+            UPDATE article_response_stats
+            SET saved_response_count=77, saved_max_res_no=88
+            WHERE article_id=? AND article_type=?
+            """,
+            ("12345", "a"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    count_sorted = query_registered_articles(
+        sort_by="saved_response_count",
+        paginate=False,
+    )
+    max_sorted = query_registered_articles(
+        sort_by="saved_max_res_no",
+        paginate=False,
+    )
+
+    assert count_sorted["rows"][0]["saved_response_count"] == 77
+    assert max_sorted["rows"][0]["saved_max_res_no"] == 88
+
+
+def test_query_registered_fast_path_falls_back_when_summary_row_missing(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    conn = init_db()
+    try:
+        conn.execute("DELETE FROM article_response_stats")
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = query_registered_articles(sort_by="created_at")
+
+    row = result["rows"][0]
+    assert row["saved_response_count"] == 1
+    assert row["saved_max_res_no"] == 1
+
+
+def test_query_registered_does_not_crash_when_summary_table_absent(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    conn = init_db()
+    try:
+        conn.execute("DROP TABLE article_response_stats")
+        conn.commit()
+    finally:
+        conn.close()
+
+    fast = query_registered_articles(sort_by="created_at")
+    aggregate = query_registered_articles(sort_by="saved_response_count")
+
+    assert fast["rows"][0]["saved_response_count"] == 1
+    assert fast["rows"][0]["saved_max_res_no"] == 1
+    assert aggregate["rows"][0]["saved_response_count"] == 1
+
+
 def test_registered_article_columns_keys_are_consistent():
     keys = [col["key"] for col in REGISTERED_ARTICLE_COLUMNS]
     assert "article_id" in keys
