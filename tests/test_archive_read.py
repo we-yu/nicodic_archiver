@@ -568,6 +568,93 @@ def test_archive_read_tolerates_db_without_metadata_columns(
     assert "Title: First Title" in txt_result["content"]
 
 
+def test_query_registered_articles_tolerates_db_without_stats_table(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    conn = sqlite3.connect(data_dir / "nicodic.db")
+    try:
+        conn.execute(
+            """
+            CREATE TABLE articles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                article_id TEXT NOT NULL,
+                article_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                canonical_url TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(article_id, article_type)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE responses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                article_id TEXT NOT NULL,
+                article_type TEXT NOT NULL,
+                res_no INTEGER NOT NULL,
+                id_hash TEXT,
+                poster_name TEXT,
+                posted_at TEXT,
+                content_text TEXT,
+                UNIQUE(article_id, article_type, res_no)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE target (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                article_id TEXT NOT NULL,
+                article_type TEXT NOT NULL,
+                canonical_url TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(article_id, article_type)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO target (article_id, article_type, canonical_url, is_active)
+            VALUES (?, ?, ?, 1)
+            """,
+            ("12345", "a", "https://dic.nicovideo.jp/a/12345"),
+        )
+        conn.execute(
+            """
+            INSERT INTO articles (article_id, article_type, title, canonical_url)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("12345", "a", "First Title", "https://dic.nicovideo.jp/a/12345"),
+        )
+        conn.execute(
+            """
+            INSERT INTO responses (article_id, article_type, res_no, content_text)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("12345", "a", 1, "saved"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = query_registered_articles(
+        sort_by="saved_response_count",
+        sort_order="desc",
+        paginate=False,
+    )
+
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["article_id"] == "12345"
+    assert result["rows"][0]["saved_response_count"] == 1
+    assert result["rows"][0]["saved_max_res_no"] == 1
+
+
 def test_archive_read_does_not_call_init_db_on_read_path(
     tmp_path,
     monkeypatch,
@@ -1261,9 +1348,9 @@ def test_query_registered_fast_path_fetches_stats_only_for_page_identities(
     captured = []
     real_fetch = archive_read._registered_fetch_response_stats
 
-    def spy_fetch(conn, identities):
+    def spy_fetch(conn, identities, **kwargs):
         captured.append(list(identities))
-        return real_fetch(conn, identities)
+        return real_fetch(conn, identities, **kwargs)
 
     with patch(
         "archive_read._registered_fetch_response_stats",
@@ -1277,6 +1364,64 @@ def test_query_registered_fast_path_fetches_stats_only_for_page_identities(
 
     assert len(captured) == 1
     assert len(captured[0]) == 1
+
+
+def test_query_registered_reads_saved_stats_from_materialized_summary(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    conn = init_db()
+    try:
+        conn.execute(
+            """
+            UPDATE article_response_stats
+            SET saved_response_count=?, saved_max_res_no=?
+            WHERE article_id=? AND article_type=?
+            """,
+            (7, 77, "12345", "a"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = query_registered_articles(
+        sort_by="saved_response_count",
+        sort_order="desc",
+        paginate=False,
+    )
+
+    assert result["rows"][0]["article_id"] == "12345"
+    assert result["rows"][0]["saved_response_count"] == 7
+    assert result["rows"][0]["saved_max_res_no"] == 77
+
+
+def test_query_registered_missing_materialized_summary_row_is_safe(
+    tmp_path,
+    monkeypatch,
+):
+    _seed_archive(tmp_path, monkeypatch)
+
+    conn = init_db()
+    try:
+        conn.execute(
+            """
+            DELETE FROM article_response_stats
+            WHERE article_id=? AND article_type=?
+            """,
+            ("12345", "a"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = query_registered_articles(paginate=False)
+
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["article_id"] == "12345"
+    assert result["rows"][0]["saved_response_count"] == 0
+    assert result["rows"][0]["saved_max_res_no"] is None
 
 
 def test_query_registered_fast_path_page_choice_ignores_off_page_responses(

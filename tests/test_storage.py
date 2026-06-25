@@ -19,6 +19,7 @@ from storage import (
     mark_target_redirected,
     open_readonly_db,
     register_target,
+    rebuild_article_response_stats,
     save_json,
     save_to_db,
     set_target_active_state,
@@ -71,6 +72,187 @@ def test_init_db_creates_data_dir_db_and_tables(tmp_path, monkeypatch):
         assert "queue_requests" in tables
         assert "target" in tables
         assert "scrape_run_observation" in tables
+        assert "article_response_stats" in tables
+    finally:
+        conn.close()
+
+
+def test_save_to_db_updates_materialized_article_response_stats(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "12345",
+            "a",
+            "Some Title",
+            "https://dic.nicovideo.jp/a/12345",
+            [
+                {"res_no": 1, "content": "TEXT-1", "content_html": "<p>1</p>"},
+                {"res_no": 3, "content": "TEXT-3", "content_html": "<p>3</p>"},
+            ],
+        )
+
+        row = conn.execute(
+            """
+            SELECT saved_response_count, saved_max_res_no, stats_updated_at
+            FROM article_response_stats
+            WHERE article_id=? AND article_type=?
+            """,
+            ("12345", "a"),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == 2
+        assert row[1] == 3
+        assert row[2]
+    finally:
+        conn.close()
+
+
+def test_save_to_db_duplicate_responses_do_not_overcount_materialized_stats(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    try:
+        payload = [
+            {"res_no": 1, "content": "TEXT-1", "content_html": "<p>1</p>"},
+            {"res_no": 2, "content": "TEXT-2", "content_html": "<p>2</p>"},
+        ]
+        save_to_db(
+            conn,
+            "12345",
+            "a",
+            "Some Title",
+            "https://dic.nicovideo.jp/a/12345",
+            payload,
+        )
+        save_to_db(
+            conn,
+            "12345",
+            "a",
+            "Some Title",
+            "https://dic.nicovideo.jp/a/12345",
+            payload,
+        )
+
+        row = conn.execute(
+            """
+            SELECT saved_response_count, saved_max_res_no
+            FROM article_response_stats
+            WHERE article_id=? AND article_type=?
+            """,
+            ("12345", "a"),
+        ).fetchone()
+        assert row == (2, 2)
+    finally:
+        conn.close()
+
+
+def test_save_to_db_zero_response_checked_article_sets_zero_stats(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "00001",
+            "a",
+            "Zero Checked",
+            "https://dic.nicovideo.jp/a/00001",
+            [],
+            latest_scraped_at="2026-06-07T08:09:10+00:00",
+        )
+
+        row = conn.execute(
+            """
+            SELECT saved_response_count, saved_max_res_no
+            FROM article_response_stats
+            WHERE article_id=? AND article_type=?
+            """,
+            ("00001", "a"),
+        ).fetchone()
+        assert row == (0, 0)
+    finally:
+        conn.close()
+
+
+def test_rebuild_article_response_stats_computes_expected_stats_and_apply(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    try:
+        save_to_db(
+            conn,
+            "111",
+            "a",
+            "One",
+            "https://dic.nicovideo.jp/a/111",
+            [
+                {"res_no": 1, "content": "a", "content_html": "<p>a</p>"},
+                {"res_no": 2, "content": "b", "content_html": "<p>b</p>"},
+            ],
+        )
+        save_to_db(
+            conn,
+            "222",
+            "a",
+            "Two",
+            "https://dic.nicovideo.jp/a/222",
+            [],
+        )
+
+        # Intentionally stale row to verify rebuild computes deletion scope.
+        conn.execute(
+            """
+            INSERT INTO article_response_stats
+            (
+                article_id,
+                article_type,
+                saved_response_count,
+                saved_max_res_no,
+                stats_updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("stale", "a", 9, 9, "2026-01-01T00:00:00+00:00"),
+        )
+        conn.commit()
+
+        dry = rebuild_article_response_stats(conn, apply=False)
+        assert dry["apply"] is False
+        assert dry["expected_stats_rows"] == 2
+        assert dry["expected_zero_response_rows"] == 1
+        assert dry["expected_non_zero_rows"] == 1
+        assert dry["would_delete_stale_rows"] >= 1
+
+        applied = rebuild_article_response_stats(conn, apply=True)
+        assert applied["apply"] is True
+        assert applied["applied_upsert_rows"] == 2
+
+        rows = conn.execute(
+            """
+            SELECT article_id, article_type, saved_response_count, saved_max_res_no
+            FROM article_response_stats
+            ORDER BY article_id ASC
+            """
+        ).fetchall()
+        assert rows == [
+            ("111", "a", 2, 2),
+            ("222", "a", 0, 0),
+        ]
     finally:
         conn.close()
 

@@ -41,6 +41,7 @@ from storage import (
     format_run_telemetry_csv_wide,
     init_db,
     open_readonly_db,
+    rebuild_article_response_stats_for_db,
 )
 from target_ordering import TargetOrderConfig
 from target_ordering import format_target_order_log_line
@@ -1461,6 +1462,10 @@ def _print_operator_usage():
         "  python main.py operator registered-articles export-csv "
         "[--output PATH]"
     )
+    print(
+        "  python main.py operator archive-response-stats rebuild "
+        "--db PATH [--apply]"
+    )
 
 
 def _handle_show_scraped_res(args):
@@ -1725,9 +1730,70 @@ def _handle_operator_cli(args):
     if area == "registered-articles":
         _handle_operator_registered_articles(args[1:])
         return
+    if area == "archive-response-stats":
+        _handle_operator_archive_response_stats(args[1:])
+        return
 
     _print_operator_usage()
     sys.exit(1)
+
+
+def _handle_operator_archive_response_stats(args):
+    if not args or args[0] != "rebuild":
+        _print_operator_usage()
+        sys.exit(1)
+
+    try:
+        db_path = _read_optional_flag(args, "--db", None)
+    except ValueError:
+        print(
+            "Usage: operator archive-response-stats rebuild --db PATH [--apply]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not db_path:
+        print(
+            "operator archive-response-stats rebuild requires explicit --db PATH",
+            file=sys.stderr,
+        )
+        print(
+            "Refusing to use runtime DB as an implicit default.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    apply_flag = "--apply" in args[1:]
+
+    try:
+        summary = rebuild_article_response_stats_for_db(
+            db_path,
+            apply=apply_flag,
+        )
+    except FileNotFoundError:
+        print(f"DB path does not exist: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    print("=== ARCHIVE RESPONSE STATS REBUILD ===")
+    print(f"DB: {db_path}")
+    print(f"Mode: {'APPLY' if apply_flag else 'DRY-RUN'}")
+    print(f"Expected Stats Rows: {summary['expected_stats_rows']}")
+    print(
+        "Expected Zero-Response Rows: "
+        f"{summary['expected_zero_response_rows']}"
+    )
+    print(
+        "Expected Non-Zero Rows: "
+        f"{summary['expected_non_zero_rows']}"
+    )
+    print(f"Existing Stats Rows: {summary['existing_stats_rows']}")
+    print(f"Would Upsert Rows: {summary['would_upsert_rows']}")
+    print(f"Would Delete Stale Rows: {summary['would_delete_stale_rows']}")
+    if apply_flag:
+        print(f"Applied Upsert Rows: {summary['applied_upsert_rows']}")
+        print(f"Applied Delete Rows: {summary['applied_delete_rows']}")
+    else:
+        print("No writes applied. Re-run with --apply to persist.")
 
 
 def _handle_operator_registered_articles(args):

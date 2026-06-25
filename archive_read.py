@@ -727,6 +727,19 @@ def _registered_has_target_title_column(conn):
     return "title" in cols
 
 
+def _registered_has_response_stats_table(conn):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type='table' AND name='article_response_stats'
+        LIMIT 1
+        """
+    )
+    return cur.fetchone() is not None
+
+
 def _registered_fallback_title(article_id, canonical_url):
     parsed = urlparse(canonical_url or "")
     path_parts = [part for part in parsed.path.split("/") if part]
@@ -800,8 +813,13 @@ def _registered_build_search_clause(search):
     return where_sql, where_params
 
 
-def _registered_fetch_response_stats(conn, identities):
-    """Read saved COUNT/MAX(res_no) for explicit article identities only."""
+def _registered_fetch_response_stats(
+    conn,
+    identities,
+    *,
+    use_materialized_stats=True,
+):
+    """Read saved stats from materialized summary for explicit identities."""
 
     unique = []
     seen = set()
@@ -819,27 +837,47 @@ def _registered_fetch_response_stats(conn, identities):
     placeholders = ",".join(["(?, ?)"] * len(unique))
     params = [part for pair in unique for part in pair]
     cur = conn.cursor()
-    cur.execute(
-        f"""
-        SELECT article_id, article_type, COUNT(id), MAX(res_no)
-        FROM responses
-        WHERE (article_id, article_type) IN ({placeholders})
-        GROUP BY article_id, article_type
-        """,
-        params,
-    )
+    if use_materialized_stats:
+        cur.execute(
+            f"""
+            SELECT
+                article_id,
+                article_type,
+                saved_response_count,
+                saved_max_res_no
+            FROM article_response_stats
+            WHERE (article_id, article_type) IN ({placeholders})
+            """,
+            params,
+        )
+    else:
+        cur.execute(
+            f"""
+            SELECT article_id, article_type, COUNT(id), MAX(res_no)
+            FROM responses
+            WHERE (article_id, article_type) IN ({placeholders})
+            GROUP BY article_id, article_type
+            """,
+            params,
+        )
     return {
-        (row[0], row[1]): {"count": int(row[2]), "max_res": row[3]}
+        (row[0], row[1]): {
+            "count": int(row[2]),
+            "max_res": None if row[3] is None else int(row[3]),
+        }
         for row in cur.fetchall()
     }
 
 
 def _registered_display_saved_max_res_no(
+    has_stats_row,
     matched_last_scraped_at,
     saved_response_count,
     saved_max_res_no,
 ):
     if (
+        has_stats_row
+        and
         matched_last_scraped_at
         and saved_response_count == 0
     ):
@@ -864,6 +902,7 @@ def _registered_page_shell_row_to_dict(shell_row, stats_map):
     saved_response_count = stat["count"] if stat else 0
     saved_max_res_no = stat["max_res"] if stat else None
     display_max = _registered_display_saved_max_res_no(
+        stat is not None,
         last_scraped_at,
         saved_response_count,
         saved_max_res_no,
@@ -882,7 +921,30 @@ def _registered_page_shell_row_to_dict(shell_row, stats_map):
     )
 
 
-def _registered_target_scoped_response_stats_sql() -> str:
+def _registered_target_scoped_response_stats_sql(
+    *,
+    use_materialized_stats: bool,
+) -> str:
+    if use_materialized_stats:
+        return """
+            SELECT
+                s.article_id,
+                s.article_type,
+                s.saved_response_count,
+                s.saved_max_res_no
+            FROM article_response_stats AS s
+            INNER JOIN (
+                SELECT DISTINCT
+                    matched_article_id AS article_id,
+                    matched_article_type AS article_type
+                FROM resolved_targets
+                WHERE matched_article_id IS NOT NULL
+                  AND matched_article_type IS NOT NULL
+            ) AS target_ids
+                ON s.article_id = target_ids.article_id
+                AND s.article_type = target_ids.article_type
+        """
+
     return """
             SELECT
                 r.article_id,
@@ -907,7 +969,8 @@ def _registered_target_scoped_response_stats_sql() -> str:
 def _registered_saved_max_res_no_display_sql() -> str:
     """SQL: MAX(saved res_no), or 0 when scrape completed with zero responses."""
     return (
-        "CASE WHEN rt.matched_last_scraped_at IS NOT NULL "
+        "CASE WHEN rs.article_id IS NOT NULL "
+        "AND rt.matched_last_scraped_at IS NOT NULL "
         "AND COALESCE(rs.saved_response_count, 0) = 0 "
         "THEN 0 "
         "ELSE rs.saved_max_res_no END"
@@ -1069,6 +1132,7 @@ def query_registered_articles(
         _register_registered_search_functions(conn)
         has_last_scraped = _registered_has_last_scraped_column(conn)
         has_target_title = _registered_has_target_title_column(conn)
+        has_materialized_stats = _registered_has_response_stats_table(conn)
         matched_last_scraped_expr = (
             "COALESCE(a_exact.latest_scraped_at, a_url.latest_scraped_at)"
             if has_last_scraped
@@ -1135,13 +1199,16 @@ def query_registered_articles(
                     (row[5], row[6])
                     for row in shell_rows
                 ],
+                use_materialized_stats=has_materialized_stats,
             )
             rows = [
                 _registered_page_shell_row_to_dict(shell_row, stats_map)
                 for shell_row in shell_rows
             ]
         else:
-            stats_sql = _registered_target_scoped_response_stats_sql()
+            stats_sql = _registered_target_scoped_response_stats_sql(
+                use_materialized_stats=has_materialized_stats,
+            )
             data_sql = base_cte_sql + f"""
                 SELECT
                     rt.target_article_id,

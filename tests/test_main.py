@@ -309,6 +309,100 @@ def test_main_export_without_required_args_exits_with_usage(capsys):
     assert "Usage: export <article_id> <article_type> --format txt|md" in out
 
 
+@patch("main.rebuild_article_response_stats_for_db")
+def test_main_operator_archive_response_stats_rebuild_dry_run_default(
+    mock_rebuild,
+    capsys,
+):
+    mock_rebuild.return_value = {
+        "apply": False,
+        "expected_stats_rows": 3,
+        "expected_zero_response_rows": 1,
+        "expected_non_zero_rows": 2,
+        "existing_stats_rows": 1,
+        "would_upsert_rows": 2,
+        "would_delete_stale_rows": 0,
+        "applied_upsert_rows": 0,
+        "applied_delete_rows": 0,
+    }
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "operator",
+            "archive-response-stats",
+            "rebuild",
+            "--db",
+            "copy.db",
+        ],
+    ):
+        main_module.main()
+
+    mock_rebuild.assert_called_once_with("copy.db", apply=False)
+    out = capsys.readouterr().out
+    assert "ARCHIVE RESPONSE STATS REBUILD" in out
+    assert "Mode: DRY-RUN" in out
+    assert "No writes applied" in out
+
+
+@patch("main.rebuild_article_response_stats_for_db")
+def test_main_operator_archive_response_stats_rebuild_apply(
+    mock_rebuild,
+    capsys,
+):
+    mock_rebuild.return_value = {
+        "apply": True,
+        "expected_stats_rows": 3,
+        "expected_zero_response_rows": 1,
+        "expected_non_zero_rows": 2,
+        "existing_stats_rows": 1,
+        "would_upsert_rows": 2,
+        "would_delete_stale_rows": 1,
+        "applied_upsert_rows": 3,
+        "applied_delete_rows": 1,
+    }
+
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "operator",
+            "archive-response-stats",
+            "rebuild",
+            "--db",
+            "copy.db",
+            "--apply",
+        ],
+    ):
+        main_module.main()
+
+    mock_rebuild.assert_called_once_with("copy.db", apply=True)
+    out = capsys.readouterr().out
+    assert "Mode: APPLY" in out
+    assert "Applied Upsert Rows: 3" in out
+
+
+def test_main_operator_archive_response_stats_rebuild_requires_explicit_db(
+    capsys,
+):
+    with patch(
+        "sys.argv",
+        [
+            "main.py",
+            "operator",
+            "archive-response-stats",
+            "rebuild",
+        ],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main()
+
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "requires explicit --db PATH" in err
+
+
 @patch("main.serve_web_app")
 def test_main_web_mode_calls_serve_web_app_with_defaults(mock_serve_web_app):
     with patch("sys.argv", ["main.py", "web"]):

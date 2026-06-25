@@ -119,6 +119,69 @@ def _ensure_article_metadata_columns(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def _ensure_article_response_stats_table(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS article_response_stats (
+            article_id TEXT NOT NULL,
+            article_type TEXT NOT NULL,
+            saved_response_count INTEGER NOT NULL,
+            saved_max_res_no INTEGER NOT NULL,
+            stats_updated_at TEXT NOT NULL,
+            PRIMARY KEY (article_id, article_type)
+        )
+        """
+    )
+    conn.commit()
+
+
+def _refresh_article_response_stats(
+    conn: sqlite3.Connection,
+    article_id: str,
+    article_type: str,
+    *,
+    stats_updated_at: str | None = None,
+) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(*), MAX(res_no)
+        FROM responses
+        WHERE article_id=? AND article_type=?
+        """,
+        (article_id, article_type),
+    )
+    row = cur.fetchone()
+    saved_response_count = int(row[0])
+    saved_max_res_no = 0 if row[1] is None else int(row[1])
+    updated_at = stats_updated_at or datetime.now(timezone.utc).isoformat()
+
+    cur.execute(
+        """
+        INSERT INTO article_response_stats (
+            article_id,
+            article_type,
+            saved_response_count,
+            saved_max_res_no,
+            stats_updated_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(article_id, article_type) DO UPDATE SET
+            saved_response_count = excluded.saved_response_count,
+            saved_max_res_no = excluded.saved_max_res_no,
+            stats_updated_at = excluded.stats_updated_at
+        """,
+        (
+            article_id,
+            article_type,
+            saved_response_count,
+            saved_max_res_no,
+            updated_at,
+        ),
+    )
+
+
 def open_readonly_db(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection | None:
     """
     Open an existing SQLite database for read-only queries.
@@ -227,6 +290,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     _ensure_article_metadata_columns(conn)
     _ensure_target_redirect_columns(conn)
     _ensure_target_title_column(conn)
+    _ensure_article_response_stats_table(conn)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS scrape_run_observation (
@@ -319,7 +383,141 @@ def save_to_db(
             r.get("content_html"),
         ))
 
+    _refresh_article_response_stats(conn, article_id, article_type)
+
     conn.commit()
+
+
+def rebuild_article_response_stats(
+    conn: sqlite3.Connection,
+    *,
+    apply: bool = False,
+    stats_updated_at: str | None = None,
+) -> dict:
+    """Rebuild per-article saved response stats from current archive tables."""
+
+    _ensure_article_response_stats_table(conn)
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            a.article_id,
+            a.article_type,
+            COUNT(r.id) AS saved_response_count,
+            COALESCE(MAX(r.res_no), 0) AS saved_max_res_no
+        FROM articles AS a
+        LEFT JOIN responses AS r
+            ON a.article_id = r.article_id
+            AND a.article_type = r.article_type
+        GROUP BY a.article_id, a.article_type
+        ORDER BY a.article_id ASC, a.article_type ASC
+        """
+    )
+    expected_rows = [
+        (row[0], row[1], int(row[2]), int(row[3]))
+        for row in cur.fetchall()
+    ]
+
+    cur.execute(
+        """
+        SELECT article_id, article_type, saved_response_count, saved_max_res_no
+        FROM article_response_stats
+        """
+    )
+    existing_rows = {
+        (row[0], row[1]): (int(row[2]), int(row[3]))
+        for row in cur.fetchall()
+    }
+
+    expected_map = {
+        (article_id, article_type): (saved_count, saved_max)
+        for article_id, article_type, saved_count, saved_max in expected_rows
+    }
+    stale_keys = set(existing_rows) - set(expected_map)
+    changed_or_missing = 0
+    for key, value in expected_map.items():
+        if existing_rows.get(key) != value:
+            changed_or_missing += 1
+
+    summary = {
+        "apply": apply,
+        "expected_stats_rows": len(expected_rows),
+        "expected_zero_response_rows": sum(
+            1 for _aid, _atype, saved_count, _saved_max in expected_rows
+            if saved_count == 0
+        ),
+        "expected_non_zero_rows": sum(
+            1 for _aid, _atype, saved_count, _saved_max in expected_rows
+            if saved_count > 0
+        ),
+        "existing_stats_rows": len(existing_rows),
+        "would_upsert_rows": changed_or_missing,
+        "would_delete_stale_rows": len(stale_keys),
+        "applied_upsert_rows": 0,
+        "applied_delete_rows": 0,
+    }
+
+    if not apply:
+        return summary
+
+    updated_at = stats_updated_at or datetime.now(timezone.utc).isoformat()
+
+    cur.execute("DELETE FROM article_response_stats")
+    deleted_rows = cur.rowcount
+    if expected_rows:
+        cur.executemany(
+            """
+            INSERT INTO article_response_stats (
+                article_id,
+                article_type,
+                saved_response_count,
+                saved_max_res_no,
+                stats_updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    article_id,
+                    article_type,
+                    saved_count,
+                    saved_max,
+                    updated_at,
+                )
+                for article_id, article_type, saved_count, saved_max in expected_rows
+            ],
+        )
+        upsert_rows = cur.rowcount
+    else:
+        upsert_rows = 0
+    conn.commit()
+
+    summary["applied_delete_rows"] = deleted_rows
+    summary["applied_upsert_rows"] = upsert_rows
+    return summary
+
+
+def rebuild_article_response_stats_for_db(
+    db_path: str,
+    *,
+    apply: bool = False,
+) -> dict:
+    """Open an explicit DB path and run stats rebuild in dry-run or apply mode."""
+
+    path = Path(db_path)
+    if not path.exists():
+        raise FileNotFoundError(db_path)
+
+    conn = sqlite3.connect(
+        db_path,
+        timeout=DEFAULT_SQLITE_BUSY_TIMEOUT_MS / 1000.0,
+    )
+    conn.execute(f"PRAGMA busy_timeout={DEFAULT_SQLITE_BUSY_TIMEOUT_MS}")
+    try:
+        return rebuild_article_response_stats(conn, apply=apply)
+    finally:
+        conn.close()
 
 
 def save_json(
