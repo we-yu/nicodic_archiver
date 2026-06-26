@@ -752,7 +752,16 @@ def _registered_build_resolved_targets_cte(
     matched_last_scraped_expr: str,
 ) -> str:
     return f"""
-            WITH resolved_targets AS (
+            WITH url_fallback_articles AS (
+                SELECT
+                    a.article_type,
+                    a.canonical_url,
+                    MIN(a.id) AS selected_article_row_id
+                FROM articles AS a
+                WHERE a.canonical_url IS NOT NULL
+                GROUP BY a.article_type, a.canonical_url
+            ),
+            resolved_targets AS (
                 SELECT
                     t.id AS target_row_id,
                     t.article_id AS target_article_id,
@@ -770,16 +779,12 @@ def _registered_build_resolved_targets_cte(
                 LEFT JOIN articles AS a_exact
                     ON t.article_id = a_exact.article_id
                     AND t.article_type = a_exact.article_type
-                LEFT JOIN articles AS a_url
+                LEFT JOIN url_fallback_articles AS ufa
                     ON a_exact.id IS NULL
-                    AND a_url.id = (
-                        SELECT a2.id
-                        FROM articles AS a2
-                        WHERE a2.article_type = t.article_type
-                          AND a2.canonical_url = t.canonical_url
-                        ORDER BY a2.id ASC
-                        LIMIT 1
-                    )
+                    AND ufa.article_type = t.article_type
+                    AND ufa.canonical_url = t.canonical_url
+                LEFT JOIN articles AS a_url
+                    ON a_url.id = ufa.selected_article_row_id
                 WHERE t.is_active = 1
             )
         """
@@ -1149,15 +1154,26 @@ def query_registered_articles(
         )
 
         cur = conn.cursor()
-        cur.execute(
-            base_cte_sql + f"""
-            SELECT COUNT(*)
-            FROM resolved_targets AS rt
-            {where_sql}
-            """,
-            where_params,
-        )
-        total = cur.fetchone()[0]
+        if where_sql:
+            cur.execute(
+                base_cte_sql + f"""
+                SELECT COUNT(*)
+                FROM resolved_targets AS rt
+                {where_sql}
+                """,
+                where_params,
+            )
+            total = cur.fetchone()[0]
+        else:
+            # Fast path for default no-search page: count active targets directly.
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM target
+                WHERE is_active = 1
+                """
+            )
+            total = cur.fetchone()[0]
 
         if _registered_uses_page_first_sort(sort_by):
             page_sql = base_cte_sql + f"""

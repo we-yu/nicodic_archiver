@@ -59,6 +59,12 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
     return {row[0] for row in cur.fetchall()}
 
 
+def _index_names(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA index_list({table_name})")
+    return {row[1] for row in cur.fetchall()}
+
+
 def test_open_readonly_db_returns_none_without_creating_file(
     tmp_path,
     monkeypatch,
@@ -100,6 +106,23 @@ def test_init_db_creates_data_dir_db_and_tables(tmp_path, monkeypatch):
         assert "target" in tables
         assert "scrape_run_observation" in tables
         assert "article_response_stats" in tables
+    finally:
+        conn.close()
+
+
+def test_init_db_creates_registered_articles_support_indexes(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    try:
+        article_indexes = _index_names(conn, "articles")
+        target_indexes = _index_names(conn, "target")
+
+        assert "idx_articles_type_canonical_url_id" in article_indexes
+        assert "idx_target_active_created_at_id" in target_indexes
     finally:
         conn.close()
 
