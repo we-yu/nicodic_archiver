@@ -31,6 +31,16 @@ from orchestrator import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _mock_observed_max_update():
+    """Mock the target observed-max write so MagicMock conns in these unit
+    tests are unaffected. Real persistence is covered in
+    test_orchestrator_observed_max.py against a real DB.
+    """
+    with patch("orchestrator.update_target_observed_max_res_no"):
+        yield
+
+
 # ----- build_bbs_base_url -----
 
 
@@ -1416,7 +1426,9 @@ def test_run_scrape_saved_article_zero_new_is_success_without_writing():
         progress_reporter=None,
     )
     mock_saved.assert_not_called()
-    mock_init.assert_not_called()
+    # init_db is opened only to persist the saved-rows-fallback observed max;
+    # no response rows are written (save_to_db stays uncalled).
+    mock_init.assert_called_once_with()
     mock_save_db.assert_not_called()
     mock_print.assert_any_call(
         "No new BBS responses found; article already up to date"

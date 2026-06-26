@@ -1062,6 +1062,7 @@ def _make_reg_row(
     canonical_url="https://dic.nicovideo.jp/a/12345",
     saved_response_count=42,
     saved_max_res_no=50,
+    observed_max_res_no=50,
     last_scraped_at="2026-01-01T00:00:00+00:00",
     created_at="2026-01-01T00:00:00+00:00",
 ):
@@ -1072,6 +1073,7 @@ def _make_reg_row(
         "canonical_url": canonical_url,
         "saved_response_count": saved_response_count,
         "saved_max_res_no": saved_max_res_no,
+        "observed_max_res_no": observed_max_res_no,
         "last_scraped_at": last_scraped_at,
         "created_at": created_at,
     }
@@ -1085,7 +1087,8 @@ def test_registered_page_renders_html_table_with_expected_columns():
         response = _run_wsgi_request("GET", path="/registered")
 
     assert response["status"] == "200 OK"
-    assert "Saved Max Res No" in response["body"]
+    assert "Observed Max Res No" in response["body"]
+    assert "Saved Max Res No" not in response["body"]
     assert "<table" in response["body"]
     assert "テスト記事" in response["body"]
     assert "https://dic.nicovideo.jp/a/12345" in response["body"]
@@ -1236,7 +1239,7 @@ def test_registered_page_uses_alignment_classes_for_columns():
     assert 'class="col-created-at align-center"' in response["body"]
     assert 'class="col-last-scraped align-center"' in response["body"]
     assert 'class="col-saved-count align-right"' in response["body"]
-    assert 'class="col-saved-max-res align-right"' in response["body"]
+    assert 'class="col-observed-max-res align-right"' in response["body"]
 
 
 def test_registered_page_uses_wrapping_title_column_styles():
@@ -1436,3 +1439,38 @@ def test_registered_csv_includes_csv_download_link_on_page():
         response = _run_wsgi_request("GET", path="/registered")
 
     assert "/registered/csv" in response["body"]
+
+
+def test_registered_page_csv_uses_observed_not_saved_max_header():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered/csv")
+
+    first_line = response["body"].splitlines()[0]
+    assert "observed_max_res_no" in first_line
+    assert "saved_max_res_no" not in first_line
+
+
+def test_registered_page_shows_observed_max_sort_link():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert "sort_by=observed_max_res_no" in response["body"]
+
+
+def test_normalize_registered_sort_by_maps_legacy_saved_max_to_observed():
+    from web_app import _normalize_registered_sort_by
+
+    assert (
+        _normalize_registered_sort_by("saved_max_res_no")
+        == "observed_max_res_no"
+    )
+    assert (
+        _normalize_registered_sort_by("latest_scraped_max_res_no")
+        == "observed_max_res_no"
+    )

@@ -991,8 +991,9 @@ def _render_page(
 
 
 def _normalize_registered_sort_by(value: str) -> str:
-    if value == "latest_scraped_max_res_no":
-        value = "saved_max_res_no"
+    # Legacy saved-stat sort aliases now resolve to the observed board max.
+    if value in ("latest_scraped_max_res_no", "saved_max_res_no"):
+        value = "observed_max_res_no"
     if value in REGISTERED_SORT_ALLOWLIST:
         return value
     return DEFAULT_REGISTERED_SORT_BY
@@ -1038,7 +1039,7 @@ def _registered_column_class(key: str) -> str:
         "canonical_url": "col-canonical-url",
         "created_at": "col-created-at",
         "saved_response_count": "col-saved-count",
-        "saved_max_res_no": "col-saved-max-res",
+        "observed_max_res_no": "col-observed-max-res",
         "last_scraped_at": "col-last-scraped",
     }
     return classes.get(key, "")
@@ -1047,7 +1048,7 @@ def _registered_column_class(key: str) -> str:
 def _registered_align_class(key: str) -> str:
     if key in {"title", "canonical_url"}:
         return "align-left"
-    if key in {"article_id", "saved_response_count", "saved_max_res_no"}:
+    if key in {"article_id", "saved_response_count", "observed_max_res_no"}:
         return "align-right"
     return "align-center"
 
@@ -1364,7 +1365,7 @@ def _render_registered_list_page(query_params: dict) -> bytes:
         .col-title {{ width: 21%; }}
         .col-canonical-url {{ width: 13%; }}
         .col-created-at, .col-last-scraped {{ width: 17ch; }}
-        .col-saved-count, .col-saved-max-res {{ width: 11ch; }}
+        .col-saved-count, .col-observed-max-res {{ width: 11ch; }}
         td.col-title {{
             font-weight: 600;
             white-space: normal;

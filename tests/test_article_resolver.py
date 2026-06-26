@@ -32,6 +32,7 @@ def test_resolve_article_input_succeeds_for_full_article_url():
         "title": "Foo",
         "matched_by": "article_url",
         "normalized_input": "https://dic.nicovideo.jp/a/Foo",
+        "observed_max_res_no": None,
     }
 
 

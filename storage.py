@@ -97,6 +97,42 @@ def _ensure_target_title_column(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _ensure_target_observed_max_res_no_columns(
+    conn: sqlite3.Connection,
+) -> None:
+    """Add the board-observed max response-number columns to ``target``.
+
+    Additive, nullable columns following the existing compatibility-ALTER
+    style. ``observed_max_res_no`` is the monotonic board-level maximum
+    response number; ``_at`` records when it was last advanced/confirmed and
+    ``_source`` records how it was observed.
+    """
+
+    column_names = _list_column_names(conn, "target")
+    required_columns = {
+        "observed_max_res_no": (
+            "ALTER TABLE target ADD COLUMN observed_max_res_no INTEGER"
+        ),
+        "observed_max_res_no_at": (
+            "ALTER TABLE target ADD COLUMN observed_max_res_no_at TEXT"
+        ),
+        "observed_max_res_no_source": (
+            "ALTER TABLE target ADD COLUMN observed_max_res_no_source TEXT"
+        ),
+    }
+
+    cur = conn.cursor()
+    changed = False
+    for column_name, statement in required_columns.items():
+        if column_name in column_names:
+            continue
+        cur.execute(statement)
+        changed = True
+
+    if changed:
+        conn.commit()
+
+
 def _ensure_article_metadata_columns(conn: sqlite3.Connection) -> None:
     column_names = _list_column_names(conn, "articles")
     required_columns = {
@@ -227,6 +263,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     _ensure_article_metadata_columns(conn)
     _ensure_target_redirect_columns(conn)
     _ensure_target_title_column(conn)
+    _ensure_target_observed_max_res_no_columns(conn)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS scrape_run_observation (
@@ -738,6 +775,89 @@ def register_target(
             "article_type": article_type,
         },
     }
+
+
+def update_target_observed_max_res_no(
+    conn,
+    article_id,
+    article_type,
+    observed,
+    source,
+    observed_at=None,
+):
+    """Monotonically update a target's observed board max response number.
+
+    Behavior:
+      - ``observed is None``: no write.
+      - non-int or negative ``observed``: ignored safely (no write).
+      - stored value NULL: set value, timestamp, source.
+      - ``observed > stored``: update value, timestamp, source.
+      - ``observed == stored``: keep value, refresh timestamp (and source).
+      - ``observed < stored``: never lower; leave timestamp/source untouched.
+
+    A single guarded UPDATE applies the monotonic rule atomically to reduce
+    race risk. Returns a small dict describing the outcome.
+    """
+
+    if observed is None:
+        return {"updated": False, "reason": "observed_none"}
+    if isinstance(observed, bool) or not isinstance(observed, int):
+        return {"updated": False, "reason": "observed_not_int"}
+    if observed < 0:
+        return {"updated": False, "reason": "observed_negative"}
+
+    validate_target_article_identity(article_id, article_type)
+
+    if observed_at is None:
+        observed_at = datetime.now(timezone.utc).isoformat()
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE target
+        SET observed_max_res_no = ?,
+            observed_max_res_no_at = ?,
+            observed_max_res_no_source = ?
+        WHERE article_id = ?
+          AND article_type = ?
+          AND (
+              observed_max_res_no IS NULL
+              OR observed_max_res_no < ?
+          )
+        """,
+        (
+            observed,
+            observed_at,
+            source,
+            article_id,
+            article_type,
+            observed,
+        ),
+    )
+    advanced = cur.rowcount > 0
+
+    if not advanced:
+        # Either no such target, or observed <= stored. Refresh the
+        # timestamp/source only when the value is exactly equal.
+        cur.execute(
+            """
+            UPDATE target
+            SET observed_max_res_no_at = ?,
+                observed_max_res_no_source = ?
+            WHERE article_id = ?
+              AND article_type = ?
+              AND observed_max_res_no = ?
+            """,
+            (observed_at, source, article_id, article_type, observed),
+        )
+        refreshed = cur.rowcount > 0
+        conn.commit()
+        if refreshed:
+            return {"updated": True, "reason": "equal_timestamp_refresh"}
+        return {"updated": False, "reason": "not_higher"}
+
+    conn.commit()
+    return {"updated": True, "reason": "advanced"}
 
 
 def list_targets(conn, active_only=True):
