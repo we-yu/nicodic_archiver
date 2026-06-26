@@ -5,6 +5,7 @@ from article_page_identity import (
     resolve_registration_identity_from_html,
 )
 from http_client import fetch_page
+from parser import extract_observed_max_res_no_from_article_top
 
 
 NICO_TOP_URL = "https://dic.nicovideo.jp"
@@ -21,8 +22,10 @@ def _build_success_result(
     title: str,
     matched_by: str,
     normalized_input: str,
+    observed_max_res_no: int | None = None,
+    observed_max_res_no_source: str | None = None,
 ) -> dict:
-    return {
+    result = {
         "ok": True,
         "canonical_target": {
             "article_url": article_url,
@@ -33,6 +36,12 @@ def _build_success_result(
         "matched_by": matched_by,
         "normalized_input": normalized_input,
     }
+    if observed_max_res_no is not None:
+        result["observed_max_res_no"] = observed_max_res_no
+        result["observed_max_res_no_source"] = (
+            observed_max_res_no_source or "article_top_preview"
+        )
+    return result
 
 
 def _build_failure_result(failure_kind: str, normalized_input: str) -> dict:
@@ -107,6 +116,8 @@ def _resolve_from_article_url(
     except ValueError:
         return _build_failure_result("not_found", normalized_input)
 
+    observed_max_res_no = extract_observed_max_res_no_from_article_top(soup)
+
     return _build_success_result(
         article_url=canonical_target["article_url"],
         article_id=canonical_target["article_id"],
@@ -114,6 +125,8 @@ def _resolve_from_article_url(
         title=title,
         matched_by=matched_by,
         normalized_input=normalized_input,
+        observed_max_res_no=observed_max_res_no,
+        observed_max_res_no_source="article_top_preview",
     )
 
 

@@ -18,6 +18,7 @@ from storage import (
     list_queue_requests,
     open_readonly_db,
     save_to_db,
+    update_target_observed_max_res_no,
     validate_saved_article_identity,
 )
 from dicopedia_urls import parse_target_identity
@@ -727,6 +728,17 @@ def run_scrape(
         )
 
     if max_saved_res_no is not None and not responses and not interrupted:
+        conn = init_db()
+        try:
+            update_target_observed_max_res_no(
+                conn,
+                article_id,
+                article_type,
+                max_saved_res_no,
+                "saved_rows_fallback",
+            )
+        finally:
+            conn.close()
         if progress_reporter is None:
             print("No new BBS responses found; article already up to date")
         else:
@@ -799,6 +811,13 @@ def run_scrape(
         canonical_article_url,
         responses,
         **save_kwargs,
+    )
+    update_target_observed_max_res_no(
+        conn,
+        article_id,
+        article_type,
+        _observed_max_res_no(json_responses),
+        "bbs_page_scrape",
     )
     conn.close()
 

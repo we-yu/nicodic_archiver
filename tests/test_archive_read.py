@@ -189,6 +189,7 @@ def _seed_registered_sort_case(
     created_at,
     response_numbers=None,
     latest_scraped_at=None,
+    observed_max_res_no=None,
 ):
     monkeypatch.chdir(tmp_path)
     conn = init_db()
@@ -203,10 +204,10 @@ def _seed_registered_sort_case(
         conn.execute(
             """
             UPDATE target
-            SET created_at=?
+            SET created_at=?, observed_max_res_no=?
             WHERE article_id=? AND article_type=?
             """,
-            (created_at, article_id, "a"),
+            (created_at, observed_max_res_no, article_id, "a"),
         )
         if response_numbers:
             save_to_db(
@@ -607,11 +608,15 @@ def test_open_readonly_db_opens_existing_db_read_only(tmp_path, monkeypatch):
         conn.close()
 
 
-def test_registered_articles_column_label_saved_max_res_no():
+def test_registered_articles_column_label_observed_max_res_no():
     from archive_read import REGISTERED_ARTICLE_COLUMNS
 
-    col = next(c for c in REGISTERED_ARTICLE_COLUMNS if c["key"] == "saved_max_res_no")
-    assert col["label"] == "Saved Max Res No"
+    col = next(
+        c
+        for c in REGISTERED_ARTICLE_COLUMNS
+        if c["key"] == "observed_max_res_no"
+    )
+    assert col["label"] == "Observed Max Res No"
 
 
 def test_get_saved_article_summary_by_id_returns_first_match(
@@ -656,7 +661,7 @@ def test_list_registered_articles_returns_expected_columns(
     assert row["title"] == "First Title"
     assert row["canonical_url"] == "https://dic.nicovideo.jp/a/12345"
     assert row["saved_response_count"] == 1
-    assert row["saved_max_res_no"] == 1
+    assert row["observed_max_res_no"] is None
     assert "last_scraped_at" in row
     assert row["article_id"] == "12345"
     assert "created_at" in row
@@ -754,7 +759,7 @@ def test_query_registered_articles_includes_active_pending_targets(
     assert result["rows"][0]["article_id"] == "8880001"
     assert result["rows"][0]["title"] == "Pending Display Title"
     assert result["rows"][0]["saved_response_count"] == 0
-    assert result["rows"][0]["saved_max_res_no"] is None
+    assert result["rows"][0]["observed_max_res_no"] is None
     assert result["rows"][0]["last_scraped_at"] is None
 
 
@@ -769,7 +774,7 @@ def test_query_registered_completed_zero_board_shows_checked_state(
     assert len(result["rows"]) == 1
     row = result["rows"][0]
     assert row["saved_response_count"] == 0
-    assert row["saved_max_res_no"] == 0
+    assert row["observed_max_res_no"] is None
     assert row["last_scraped_at"] == "2026-06-07T08:09:10+00:00"
 
 
@@ -825,7 +830,7 @@ def test_query_registered_followup_empty_scrape_keeps_prior_responses(
     result = query_registered_articles(search=aid, paginate=False)
     row = result["rows"][0]
     assert row["saved_response_count"] == 2
-    assert row["saved_max_res_no"] == 2
+    assert row["observed_max_res_no"] is None
     assert row["last_scraped_at"] == "2026-06-06T06:06:06+00:00"
 
 
@@ -912,7 +917,7 @@ def test_query_registered_articles_matches_saved_numeric_article_by_canonical_ur
     assert row["title"] == "Saved Numeric Title"
     assert row["canonical_url"] == seeded["canonical_url"]
     assert row["saved_response_count"] == 2
-    assert row["saved_max_res_no"] == 2
+    assert row["observed_max_res_no"] is None
     assert row["last_scraped_at"] == "2026-04-02T00:00:00+00:00"
 
 
@@ -989,7 +994,7 @@ def test_query_registered_articles_canonical_url_fallback_uses_earliest_row(
     row = result["rows"][0]
     assert row["title"] == "Target Title"
     assert row["saved_response_count"] == 5
-    assert row["saved_max_res_no"] == 5
+    assert row["observed_max_res_no"] is None
 
 
 def test_query_registered_articles_filters_by_search_title(
@@ -1166,7 +1171,7 @@ def test_query_registered_articles_sorts_saved_response_count_numerically(
     ]
 
 
-def test_query_registered_articles_sorts_max_res_no_numerically(
+def test_query_registered_articles_sorts_observed_max_res_no_numerically(
     tmp_path,
     monkeypatch,
 ):
@@ -1177,6 +1182,7 @@ def test_query_registered_articles_sorts_max_res_no_numerically(
         created_at="2026-01-01T00:00:00+00:00",
         response_numbers=[2],
         latest_scraped_at="2026-01-01T00:00:00+00:00",
+        observed_max_res_no=2,
     )
     _seed_registered_sort_case(
         tmp_path,
@@ -1185,6 +1191,7 @@ def test_query_registered_articles_sorts_max_res_no_numerically(
         created_at="2026-01-01T00:00:00+00:00",
         response_numbers=[10],
         latest_scraped_at="2026-01-01T00:00:00+00:00",
+        observed_max_res_no=10,
     )
     _seed_registered_sort_case(
         tmp_path,
@@ -1193,10 +1200,11 @@ def test_query_registered_articles_sorts_max_res_no_numerically(
         created_at="2026-01-01T00:00:00+00:00",
         response_numbers=[100],
         latest_scraped_at="2026-01-01T00:00:00+00:00",
+        observed_max_res_no=100,
     )
 
     result = query_registered_articles(
-        sort_by="saved_max_res_no",
+        sort_by="observed_max_res_no",
         sort_order="asc",
         paginate=False,
     )
@@ -1423,7 +1431,7 @@ def test_query_registered_fast_path_page_choice_ignores_off_page_responses(
 
     assert result["rows"][0]["article_id"] == "200"
     assert result["rows"][0]["saved_response_count"] == 0
-    assert result["rows"][0]["saved_max_res_no"] is None
+    assert result["rows"][0]["observed_max_res_no"] is None
 
 
 def test_query_registered_fast_path_includes_page_response_stats(
@@ -1441,10 +1449,10 @@ def test_query_registered_fast_path_includes_page_response_stats(
 
     row = result["rows"][0]
     assert row["saved_response_count"] == 1
-    assert row["saved_max_res_no"] == 1
+    assert row["observed_max_res_no"] is None
 
 
-def test_query_registered_legacy_sort_alias_maps_to_saved_max_res_no(
+def test_query_registered_legacy_sort_alias_maps_to_observed_max_res_no(
     tmp_path,
     monkeypatch,
 ):
@@ -1455,6 +1463,7 @@ def test_query_registered_legacy_sort_alias_maps_to_saved_max_res_no(
         created_at="2026-01-01T00:00:00+00:00",
         response_numbers=[2],
         latest_scraped_at="2026-01-01T00:00:00+00:00",
+        observed_max_res_no=2,
     )
     _seed_registered_sort_case(
         tmp_path,
@@ -1463,6 +1472,7 @@ def test_query_registered_legacy_sort_alias_maps_to_saved_max_res_no(
         created_at="2026-01-01T00:00:00+00:00",
         response_numbers=[10],
         latest_scraped_at="2026-01-01T00:00:00+00:00",
+        observed_max_res_no=10,
     )
 
     legacy = query_registered_articles(
@@ -1471,7 +1481,7 @@ def test_query_registered_legacy_sort_alias_maps_to_saved_max_res_no(
         paginate=False,
     )
     current = query_registered_articles(
-        sort_by="saved_max_res_no",
+        sort_by="observed_max_res_no",
         sort_order="asc",
         paginate=False,
     )
@@ -1533,12 +1543,12 @@ def test_query_registered_aggregate_sort_reads_stats_from_summary(
         paginate=False,
     )
     max_sorted = query_registered_articles(
-        sort_by="saved_max_res_no",
+        sort_by="observed_max_res_no",
         paginate=False,
     )
 
     assert count_sorted["rows"][0]["saved_response_count"] == 77
-    assert max_sorted["rows"][0]["saved_max_res_no"] == 88
+    assert max_sorted["rows"][0]["observed_max_res_no"] is None
 
 
 def test_query_registered_fast_path_falls_back_when_summary_row_missing(
@@ -1558,7 +1568,7 @@ def test_query_registered_fast_path_falls_back_when_summary_row_missing(
 
     row = result["rows"][0]
     assert row["saved_response_count"] == 1
-    assert row["saved_max_res_no"] == 1
+    assert row["observed_max_res_no"] is None
 
 
 def test_query_registered_does_not_crash_when_summary_table_absent(
@@ -1578,7 +1588,7 @@ def test_query_registered_does_not_crash_when_summary_table_absent(
     aggregate = query_registered_articles(sort_by="saved_response_count")
 
     assert fast["rows"][0]["saved_response_count"] == 1
-    assert fast["rows"][0]["saved_max_res_no"] == 1
+    assert fast["rows"][0]["observed_max_res_no"] is None
     assert aggregate["rows"][0]["saved_response_count"] == 1
 
 

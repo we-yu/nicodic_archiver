@@ -240,3 +240,27 @@ def test_resolve_article_input_id_mismatch_returns_failure():
         "failure_kind": "id_mismatch",
         "normalized_input": "https://dic.nicovideo.jp/id/111111",
     }
+
+
+def test_resolve_article_input_carries_observed_max_from_article_top():
+    soup = BeautifulSoup(
+        """
+        <html><head>
+        <link rel="canonical" href="https://dic.nicovideo.jp/a/sample" />
+        <meta property="og:title" content="Sとは">
+        <meta property="og:url" content="https://dic.nicovideo.jp/id/222222" />
+        </head>
+        <body>
+          <dt class="st-bbs_reshead" data-res_no="9"></dt>
+          <dt class="st-bbs_reshead" data-res_no="15"></dt>
+        </body></html>
+        """,
+        "lxml",
+    )
+
+    with patch("article_resolver.fetch_page", return_value=soup):
+        result = resolve_article_input("https://dic.nicovideo.jp/id/222222")
+
+    assert result["ok"] is True
+    assert result["observed_max_res_no"] == 15
+    assert result["observed_max_res_no_source"] == "article_top_preview"

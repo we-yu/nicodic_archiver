@@ -94,6 +94,10 @@ def register_target_url(article_url: str, target_db_path: str) -> str:
         return "denylisted"
 
     title = resolution.get("title") or ""
+    observed_max_res_no = resolution.get("observed_max_res_no")
+    observed_max_res_no_source = resolution.get(
+        "observed_max_res_no_source"
+    )
 
     conn = init_db(target_db_path)
     try:
@@ -103,6 +107,8 @@ def register_target_url(article_url: str, target_db_path: str) -> str:
             canonical_target["article_type"],
             canonical_target["article_url"],
             title=title,
+            observed_max_res_no=observed_max_res_no,
+            observed_max_res_no_source=observed_max_res_no_source,
         )
     finally:
         conn.close()

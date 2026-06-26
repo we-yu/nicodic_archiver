@@ -1,0 +1,143 @@
+Task: MainTask050-observed-board-max-res-no-persistence-and-display
+Date: 2026-06-26
+
+Editor AI model
+- GPT-5.3-Codex
+
+Summary
+- Added persistent target-side observed board max fields.
+- Implemented monotonic observed max update helper.
+- Wired registration-time article-top observation into target persistence.
+- Wired scrape-time observed max into target persistence.
+- Switched Registered Articles visible/CSV max column from saved_max_res_no to observed_max_res_no.
+- Kept article_response_stats semantics and saved_max_res_no DB field unchanged.
+
+Files changed
+- storage.py
+- parser.py
+- article_resolver.py
+- target_list.py
+- orchestrator.py
+- archive_read.py
+- web_app.py
+- tests/test_parser.py
+- tests/test_article_resolver.py
+- tests/test_target_list.py
+- tests/test_storage.py
+- tests/test_orchestrator.py
+- tests/test_archive_read.py
+- tests/test_web_app.py
+- MainTask050-observed-board-max-res-no-persistence-and-display_report.txt
+
+Schema changes
+- target table compatibility columns added via init_db compatibility helper:
+  - observed_max_res_no INTEGER
+  - observed_max_res_no_at TEXT
+  - observed_max_res_no_source TEXT
+- Added compatibility helper in storage:
+  - _ensure_target_observed_columns(conn)
+- Existing DBs are upgraded by init_db() same as current compatibility-column style.
+
+Storage/update-rule changes
+- Added central helper:
+  - update_target_observed_max_res_no(conn, article_id, article_type, observed, source, observed_at=None)
+- Behavior implemented:
+  - observed is None: no-op
+  - observed invalid/non-int/bool/negative: ignore safely
+  - stored NULL: set value/timestamp/source
+  - observed > stored: update value/timestamp/source
+  - observed == stored: refresh timestamp/source
+  - observed < stored: no downgrade, no metadata overwrite
+- Guarding approach:
+  - Single UPDATE with CASE monotonic guard logic.
+- Backward compatibility:
+  - target SELECT paths now use dynamic select-expression compatibility so old DBs without new columns read safely as NULL aliases.
+
+Parser/extraction changes
+- Added parser helper:
+  - extract_observed_max_res_no_from_article_top(soup) -> int | None
+- Behavior:
+  - Returns max int from data-res_no attributes when present.
+  - Returns 0 only for explicit empty-board phrases.
+  - Returns None for unknown/ambiguous shapes.
+  - Never raises on unknown HTML shapes.
+
+Registration-flow changes
+- article_resolver now extracts observed max from fetched article-top soup and carries optional fields in successful resolve result:
+  - observed_max_res_no
+  - observed_max_res_no_source=article_top_preview
+- target_list.register_target_url forwards optional observed max fields to storage.register_target.
+- storage.register_target optionally applies monotonic observed max update when observed value is provided.
+- No additional article-top fetch was introduced in resolver path.
+
+Scrape-flow changes
+- orchestrator.run_scrape now persists observed max to target:
+  - Normal scrape path: source=bbs_page_scrape with observed from collected/saved union max.
+  - Already-up-to-date zero-new path: source=saved_rows_fallback with max_saved_res_no lower-bound.
+- None does not overwrite values (helper no-op).
+- Lower values do not downgrade stored target observed max.
+
+Registered Articles UI/CSV changes
+- REGISTERED_ARTICLE_COLUMNS updated:
+  - Removed visible/csv key saved_max_res_no.
+  - Added visible/csv key observed_max_res_no in same position.
+- query_registered_articles rows now include observed_max_res_no from target.
+- web_app Registered table header and cell rendering switched to observed_max_res_no.
+- CSV output follows the same shared column list, so UI/CSV philosophy remains aligned.
+
+Sort/backward-compatibility behavior
+- Added sortable observed_max_res_no and NULL-last ordering.
+- Legacy URL sort aliases:
+  - latest_scraped_max_res_no -> observed_max_res_no
+  - saved_max_res_no -> observed_max_res_no
+- Chosen behavior for backward compatibility:
+  - Map legacy visible max sort aliases to observed max sort.
+- Internal saved stats remain available in rows where needed; article_response_stats and saved_max_res_no are preserved.
+
+Tests / validation run
+- Updated tests covering:
+  - parser extraction helper behavior
+  - resolver observed carry-through
+  - registration persistence of observed max
+  - storage monotonic helper rules
+  - scrape persistence behavior
+  - Registered query/UI/CSV observed field expectations
+  - legacy sort alias mapping to observed max
+- Validation commands run:
+  - ./validate.sh
+  - git diff --check
+
+Whether ./validate.sh passed
+- Passed (495 passed).
+
+Whether git diff --check passed
+- Passed (no output).
+
+Runtime reflection notes
+- This task changes schema compatibility behavior in storage.init_db for target observed columns.
+- Runtime environments that continue using an existing DB without running init_db against that DB will not see new columns until compatibility ALTER runs.
+
+Existing runtime DB note
+- runtime recreate may not automatically run existing-DB init_db() side effects.
+- Explicit runtime init_db('/app/data/nicodic.db') may be required to add new target columns.
+
+Runtime DB safety notes
+- This task does not modify runtime DB data directly from this implementation session.
+- Schema additions are nullable compatibility columns; no destructive migrations.
+
+Known limitations
+- Article-top empty-board detection is conservative and phrase-based; ambiguous shapes return None.
+- No full historical backfill for all existing targets is performed.
+- Observed values for existing targets populate gradually via registration checks and scrape runs.
+
+Recommended follow-up tasks
+- Add stronger article-top empty-state detection patterns if real HTML samples indicate stable selectors.
+- Consider a bounded operator command for optional observed_max_res_no backfill from saved_rows_fallback only.
+- Add user-facing documentation in docs/ for observed vs saved semantics in Registered Articles.
+
+Explicit non-modification statement
+- runtime DB was not modified.
+- runtime checkout was not modified.
+- cron settings were not modified.
+- Docker files/config outside this repository task scope were not modified.
+- root repository and sibling repositories were not modified.

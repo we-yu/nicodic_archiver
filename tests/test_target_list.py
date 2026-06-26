@@ -113,6 +113,37 @@ def test_register_target_url_inserts_valid_target_into_registry(tmp_path):
     ]
 
 
+def test_register_target_url_persists_observed_max_from_resolution(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+
+    with patch(
+        "target_list.resolve_article_input",
+        return_value={
+            "ok": True,
+            "canonical_target": {
+                "article_url": "https://dic.nicovideo.jp/a/12345",
+                "article_id": "5502789",
+                "article_type": "a",
+            },
+            "title": "Sample",
+            "matched_by": "article_url",
+            "normalized_input": "https://dic.nicovideo.jp/a/12345",
+            "observed_max_res_no": 321,
+            "observed_max_res_no_source": "article_top_preview",
+        },
+    ):
+        result = register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
+
+    assert result == "added"
+    entry = inspect_registered_target("5502789", "a", str(target_db_path))
+    assert entry is not None
+    assert entry["observed_max_res_no"] == 321
+    assert entry["observed_max_res_no_source"] == "article_top_preview"
+
+
 def test_register_target_url_stores_resolved_a_target_for_id_input(tmp_path):
     target_db_path = tmp_path / "targets.db"
 

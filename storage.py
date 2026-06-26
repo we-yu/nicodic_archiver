@@ -52,6 +52,9 @@ def _target_row_to_entry(row):
         "redirect_target_url": row[7],
         "redirect_detected_at": row[8],
         "title": row[9] if len(row) > 9 else None,
+        "observed_max_res_no": row[10] if len(row) > 10 else None,
+        "observed_max_res_no_at": row[11] if len(row) > 11 else None,
+        "observed_max_res_no_source": row[12] if len(row) > 12 else None,
     }
 
 
@@ -59,6 +62,31 @@ def _list_column_names(conn: sqlite3.Connection, table_name: str) -> set[str]:
     cur = conn.cursor()
     cur.execute(f"PRAGMA table_info({table_name})")
     return {row[1] for row in cur.fetchall()}
+
+
+def _target_select_columns(conn: sqlite3.Connection) -> str:
+    cols = _list_column_names(conn, "target")
+    observed_max_expr = (
+        "observed_max_res_no"
+        if "observed_max_res_no" in cols
+        else "NULL AS observed_max_res_no"
+    )
+    observed_at_expr = (
+        "observed_max_res_no_at"
+        if "observed_max_res_no_at" in cols
+        else "NULL AS observed_max_res_no_at"
+    )
+    observed_source_expr = (
+        "observed_max_res_no_source"
+        if "observed_max_res_no_source" in cols
+        else "NULL AS observed_max_res_no_source"
+    )
+    return (
+        "id, article_id, article_type, canonical_url, is_active, "
+        "created_at, is_redirected, redirect_target_url, "
+        "redirect_detected_at, title, "
+        f"{observed_max_expr}, {observed_at_expr}, {observed_source_expr}"
+    )
 
 
 def _ensure_target_redirect_columns(conn: sqlite3.Connection) -> None:
@@ -95,6 +123,32 @@ def _ensure_target_title_column(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     cur.execute("ALTER TABLE target ADD COLUMN title TEXT")
     conn.commit()
+
+
+def _ensure_target_observed_columns(conn: sqlite3.Connection) -> None:
+    column_names = _list_column_names(conn, "target")
+    required_columns = {
+        "observed_max_res_no": (
+            "ALTER TABLE target ADD COLUMN observed_max_res_no INTEGER"
+        ),
+        "observed_max_res_no_at": (
+            "ALTER TABLE target ADD COLUMN observed_max_res_no_at TEXT"
+        ),
+        "observed_max_res_no_source": (
+            "ALTER TABLE target ADD COLUMN observed_max_res_no_source TEXT"
+        ),
+    }
+
+    cur = conn.cursor()
+    changed = False
+    for column_name, statement in required_columns.items():
+        if column_name in column_names:
+            continue
+        cur.execute(statement)
+        changed = True
+
+    if changed:
+        conn.commit()
 
 
 def _ensure_article_metadata_columns(conn: sqlite3.Connection) -> None:
@@ -227,6 +281,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     _ensure_article_metadata_columns(conn)
     _ensure_target_redirect_columns(conn)
     _ensure_target_title_column(conn)
+    _ensure_target_observed_columns(conn)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS scrape_run_observation (
@@ -660,17 +715,19 @@ def register_target(
     article_type,
     canonical_url,
     title=None,
+    observed_max_res_no=None,
+    observed_max_res_no_source=None,
+    observed_max_res_no_at=None,
 ):
     """Register or reactivate one canonical scrape target."""
 
     validate_target_article_identity(article_id, article_type)
 
     cur = conn.cursor()
+    target_columns = _target_select_columns(conn)
     cur.execute(
-        """
-        SELECT id, article_id, article_type, canonical_url, is_active,
-               created_at, is_redirected, redirect_target_url,
-               redirect_detected_at, title
+        f"""
+        SELECT {target_columns}
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -718,11 +775,19 @@ def register_target(
 
     conn.commit()
 
+    if observed_max_res_no is not None:
+        update_target_observed_max_res_no(
+            conn,
+            article_id,
+            article_type,
+            observed_max_res_no,
+            observed_max_res_no_source or "article_top_preview",
+            observed_at=observed_max_res_no_at,
+        )
+
     cur.execute(
-        """
-        SELECT id, article_id, article_type, canonical_url, is_active,
-               created_at, is_redirected, redirect_target_url,
-               redirect_detected_at, title
+        f"""
+        SELECT {target_columns}
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -744,10 +809,9 @@ def list_targets(conn, active_only=True):
     """Load registered scrape targets in insertion order."""
 
     cur = conn.cursor()
+    target_columns = _target_select_columns(conn)
     query = (
-        "SELECT id, article_id, article_type, canonical_url, is_active, "
-        "created_at, is_redirected, redirect_target_url, "
-        "redirect_detected_at, title FROM target"
+        f"SELECT {target_columns} FROM target"
     )
     params = ()
     if active_only:
@@ -762,11 +826,10 @@ def get_target(conn, article_id, article_type):
     """Load one registered target by canonical identity."""
 
     cur = conn.cursor()
+    target_columns = _target_select_columns(conn)
     cur.execute(
-        """
-        SELECT id, article_id, article_type, canonical_url, is_active,
-               created_at, is_redirected, redirect_target_url,
-               redirect_detected_at, title
+        f"""
+        SELECT {target_columns}
         FROM target
         WHERE article_id=? AND article_type=?
         """,
@@ -776,6 +839,136 @@ def get_target(conn, article_id, article_type):
     if row is None:
         return None
     return _target_row_to_entry(row)
+
+
+def update_target_observed_max_res_no(
+    conn,
+    article_id,
+    article_type,
+    observed,
+    source,
+    observed_at=None,
+):
+    """Monotonic update for target.observed_max_res_no and metadata.
+
+    Rules:
+      - observed is None: no-op
+      - observed invalid or negative: no-op
+      - NULL -> set value/at/source
+      - greater -> update value/at/source
+      - equal -> refresh at/source
+      - lower -> no-op
+    """
+
+    validate_target_article_identity(article_id, article_type)
+
+    if observed is None:
+        return {
+            "found": True,
+            "status": "ignored_none",
+            "entry": get_target(conn, article_id, article_type),
+            "target_identity": {
+                "article_id": article_id,
+                "article_type": article_type,
+            },
+        }
+
+    if isinstance(observed, bool) or not isinstance(observed, int):
+        return {
+            "found": True,
+            "status": "ignored_invalid",
+            "entry": get_target(conn, article_id, article_type),
+            "target_identity": {
+                "article_id": article_id,
+                "article_type": article_type,
+            },
+        }
+    if observed < 0:
+        return {
+            "found": True,
+            "status": "ignored_invalid",
+            "entry": get_target(conn, article_id, article_type),
+            "target_identity": {
+                "article_id": article_id,
+                "article_type": article_type,
+            },
+        }
+
+    current = get_target(conn, article_id, article_type)
+    if current is None:
+        return {
+            "found": False,
+            "status": "not_found",
+            "entry": None,
+            "target_identity": {
+                "article_id": article_id,
+                "article_type": article_type,
+            },
+        }
+
+    observed_at_value = observed_at or datetime.now(timezone.utc).isoformat()
+    source_value = source or "unknown"
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE target
+        SET observed_max_res_no = CASE
+                WHEN observed_max_res_no IS NULL THEN ?
+                WHEN ? > observed_max_res_no THEN ?
+                ELSE observed_max_res_no
+            END,
+            observed_max_res_no_at = CASE
+                WHEN observed_max_res_no IS NULL THEN ?
+                WHEN ? >= observed_max_res_no THEN ?
+                ELSE observed_max_res_no_at
+            END,
+            observed_max_res_no_source = CASE
+                WHEN observed_max_res_no IS NULL THEN ?
+                WHEN ? >= observed_max_res_no THEN ?
+                ELSE observed_max_res_no_source
+            END
+        WHERE article_id=? AND article_type=?
+        """,
+        (
+            observed,
+            observed,
+            observed,
+            observed_at_value,
+            observed,
+            observed_at_value,
+            source_value,
+            observed,
+            source_value,
+            article_id,
+            article_type,
+        ),
+    )
+    conn.commit()
+
+    updated_entry = get_target(conn, article_id, article_type)
+    previous = current.get("observed_max_res_no")
+    now_value = updated_entry.get("observed_max_res_no")
+    if previous is None and now_value is not None:
+        status = "set"
+    elif now_value is None:
+        status = "unchanged"
+    elif previous is not None and now_value > previous:
+        status = "updated"
+    elif previous == now_value and observed == now_value:
+        status = "refreshed"
+    else:
+        status = "unchanged"
+
+    return {
+        "found": True,
+        "status": status,
+        "entry": updated_entry,
+        "target_identity": {
+            "article_id": article_id,
+            "article_type": article_type,
+        },
+    }
 
 
 def set_target_active_state(conn, article_id, article_type, is_active):

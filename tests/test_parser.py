@@ -2,7 +2,10 @@
 
 from bs4 import BeautifulSoup
 
-from parser import parse_responses
+from parser import (
+  extract_observed_max_res_no_from_article_top,
+  parse_responses,
+)
 
 
 def test_parse_responses_normal_case():
@@ -69,3 +72,37 @@ def test_parse_responses_partial_html_and_missing_res_no():
     assert response["posted_at"] is None
     assert response["content"] == ""
     assert response["content_html"] == ""
+
+
+def test_extract_observed_max_res_no_from_article_top_data_res_no():
+    soup = BeautifulSoup(
+        """
+        <html><body>
+          <dt class="st-bbs_reshead" data-res_no="5"></dt>
+          <dt class="st-bbs_reshead" data-res_no="18"></dt>
+          <dt class="st-bbs_reshead" data-res_no="11"></dt>
+        </body></html>
+        """,
+        "lxml",
+    )
+
+    assert extract_observed_max_res_no_from_article_top(soup) == 18
+
+
+def test_extract_observed_max_res_no_from_article_top_explicit_empty_board():
+    soup = BeautifulSoup(
+        """
+        <html><body>
+          <div>コメントはありません</div>
+        </body></html>
+        """,
+        "lxml",
+    )
+
+    assert extract_observed_max_res_no_from_article_top(soup) == 0
+
+
+def test_extract_observed_max_res_no_from_article_top_unknown_shape_none():
+    soup = BeautifulSoup("<html><body><p>unknown</p></body></html>", "lxml")
+
+    assert extract_observed_max_res_no_from_article_top(soup) is None

@@ -26,6 +26,7 @@ from storage import (
     save_json,
     save_to_db,
     set_target_active_state,
+    update_target_observed_max_res_no,
 )
 
 
@@ -123,6 +124,103 @@ def test_init_db_creates_registered_articles_support_indexes(
 
         assert "idx_articles_type_canonical_url_id" in article_indexes
         assert "idx_target_active_created_at_id" in target_indexes
+    finally:
+        conn.close()
+
+
+def test_init_db_ensures_target_observed_columns(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    try:
+        cols = storage._list_column_names(conn, "target")
+        assert "observed_max_res_no" in cols
+        assert "observed_max_res_no_at" in cols
+        assert "observed_max_res_no_source" in cols
+    finally:
+        conn.close()
+
+
+def test_update_target_observed_max_res_no_monotonic_rules(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(
+            conn,
+            "12345",
+            "a",
+            "https://dic.nicovideo.jp/a/12345",
+            title="Title",
+        )
+
+        update_target_observed_max_res_no(
+            conn,
+            "12345",
+            "a",
+            10,
+            "article_top_preview",
+            observed_at="2026-06-26T00:00:00+00:00",
+        )
+        entry = get_target(conn, "12345", "a")
+        assert entry["observed_max_res_no"] == 10
+        assert entry["observed_max_res_no_at"] == "2026-06-26T00:00:00+00:00"
+
+        update_target_observed_max_res_no(
+            conn,
+            "12345",
+            "a",
+            8,
+            "bbs_page_scrape",
+            observed_at="2026-06-26T00:01:00+00:00",
+        )
+        entry = get_target(conn, "12345", "a")
+        assert entry["observed_max_res_no"] == 10
+        assert entry["observed_max_res_no_at"] == "2026-06-26T00:00:00+00:00"
+
+        update_target_observed_max_res_no(
+            conn,
+            "12345",
+            "a",
+            10,
+            "bbs_page_scrape",
+            observed_at="2026-06-26T00:02:00+00:00",
+        )
+        entry = get_target(conn, "12345", "a")
+        assert entry["observed_max_res_no"] == 10
+        assert entry["observed_max_res_no_at"] == "2026-06-26T00:02:00+00:00"
+        assert entry["observed_max_res_no_source"] == "bbs_page_scrape"
+
+        update_target_observed_max_res_no(
+            conn,
+            "12345",
+            "a",
+            12,
+            "bbs_page_scrape",
+            observed_at="2026-06-26T00:03:00+00:00",
+        )
+        entry = get_target(conn, "12345", "a")
+        assert entry["observed_max_res_no"] == 12
+        assert entry["observed_max_res_no_at"] == "2026-06-26T00:03:00+00:00"
+
+        update_target_observed_max_res_no(
+            conn,
+            "12345",
+            "a",
+            None,
+            "bbs_page_scrape",
+        )
+        entry = get_target(conn, "12345", "a")
+        assert entry["observed_max_res_no"] == 12
+
+        update_target_observed_max_res_no(
+            conn,
+            "12345",
+            "a",
+            -1,
+            "bbs_page_scrape",
+        )
+        entry = get_target(conn, "12345", "a")
+        assert entry["observed_max_res_no"] == 12
     finally:
         conn.close()
 

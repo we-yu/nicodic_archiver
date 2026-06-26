@@ -247,6 +247,66 @@ def test_run_scrape_passes_metadata_kwargs_only_when_present():
     }
 
 
+def test_run_scrape_persists_observed_max_with_bbs_source():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+    responses = [{"res_no": 3}, {"res_no": 7}]
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=ArticleMetadataResult("12345", "a", "Title"),
+    ):
+        with patch("orchestrator.get_max_saved_res_no", return_value=None):
+            with patch(
+                "orchestrator.collect_all_responses",
+                return_value=(responses, False, False),
+            ):
+                conn = MagicMock()
+                with patch("orchestrator.init_db", return_value=conn):
+                    with patch("orchestrator.save_to_db"):
+                        with patch(
+                            "orchestrator.update_target_observed_max_res_no"
+                        ) as mock_update:
+                            with patch("orchestrator.print"):
+                                run_scrape(article_url)
+
+    mock_update.assert_called_once_with(
+        conn,
+        "12345",
+        "a",
+        7,
+        "bbs_page_scrape",
+    )
+
+
+def test_run_scrape_up_to_date_persists_saved_rows_fallback_observed_max():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=ArticleMetadataResult("12345", "a", "Title"),
+    ):
+        with patch("orchestrator.get_max_saved_res_no", return_value=15):
+            with patch(
+                "orchestrator.collect_all_responses",
+                return_value=([], False, False),
+            ):
+                conn = MagicMock()
+                with patch("orchestrator.init_db", return_value=conn):
+                    with patch(
+                        "orchestrator.update_target_observed_max_res_no"
+                    ) as mock_update:
+                        with patch("orchestrator.print"):
+                            run_scrape(article_url)
+
+    mock_update.assert_called_once_with(
+        conn,
+        "12345",
+        "a",
+        15,
+        "saved_rows_fallback",
+    )
+
+
 def test_run_scrape_uses_canonical_article_url_for_bbs_collection():
     article_url = "https://dic.nicovideo.jp/id/5364158"
     canonical_url = (
@@ -1398,13 +1458,17 @@ def test_run_scrape_saved_article_zero_new_is_success_without_writing():
                         "orchestrator.load_saved_responses",
                     ) as mock_saved:
                         with patch("orchestrator.init_db") as mock_init:
+                            conn = mock_init.return_value
                             with patch(
                                 "orchestrator.save_to_db",
                             ) as mock_save_db:
                                 with patch(
-                                    "orchestrator.print",
-                                ) as mock_print:
-                                    ok = run_scrape(article_url)
+                                    "orchestrator.update_target_observed_max_res_no",
+                                ) as mock_update:
+                                    with patch(
+                                        "orchestrator.print",
+                                    ) as mock_print:
+                                        ok = run_scrape(article_url)
 
     mock_meta.assert_called_once_with(article_url)
     mock_build.assert_called_once_with(article_url)
@@ -1416,8 +1480,16 @@ def test_run_scrape_saved_article_zero_new_is_success_without_writing():
         progress_reporter=None,
     )
     mock_saved.assert_not_called()
-    mock_init.assert_not_called()
+    mock_init.assert_called_once_with()
     mock_save_db.assert_not_called()
+    mock_update.assert_called_once_with(
+        conn,
+        "12345",
+        "a",
+        65,
+        "saved_rows_fallback",
+    )
+    conn.close.assert_called_once_with()
     mock_print.assert_any_call(
         "No new BBS responses found; article already up to date"
     )
