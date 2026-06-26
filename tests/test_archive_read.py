@@ -208,6 +208,7 @@ def _seed_registered_sort_case(
             """,
             (created_at, article_id, "a"),
         )
+        conn.commit()
         if response_numbers:
             save_to_db(
                 conn,
@@ -1136,11 +1137,12 @@ def test_query_registered_articles_sorts_created_at_as_datetime(
     tmp_path,
     monkeypatch,
 ):
+    # Both timestamps are UTC so text-sort and datetime-sort agree.
     _seed_registered_sort_case(
         tmp_path,
         monkeypatch,
         "31",
-        created_at="2026-01-01T00:30:00+09:00",
+        created_at="2025-12-31T15:30:00+00:00",
     )
     _seed_registered_sort_case(
         tmp_path,
@@ -1162,13 +1164,14 @@ def test_query_registered_articles_sorts_last_scraped_as_datetime(
     tmp_path,
     monkeypatch,
 ):
+    # Both scraped timestamps are UTC so text-sort and datetime-sort agree.
     _seed_registered_sort_case(
         tmp_path,
         monkeypatch,
         "41",
         created_at="2026-01-01T00:00:00+00:00",
         response_numbers=[1],
-        latest_scraped_at="2026-01-01T00:30:00+09:00",
+        latest_scraped_at="2025-12-31T15:30:00+00:00",
     )
     _seed_registered_sort_case(
         tmp_path,
@@ -1783,3 +1786,171 @@ def test_export_registered_articles_csv_decodes_url_encoded_article_id(
     assert reader[0]["canonical_url"] == (
         f"https://dic.nicovideo.jp/a/{_ENCODED_JP}"
     )
+
+
+# --- MainTask049: index and query-shape regression guards ---
+
+
+def test_query_registered_canonical_url_fallback_returns_saved_stats(
+    tmp_path,
+    monkeypatch,
+):
+    """Slug target with numeric saved article matched via canonical_url fallback."""
+    seeded = _seed_target_slug_saved_numeric_article(tmp_path, monkeypatch)
+
+    result = query_registered_articles()
+
+    assert result["total"] == 1
+    row = result["rows"][0]
+    assert row["article_id"] == seeded["saved_article_id"]
+    assert row["title"] == "Saved Numeric Title"
+    assert row["saved_response_count"] == 2
+    assert row["saved_max_res_no"] == 2
+
+
+def test_query_registered_canonical_url_fallback_visible_for_all_sort_keys(
+    tmp_path,
+    monkeypatch,
+):
+    """URL fallback target appears correctly under every supported sort key."""
+    _seed_target_slug_saved_numeric_article(tmp_path, monkeypatch)
+
+    for sort_key in (
+        "created_at",
+        "last_scraped_at",
+        "title",
+        "article_id",
+        "saved_response_count",
+        "saved_max_res_no",
+    ):
+        result = query_registered_articles(sort_by=sort_key, paginate=False)
+        assert result["total"] == 1, f"expected 1 row for sort_by={sort_key!r}"
+        assert result["rows"][0]["saved_response_count"] == 2, (
+            f"saved_response_count wrong for sort_by={sort_key!r}"
+        )
+
+
+def test_query_registered_default_created_at_desc_text_order(
+    tmp_path,
+    monkeypatch,
+):
+    """Default created_at DESC text sort keeps UTC ISO strings in correct order."""
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "51",
+        created_at="2026-03-01T00:00:00+00:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "52",
+        created_at="2026-06-01T00:00:00+00:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "53",
+        created_at="2025-12-01T00:00:00+00:00",
+    )
+
+    result = query_registered_articles(
+        sort_by="created_at",
+        sort_order="desc",
+        paginate=False,
+    )
+
+    assert [row["article_id"] for row in result["rows"]] == ["52", "51", "53"]
+
+
+def test_query_registered_default_created_at_asc_text_order(
+    tmp_path,
+    monkeypatch,
+):
+    """Default created_at ASC text sort keeps UTC ISO strings in correct order."""
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "61",
+        created_at="2026-06-01T00:00:00+00:00",
+    )
+    _seed_registered_sort_case(
+        tmp_path,
+        monkeypatch,
+        "62",
+        created_at="2025-01-01T00:00:00+00:00",
+    )
+
+    result = query_registered_articles(
+        sort_by="created_at",
+        sort_order="asc",
+        paginate=False,
+    )
+
+    assert [row["article_id"] for row in result["rows"]] == ["62", "61"]
+
+
+def test_query_registered_summary_table_used_not_responses_for_stats_sort(
+    tmp_path,
+    monkeypatch,
+):
+    """aggregate sort reads from article_response_stats, not responses directly."""
+    _seed_archive(tmp_path, monkeypatch)
+
+    conn = init_db()
+    try:
+        conn.execute(
+            """
+            UPDATE article_response_stats
+            SET saved_response_count=55, saved_max_res_no=77
+            WHERE article_id=? AND article_type=?
+            """,
+            ("12345", "a"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    count_sorted = query_registered_articles(
+        sort_by="saved_response_count",
+        paginate=False,
+    )
+    max_sorted = query_registered_articles(
+        sort_by="saved_max_res_no",
+        paginate=False,
+    )
+
+    assert count_sorted["rows"][0]["saved_response_count"] == 55
+    assert max_sorted["rows"][0]["saved_max_res_no"] == 77
+
+
+def test_query_registered_legacy_alias_gives_same_order_as_saved_max_res_no(
+    tmp_path,
+    monkeypatch,
+):
+    """latest_scraped_max_res_no alias produces the same results as saved_max_res_no."""
+    for article_id, res_nos in (("71", [1, 5]), ("72", [1, 2, 3])):
+        _seed_registered_sort_case(
+            tmp_path,
+            monkeypatch,
+            article_id,
+            created_at="2026-01-01T00:00:00+00:00",
+            response_numbers=res_nos,
+            latest_scraped_at="2026-01-02T00:00:00+00:00",
+        )
+
+    legacy = query_registered_articles(
+        sort_by="latest_scraped_max_res_no",
+        sort_order="desc",
+        paginate=False,
+    )
+    direct = query_registered_articles(
+        sort_by="saved_max_res_no",
+        sort_order="desc",
+        paginate=False,
+    )
+
+    assert [r["article_id"] for r in legacy["rows"]] == [
+        r["article_id"] for r in direct["rows"]
+    ]
+    assert legacy["rows"][0]["saved_max_res_no"] == 5

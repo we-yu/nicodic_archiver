@@ -998,7 +998,7 @@ def _registered_order_by_clause(sort_by, order_dir, *, max_res_sql: str):
         ],
         "created_at": [
             "CASE WHEN rt.target_created_at IS NULL THEN 1 ELSE 0 END ASC",
-            f"julianday(rt.target_created_at) {order_dir}",
+            f"rt.target_created_at {order_dir}",
         ],
         "saved_response_count": [
             f"COALESCE(rs.saved_response_count, 0) {order_dir}",
@@ -1012,7 +1012,7 @@ def _registered_order_by_clause(sort_by, order_dir, *, max_res_sql: str):
         ],
         "last_scraped_at": [
             "CASE WHEN rt.matched_last_scraped_at IS NULL THEN 1 ELSE 0 END ASC",
-            f"julianday(rt.matched_last_scraped_at) {order_dir}",
+            f"rt.matched_last_scraped_at {order_dir}",
         ],
     }
     selected = sort_terms.get(sort_by, sort_terms[DEFAULT_REGISTERED_SORT_BY])

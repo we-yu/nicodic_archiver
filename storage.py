@@ -260,6 +260,21 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     )
     """)
 
+    # Supporting indexes for Registered Articles query performance.
+    # idx_articles_type_canonical_url: speeds up the URL fallback subquery in
+    # resolved_targets that looks up articles by (article_type, canonical_url).
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_articles_type_canonical_url
+    ON articles(article_type, canonical_url)
+    """)
+
+    # idx_target_active_created_at: speeds up the default Registered Articles
+    # sort which filters on is_active=1 and orders by created_at.
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_target_active_created_at
+    ON target(is_active, created_at)
+    """)
+
     conn.commit()
     return conn
 

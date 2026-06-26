@@ -104,6 +104,41 @@ def test_init_db_creates_data_dir_db_and_tables(tmp_path, monkeypatch):
         conn.close()
 
 
+def _index_names(conn: sqlite3.Connection) -> set[str]:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+    )
+    return {row[0] for row in cur.fetchall()}
+
+
+def test_init_db_creates_supporting_indexes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    try:
+        indexes = _index_names(conn)
+        assert "idx_articles_type_canonical_url" in indexes
+        assert "idx_target_active_created_at" in indexes
+    finally:
+        conn.close()
+
+
+def test_init_db_supporting_indexes_are_idempotent(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    conn = init_db()
+    conn.close()
+    conn = init_db()
+    try:
+        indexes = _index_names(conn)
+        assert "idx_articles_type_canonical_url" in indexes
+        assert "idx_target_active_created_at" in indexes
+    finally:
+        conn.close()
+
+
 def test_save_to_db_updates_response_summary(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     conn = init_db()

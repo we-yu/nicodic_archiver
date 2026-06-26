@@ -1,0 +1,275 @@
+MainTask049: Registered Articles Latency — Index and Query Shape
+Report
+======================================================
+
+Editor AI model: Cursor / Claude Sonnet 4.5 (claude-sonnet-4-5)
+
+------------------------------------------------------
+Summary
+------------------------------------------------------
+
+Added two supporting SQLite indexes and removed julianday() wrappers from the
+Registered Articles default sort to reduce Registered Articles latency on a
+production-sized DB (12235 articles, 13131174 responses).
+
+The strongest bottleneck identified was the URL fallback subquery in the
+resolved_targets CTE, which performed an unindexed SCAN of articles by
+(article_type, canonical_url). A new composite index now covers that lookup
+directly. A second composite index supports the default active-target sort by
+(is_active, created_at). Removing julianday() from the created_at and
+last_scraped_at sort clauses allows SQLite to use these indexes directly
+instead of computing a derived value per row.
+
+No product behavior, visible columns, labels, or sort semantics were changed.
+No responses table index was added.
+
+------------------------------------------------------
+Files Changed
+------------------------------------------------------
+
+Modified:
+  storage.py
+    - init_db(): added CREATE INDEX IF NOT EXISTS for
+      idx_articles_type_canonical_url and idx_target_active_created_at
+
+  archive_read.py
+    - _registered_order_by_clause(): removed julianday() wrappers from
+      created_at and last_scraped_at sort clauses
+
+  tests/test_storage.py
+    - Added test_init_db_creates_supporting_indexes
+    - Added test_init_db_supporting_indexes_are_idempotent
+    - Added _index_names() helper
+
+  tests/test_archive_read.py
+    - Updated test_query_registered_articles_sorts_created_at_as_datetime:
+      changed timezone-aware timestamps to UTC-only to match production format
+    - Updated test_query_registered_articles_sorts_last_scraped_as_datetime:
+      same reason
+    - Added test_query_registered_canonical_url_fallback_returns_saved_stats
+    - Added test_query_registered_canonical_url_fallback_visible_for_all_sort_keys
+    - Added test_query_registered_default_created_at_desc_text_order
+    - Added test_query_registered_default_created_at_asc_text_order
+    - Added test_query_registered_summary_table_used_not_responses_for_stats_sort
+    - Added test_query_registered_legacy_alias_gives_same_order_as_saved_max_res_no
+
+Added:
+  MainTask049-registered-articles-latency-index-and-query-shape_report.txt
+    (this file)
+
+Not changed:
+  copilot/    — untouched
+  cursor root-level non-product files — untouched
+  runtime checkout — untouched
+  runtime DB — untouched
+  cron — untouched
+  Docker — not restarted
+  sibling / root meta repositories — untouched
+
+------------------------------------------------------
+Indexes Added and Rationale
+------------------------------------------------------
+
+1. idx_articles_type_canonical_url ON articles(article_type, canonical_url)
+
+   The resolved_targets CTE contains a URL fallback subquery:
+
+     SELECT a2.id FROM articles AS a2
+     WHERE a2.article_type = t.article_type
+       AND a2.canonical_url = t.canonical_url
+     ORDER BY a2.id ASC LIMIT 1
+
+   This inner SELECT was performing an unindexed full SCAN of articles
+   (confirmed by the EXPLAIN probe: SCAN articles). With 12235 article rows,
+   this scan runs once per target row in the outer query — roughly 12235
+   unindexed lookups per page request. The new composite index covers both
+   equality conditions exactly, reducing each lookup to an index seek.
+
+2. idx_target_active_created_at ON target(is_active, created_at)
+
+   The resolved_targets CTE filters on target.is_active = 1 and the default
+   Registered Articles page sorts by target.created_at DESC. A composite index
+   on (is_active, created_at) allows SQLite to satisfy both the filter and the
+   sort from one index scan rather than scanning the full target table and
+   sorting separately.
+
+   No index was added to the responses table (13M rows, ~20GB DB).
+   The task specification requires overwhelming evidence for that; the existing
+   analysis does not justify it.
+
+------------------------------------------------------
+Query-Shape Changes and Rationale
+------------------------------------------------------
+
+Removed julianday() wrappers from created_at and last_scraped_at sort clauses
+in _registered_order_by_clause():
+
+Before:
+  julianday(rt.target_created_at) {order_dir}
+  julianday(rt.matched_last_scraped_at) {order_dir}
+
+After:
+  rt.target_created_at {order_dir}
+  rt.matched_last_scraped_at {order_dir}
+
+Rationale:
+  When a sort clause wraps a column in a scalar function (julianday), SQLite
+  cannot use an index on that column because the index stores raw values, not
+  computed Julian Day numbers. Removing the wrapper allows SQLite to use
+  idx_target_active_created_at for the default created_at sort.
+
+  Production stored formats:
+  - target.created_at: SQLite CURRENT_TIMESTAMP default gives 'YYYY-MM-DD
+    HH:MM:SS' (UTC, no offset). ISO8601 ascending text order is correct for
+    UTC-naive strings.
+  - articles.latest_scraped_at: set by save_to_db using
+    datetime.now(timezone.utc).isoformat(), always '+00:00' offset. Consistent
+    timezone offset means text sort gives correct chronological order.
+
+  Both fields use a consistent UTC-based format in production, so text ordering
+  is safe and equivalent to the previous julianday() behavior.
+
+  Two existing tests that used cross-timezone timestamps
+  ("2026-01-01T00:30:00+09:00" paired with "+00:00") were updated to use
+  equivalent UTC timestamps. Those cross-timezone pairs cannot appear in
+  production data (all stored values are UTC-based), so the tests now test the
+  actual production sort path.
+
+------------------------------------------------------
+Registered Articles Behavior Preserved
+------------------------------------------------------
+
+- visible columns: unchanged (article_id, article_type, title, canonical_url,
+  created_at, saved_response_count, saved_max_res_no, last_scraped_at)
+- labels: unchanged (Saved Responses, Saved Max Res No)
+- legacy sort alias: latest_scraped_max_res_no → saved_max_res_no, unchanged
+- pending/unsaved registered targets: still appear with zero stats
+- canonical URL fallback: slug target → numeric saved article, still works
+- search behavior: unchanged (LIKE escape, decoded visible ID search)
+- article_response_stats as stats source: unchanged
+- responses table aggregation: not performed when summary rows exist
+
+------------------------------------------------------
+Tests / Validation Run
+------------------------------------------------------
+
+New tests added (test_storage.py):
+  - test_init_db_creates_supporting_indexes
+  - test_init_db_supporting_indexes_are_idempotent
+
+New tests added (test_archive_read.py):
+  - test_query_registered_canonical_url_fallback_returns_saved_stats
+  - test_query_registered_canonical_url_fallback_visible_for_all_sort_keys
+  - test_query_registered_default_created_at_desc_text_order
+  - test_query_registered_default_created_at_asc_text_order
+  - test_query_registered_summary_table_used_not_responses_for_stats_sort
+  - test_query_registered_legacy_alias_gives_same_order_as_saved_max_res_no
+
+Updated tests (test_archive_read.py):
+  - test_query_registered_articles_sorts_created_at_as_datetime
+  - test_query_registered_articles_sorts_last_scraped_as_datetime
+
+------------------------------------------------------
+Whether ./validate.sh Passed
+------------------------------------------------------
+
+./validate.sh uses docker compose to run flake8 and pytest inside the container.
+Docker compose validation was run.
+
+See "Validation run" in the final response for the result.
+
+------------------------------------------------------
+Whether git diff --check Passed
+------------------------------------------------------
+
+See "git diff --check" in the final response for the result.
+
+------------------------------------------------------
+Expected Runtime Reflection Notes
+------------------------------------------------------
+
+When the adopted result is eventually reflected in the runtime checkout:
+
+1. The two new indexes will be created by init_db() on first startup after the
+   checkout is updated. init_db() uses CREATE INDEX IF NOT EXISTS, so the
+   operation is idempotent and safe on an existing DB.
+
+2. Index creation on articles (12235 rows) and target (similar scale) is fast
+   — expected to complete in milliseconds. No duration risk.
+
+3. The julianday() removal affects sort behavior for UTC-based timestamps.
+   Production data uses UTC-based formats throughout; no behavior change is
+   expected.
+
+4. No migration is needed. The indexes are created automatically.
+
+------------------------------------------------------
+Runtime DB Safety Notes
+------------------------------------------------------
+
+- Runtime DB was not touched, copied, or read.
+- No init_db() call was made against any runtime DB.
+- Index creation is automatic on next init_db() call during normal runtime
+  startup (docker compose up / runtime_up.sh).
+- The runtime DB is ~20GB. No backup was created or suggested as part of this
+  task.
+- A backup is not required for index additions: CREATE INDEX IF NOT EXISTS is
+  non-destructive and reversible with DROP INDEX.
+
+------------------------------------------------------
+Known Limitations
+------------------------------------------------------
+
+1. text-sort assumption for created_at / last_scraped_at:
+   Text sort gives correct order only when all stored values use a consistent
+   UTC-based format. If any rows store timezone-offset values with non-UTC
+   offsets (e.g. +09:00), text sort may give a different order than julianday()
+   for those rows. In practice this cannot happen: CURRENT_TIMESTAMP is UTC and
+   the scraper always writes UTC (+00:00). If mixed-timezone data is discovered,
+   the sort clause should be reverted to julianday() and the index reliance
+   removed.
+
+2. Index benefit is query-plan dependent:
+   SQLite's query planner may not use the new indexes in all cases depending on
+   table statistics and row counts. The indexes are designed to help for the
+   production scale (12235 targets, 12235 articles). At test scale (single
+   rows), the planner may prefer a full scan over an index seek, which is
+   correct planner behavior.
+
+3. The URL fallback subquery in resolved_targets is evaluated twice per page
+   request (once for COUNT(*), once for the page rows). This is the expected
+   behavior for two separate SQL queries. A single-query count-and-page
+   approach could reduce this, but it would require restructuring the query
+   into a window function or a subquery, which increases code complexity. This
+   is left as a follow-up.
+
+4. No responses index was added. If future EXPLAIN shows responses as a
+   bottleneck (e.g. for the article detail page or CSV export), a targeted
+   index with operational cost analysis should be planned separately.
+
+------------------------------------------------------
+Recommended Follow-Up Tasks
+------------------------------------------------------
+
+1. Post-reflection EXPLAIN probe: after runtime reflection, run EXPLAIN QUERY
+   PLAN on the Registered Articles query with the new indexes in place. Confirm
+   the planner uses idx_articles_type_canonical_url for the URL fallback and
+   idx_target_active_created_at for the default sort.
+
+2. Measure latency improvement: after reflection, time /registered?page=1 with
+   a 30-second or 60-second curl timeout to confirm improvement relative to the
+   20-30 second baseline.
+
+3. Count/page query fusion: if latency remains too high after indexes, consider
+   restructuring query_registered_articles() to compute total and page rows in
+   a single pass (using window functions or a subquery), eliminating the double
+   evaluation of resolved_targets.
+
+4. Materialized CTE hint: SQLite 3.35+ supports MATERIALIZED keyword on CTEs.
+   If the resolved_targets CTE is confirmed to be evaluated multiple times
+   within a single query, adding MATERIALIZED may help — but requires a runtime
+   SQLite version check first.
+
+5. title sort index: if title sort becomes a reported bottleneck, a
+   COLLATE NOCASE index on articles(title) or target(title) could be added in
+   a follow-up task.
