@@ -916,6 +916,82 @@ def test_query_registered_articles_matches_saved_numeric_article_by_canonical_ur
     assert row["last_scraped_at"] == "2026-04-02T00:00:00+00:00"
 
 
+def test_query_registered_articles_canonical_url_fallback_uses_earliest_row(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        canonical_url = "https://dic.nicovideo.jp/a/shared-slug"
+        register_target(
+            conn,
+            "9001001",
+            "a",
+            canonical_url,
+            title="Target Title",
+        )
+
+        # Insert two article rows sharing canonical_url to validate
+        # deterministic fallback to the earliest row id.
+        conn.execute(
+            """
+            INSERT INTO articles (article_id, article_type, title, canonical_url)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("100", "a", "Older Row Title", canonical_url),
+        )
+        conn.execute(
+            """
+            INSERT INTO articles (article_id, article_type, title, canonical_url)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("200", "a", "Newer Row Title", canonical_url),
+        )
+        conn.commit()
+
+        # Keep summary rows explicit so stats source remains materialized.
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO article_response_stats
+            (
+                article_id,
+                article_type,
+                saved_response_count,
+                saved_max_res_no,
+                stats_updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("100", "a", 5, 5, "2026-06-26T00:00:00+00:00"),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO article_response_stats
+            (
+                article_id,
+                article_type,
+                saved_response_count,
+                saved_max_res_no,
+                stats_updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("200", "a", 9, 9, "2026-06-26T00:00:00+00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = query_registered_articles(paginate=False)
+
+    assert result["total"] == 1
+    row = result["rows"][0]
+    assert row["title"] == "Target Title"
+    assert row["saved_response_count"] == 5
+    assert row["saved_max_res_no"] == 5
+
+
 def test_query_registered_articles_filters_by_search_title(
     tmp_path,
     monkeypatch,

@@ -260,6 +260,20 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     )
     """)
 
+    # Registered Articles latency support indexes (small tables only).
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_articles_type_canonical_url_id
+        ON articles(article_type, canonical_url, id)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_target_active_created_at_id
+        ON target(is_active, created_at, id)
+        """
+    )
+
     conn.commit()
     return conn
 
