@@ -35,6 +35,8 @@ project_summary.txt
 # Local-only runtime configuration
 .env.runtime.local
 
-# Report file (this is temporary utility file) is unnecessary to version-control
-TASK*report.txt
+# Task report artifacts are temporary working files; long-term memory lives in
+# root/meta (META/review_log, PROJECT_STATE.md, curated META files). Ignore all
+# root-level *_report.txt artifacts regardless of task naming convention.
+/*_report.txt
 
