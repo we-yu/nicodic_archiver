@@ -1,0 +1,241 @@
+MainTask050-observed-board-max-res-no-persistence-and-display — report
+
+Editor AI model
+----------------
+Claude (Cursor agent)
+
+Summary
+-------
+Persisted a board-level "Observed Max Res No" per registered target and made it
+the user-facing max-response-number column in Registered Articles, replacing the
+previously displayed (and misleading) "Saved Max Res No". The observed max is a
+monotonic board counter: response content can be deleted/hidden but response
+numbers are not removed, so the maximum only ever rises.
+
+Three nullable columns were added to the `target` table via the existing
+compatibility-ALTER style. A central monotonic update helper persists observed
+values from two sources: the article-top HTML already fetched during
+registration (`article_top_preview`) and the scrape-time observed max
+(`bbs_page_scrape`). Registered Articles reads the value straight off the target
+row (no extra join, no `responses` scan), keeping the MainTask049 latency win.
+`saved_max_res_no` remains in `article_response_stats` and on the internal row
+dict; it is simply no longer shown in the UI or page CSV.
+
+All 511 tests pass and `./validate.sh` is green. `git diff --check` is clean.
+
+Files changed
+-------------
+Product:
+- storage.py
+  * `_ensure_target_observed_max_res_no_columns()` (additive ALTER helper),
+    wired into `init_db()`.
+  * `update_target_observed_max_res_no(conn, article_id, article_type,
+    observed, source, observed_at=None)` monotonic helper.
+- parser.py
+  * `extract_observed_max_res_no(soup) -> int | None` (+ small private helpers).
+- article_resolver.py
+  * Extract observed max from the already-fetched article-top soup and include
+    `observed_max_res_no` in the success resolution result (no extra fetch).
+- target_list.py
+  * `register_target_url()` persists the resolved observed max to the target via
+    the monotonic helper (source `article_top_preview`).
+- orchestrator.py
+  * After a successful save, `run_scrape()` persists the scrape observed max to
+    the target (source `bbs_page_scrape`).
+- archive_read.py
+  * Sort allowlist + page-first set use `observed_max_res_no`; column config
+    shows "Observed Max Res No"; resolved_targets CTE carries the column; row
+    dicts include `observed_max_res_no`; ORDER BY supports it (NULL-last);
+    legacy sort aliases map to it.
+- web_app.py
+  * Column class/alignment + CSS use `col-observed-max-res`; legacy sort aliases
+    map to `observed_max_res_no`.
+
+Tests:
+- tests/test_storage.py        (schema columns + monotonic update rule cases)
+- tests/test_parser.py         (extract helper: value / empty / unknown / bad)
+- tests/test_target_list.py    (registration persists / leaves NULL)
+- tests/test_orchestrator.py   (autouse mock for the new collaborator)
+- tests/test_orchestrator_observed_max.py  (NEW: real-DB scrape persistence)
+- tests/test_article_resolver.py (success result includes observed key)
+- tests/test_archive_read.py   (rows include observed; sort; alias; CSV header)
+- tests/test_web_app.py        (UI shows Observed not Saved; CSV header; sort)
+
+Schema changes
+--------------
+`target` gains three nullable columns (additive, backward compatible):
+- observed_max_res_no INTEGER
+- observed_max_res_no_at TEXT
+- observed_max_res_no_source TEXT
+
+Added via `_ensure_target_observed_max_res_no_columns()`, called from `init_db()`
+alongside the existing `_ensure_target_*` helpers. Existing rows default to NULL.
+No index was added (target is small; ordering on the column is already cheap, and
+MainTask049 added `idx_target_active_created_at_id`). No change to `responses`,
+`articles`, or `article_response_stats` schema.
+
+Storage / update-rule changes
+------------------------------
+`update_target_observed_max_res_no(...)` behavior:
+- observed is None -> no write (reason "observed_none").
+- observed not int / bool / negative -> ignored safely, no write.
+- stored NULL -> set value + timestamp + source ("advanced").
+- observed > stored -> update value + timestamp + source ("advanced").
+- observed == stored -> keep value, refresh timestamp (+source)
+  ("equal_timestamp_refresh").
+- observed < stored -> never lower; timestamp/source untouched ("not_higher").
+
+Implementation uses a guarded UPDATE (`WHERE observed_max_res_no IS NULL OR
+observed_max_res_no < ?`) for the monotonic raise, then a second UPDATE keyed on
+exact equality for the timestamp refresh — so the raise path is atomic and a
+lower value can never win a race. `observed == 0` is honored (empty-board
+observation) and only ever sets NULL or refreshes an existing 0.
+
+Parser / extraction changes
+----------------------------
+`extract_observed_max_res_no(soup)`:
+- Reads every `data-res_no` attribute (the same signal `parse_responses` uses)
+  and returns the max int when any are present.
+- Returns 0 only when a board area is positively rendered (recognized
+  `st-bbs*`/`bbs*` markers) but no response numbers are present — an observed
+  empty board.
+- Returns None for parse miss, unknown/ambiguous shape, or
+  unavailable/restricted board (no board area detected).
+- Wrapped in a guard so it never raises on unexpected HTML.
+
+Registration-flow changes
+--------------------------
+`article_resolver._resolve_from_article_url()` already fetches the article-top
+soup for identity/title; it now also runs `extract_observed_max_res_no(soup)` on
+that same soup (no duplicate HTTP fetch) and returns `observed_max_res_no` in the
+success dict. This flows through both URL and exact-title registration paths.
+`target_list.register_target_url()` reads it and, when not None, persists it via
+the monotonic helper with source `article_top_preview` immediately after
+`register_target()`. Failure/parse-miss leaves the target observed max NULL.
+
+Scrape-flow changes
+-------------------
+`orchestrator.run_scrape()` computes `_observed_max_res_no(json_responses)` and,
+after the existing `save_to_db(...)` on the open write connection, calls the
+monotonic helper with source `bbs_page_scrape`. Parse-miss/None and lower values
+cannot overwrite a higher stored value (helper guarantees).
+
+Hybrid adjustment (adopted from Copilot): the "already up to date" path
+(`max_saved_res_no` is not None, `responses` empty, `interrupted` False) now also
+persists the saved max as a lower-bound observation. It opens a short write
+connection and calls the monotonic helper with source `saved_rows_fallback`
+before returning. This lets already-fully-saved targets gradually populate
+`target.observed_max_res_no` during periodic random-start scraping, matching the
+intended gradual-fill behavior for existing targets. Because the helper is
+monotonic, this never lowers a higher existing observed max (e.g. one set earlier
+from `article_top_preview`), and it only writes the target row (no response rows,
+no `save_to_db`, no change to `article_response_stats`).
+
+Registered Articles UI/CSV changes
+----------------------------------
+- `REGISTERED_ARTICLE_COLUMNS`: the `saved_max_res_no` entry is replaced (same
+  position) by `observed_max_res_no` (label "Observed Max Res No", csv_header
+  "observed_max_res_no"). Because the HTML table and page CSV both derive from
+  this single list, the UI and CSV stay aligned automatically.
+- `resolved_targets` CTE selects `t.observed_max_res_no` (or NULL on older DBs
+  lacking the column), exposed on each row dict as `observed_max_res_no`.
+- `saved_max_res_no` is still computed and kept on the internal row dict for
+  diagnostics and `write_scrape_targets_txt`, but is not a display/CSV column.
+- web_app column class/alignment + CSS updated to `col-observed-max-res`.
+
+Sort / backward-compatibility behavior
+---------------------------------------
+- `observed_max_res_no` is sortable, added to both the sort allowlist and the
+  page-first sort set (it is a pure target column, so it sorts without touching
+  stats). ORDER BY places NULLs last in both directions.
+- Chosen alias behavior: legacy `sort_by=saved_max_res_no` and
+  `sort_by=latest_scraped_max_res_no` now MAP to `observed_max_res_no` (applied
+  in both `archive_read.query_registered_articles` and
+  `web_app._normalize_registered_sort_by`). Rationale: the user-facing default
+  should prefer the observed max, old bookmarked URLs keep working, and the
+  saved-stat sort is no longer user-exposed.
+
+Tests / validation run
+-----------------------
+- Storage: schema columns created on fresh + legacy DBs; update rule for NULL /
+  greater / equal-refresh / lower-no-downgrade / None / negative / zero.
+- Parser: max when visible, 0 for empty board, None for unknown, ignores bad
+  values.
+- Registration: persists observed max when present; leaves NULL when None.
+- Scrape (real DB): persists observed max (bbs_page_scrape); does not lower an
+  existing higher value.
+- Already-up-to-date path (real DB): persists saved_rows_fallback when no new
+  responses; does not downgrade a higher existing observed max.
+- Read path: rows include observed_max_res_no; sort desc NULL-last; legacy
+  alias maps to observed; CSV export header uses observed not saved.
+- Web: UI shows "Observed Max Res No" and not "Saved Max Res No"; CSV header
+  swap; observed sort link present; normalize maps legacy aliases.
+
+Whether ./validate.sh passed
+----------------------------
+YES. `./validate.sh` exit 0; 513 passed (flake8 + pytest in-container) after the
+hybrid adjustment.
+
+Whether git diff --check passed
+-------------------------------
+YES. `git diff --check` exit 0 (no whitespace/conflict errors).
+
+Runtime reflection notes
+------------------------
+- The display value comes off the target row, so Registered Articles stays fast
+  (no new join, no responses aggregation).
+- Existing targets show NULL observed max until registration re-resolution or a
+  scrape fills them; this is acceptable and self-heals via periodic scraping.
+- A registered-but-unscraped target can now show `Saved Responses = 0` with a
+  positive `Observed Max Res No` (board size seen at registration).
+
+Existing runtime DB note
+------------------------
+Recreating the runtime container does NOT automatically apply the new
+compatibility ALTERs to an already-existing `/app/data/nicodic.db`. The new
+`target` columns are added by `init_db()` only when it runs against that DB.
+A runtime operator should run an explicit `init_db('/app/data/nicodic.db')`
+(e.g. via the normal app startup/CLI path that calls init_db) once so the three
+observed-max columns are added to the existing target table. Until then,
+`archive_read` degrades gracefully: the CTE substitutes NULL for the missing
+column and the page renders blank observed values.
+
+Runtime DB safety notes
+-----------------------
+- All schema changes are additive nullable columns; no data is rewritten,
+  renamed, or dropped. `saved_max_res_no` and `saved_response_count` semantics
+  are unchanged.
+- The monotonic helper never lowers a stored value and never writes NULL over an
+  existing value, so a parse miss or a partial/interrupted scrape cannot corrupt
+  the observed max.
+- No index was added to the 13M-row responses table.
+
+Known limitations
+-----------------
+- The "already up to date" scrape path now writes a saved_rows_fallback lower
+  bound (one bounded target-row UPDATE); the value never regresses.
+- Empty-board detection (returning 0) is heuristic on board-area markers; if the
+  article-top board preview shape differs from expectations it returns None
+  (safe) rather than a wrong number.
+- Article-top preview may not always expose response numbers; in that case
+  observed max is filled by the next scrape.
+- No backfill is performed; existing targets fill in over time.
+
+Recommended follow-up tasks
+---------------------------
+- Optional bounded backfill seam that sets observed max from
+  `article_response_stats.saved_max_res_no` as a lower bound (source
+  `saved_rows_fallback`) for targets currently NULL — bounded, no per-article
+  top crawl.
+- Verify the real article-top board-preview HTML shape against a saved sample
+  and tighten the empty-board markers if needed.
+- Optionally surface `observed_max_res_no_at` / `_source` in an operator
+  inspection view.
+
+Non-modification statement
+--------------------------
+The runtime DB, runtime checkout, cron, Docker configuration, root/meta
+repository, and any sibling repositories were NOT modified. No live scraping was
+run, no runtime DB was copied or backed up, and no PostgreSQL/ORM was introduced.
+Only the allowed product files, their tests, one new focused test file, and this
+report were changed.

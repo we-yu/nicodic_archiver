@@ -11,6 +11,7 @@ from storage import (
     open_readonly_db,
     register_target,
     set_target_active_state,
+    update_target_observed_max_res_no,
 )
 
 
@@ -94,6 +95,7 @@ def register_target_url(article_url: str, target_db_path: str) -> str:
         return "denylisted"
 
     title = resolution.get("title") or ""
+    observed_max_res_no = resolution.get("observed_max_res_no")
 
     conn = init_db(target_db_path)
     try:
@@ -104,6 +106,14 @@ def register_target_url(article_url: str, target_db_path: str) -> str:
             canonical_target["article_url"],
             title=title,
         )
+        if observed_max_res_no is not None:
+            update_target_observed_max_res_no(
+                conn,
+                numeric_id,
+                canonical_target["article_type"],
+                observed_max_res_no,
+                source="article_top_preview",
+            )
     finally:
         conn.close()
 

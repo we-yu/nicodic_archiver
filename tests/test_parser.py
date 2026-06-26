@@ -2,7 +2,7 @@
 
 from bs4 import BeautifulSoup
 
-from parser import parse_responses
+from parser import extract_observed_max_res_no, parse_responses
 
 
 def test_parse_responses_normal_case():
@@ -69,3 +69,46 @@ def test_parse_responses_partial_html_and_missing_res_no():
     assert response["posted_at"] is None
     assert response["content"] == ""
     assert response["content_html"] == ""
+
+
+def test_extract_observed_max_res_no_returns_max_when_visible():
+    html = """
+    <dl>
+      <dt class="st-bbs_reshead" data-res_no="12"></dt>
+      <dt class="st-bbs_reshead" data-res_no="500"></dt>
+      <dt class="st-bbs_reshead" data-res_no="37"></dt>
+    </dl>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    assert extract_observed_max_res_no(soup) == 500
+
+
+def test_extract_observed_max_res_no_zero_for_empty_board():
+    html = """
+    <div class="st-bbsArea">
+      <p>まだ書き込みがありません</p>
+    </div>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    assert extract_observed_max_res_no(soup) == 0
+
+
+def test_extract_observed_max_res_no_none_for_unknown_shape():
+    html = """
+    <html><body>
+      <h1>An article with no board area at all</h1>
+    </body></html>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    assert extract_observed_max_res_no(soup) is None
+
+
+def test_extract_observed_max_res_no_ignores_bad_values():
+    html = """
+    <dl>
+      <dt class="st-bbs_reshead" data-res_no="not-a-number"></dt>
+      <dt class="st-bbs_reshead" data-res_no="42"></dt>
+    </dl>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    assert extract_observed_max_res_no(soup) == 42

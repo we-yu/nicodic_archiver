@@ -26,7 +26,22 @@ from storage import (
     save_json,
     save_to_db,
     set_target_active_state,
+    update_target_observed_max_res_no,
 )
+
+
+def _read_observed_max_row(conn, article_id, article_type):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT observed_max_res_no, observed_max_res_no_at,
+               observed_max_res_no_source
+        FROM target
+        WHERE article_id=? AND article_type=?
+        """,
+        (article_id, article_type),
+    )
+    return cur.fetchone()
 
 
 def _read_stats_row(conn, article_id, article_type):
@@ -996,3 +1011,189 @@ def test_append_scrape_run_observation_csv_wide_has_run_columns(
     assert "run0_saved_response_count_after_run" in csv_text
     assert "run1_skipped" in csv_text
     assert "skip_denylist" in csv_text
+
+
+def _target_column_names(conn):
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(target)")
+    return {row[1] for row in cur.fetchall()}
+
+
+def test_init_db_creates_target_observed_max_columns(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        cols = _target_column_names(conn)
+        assert "observed_max_res_no" in cols
+        assert "observed_max_res_no_at" in cols
+        assert "observed_max_res_no_source" in cols
+    finally:
+        conn.close()
+
+
+def test_init_db_adds_observed_max_columns_to_existing_target(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "data" / "nicodic.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = sqlite3.connect(str(db_path))
+    legacy.execute(
+        """
+        CREATE TABLE target (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id TEXT NOT NULL,
+            article_type TEXT NOT NULL,
+            canonical_url TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(article_id, article_type)
+        )
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    conn = init_db()
+    try:
+        cols = _target_column_names(conn)
+        assert "observed_max_res_no" in cols
+        assert "observed_max_res_no_at" in cols
+        assert "observed_max_res_no_source" in cols
+    finally:
+        conn.close()
+
+
+def _register_seed_target(conn, article_id="12345"):
+    register_target(
+        conn,
+        article_id,
+        "a",
+        f"https://dic.nicovideo.jp/a/{article_id}",
+        title="T",
+    )
+
+
+def test_update_observed_max_sets_from_null(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        _register_seed_target(conn)
+        result = update_target_observed_max_res_no(
+            conn, "12345", "a", 500, source="article_top_preview",
+        )
+        assert result["updated"] is True
+        row = _read_observed_max_row(conn, "12345", "a")
+        assert row[0] == 500
+        assert row[1] is not None
+        assert row[2] == "article_top_preview"
+    finally:
+        conn.close()
+
+
+def test_update_observed_max_raises_on_greater(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        _register_seed_target(conn)
+        update_target_observed_max_res_no(
+            conn, "12345", "a", 100, source="article_top_preview",
+        )
+        update_target_observed_max_res_no(
+            conn, "12345", "a", 250, source="bbs_page_scrape",
+        )
+        row = _read_observed_max_row(conn, "12345", "a")
+        assert row[0] == 250
+        assert row[2] == "bbs_page_scrape"
+    finally:
+        conn.close()
+
+
+def test_update_observed_max_equal_refreshes_timestamp(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        _register_seed_target(conn)
+        update_target_observed_max_res_no(
+            conn, "12345", "a", 300, source="article_top_preview",
+            observed_at="2025-01-01T00:00:00+00:00",
+        )
+        result = update_target_observed_max_res_no(
+            conn, "12345", "a", 300, source="bbs_page_scrape",
+            observed_at="2025-02-02T00:00:00+00:00",
+        )
+        assert result["updated"] is True
+        row = _read_observed_max_row(conn, "12345", "a")
+        assert row[0] == 300
+        assert row[1] == "2025-02-02T00:00:00+00:00"
+        assert row[2] == "bbs_page_scrape"
+    finally:
+        conn.close()
+
+
+def test_update_observed_max_does_not_lower(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        _register_seed_target(conn)
+        update_target_observed_max_res_no(
+            conn, "12345", "a", 500, source="article_top_preview",
+            observed_at="2025-01-01T00:00:00+00:00",
+        )
+        result = update_target_observed_max_res_no(
+            conn, "12345", "a", 100, source="bbs_page_scrape",
+            observed_at="2025-02-02T00:00:00+00:00",
+        )
+        assert result["updated"] is False
+        row = _read_observed_max_row(conn, "12345", "a")
+        assert row[0] == 500
+        assert row[1] == "2025-01-01T00:00:00+00:00"
+        assert row[2] == "article_top_preview"
+    finally:
+        conn.close()
+
+
+def test_update_observed_max_none_is_noop(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        _register_seed_target(conn)
+        result = update_target_observed_max_res_no(
+            conn, "12345", "a", None, source="article_top_preview",
+        )
+        assert result["updated"] is False
+        row = _read_observed_max_row(conn, "12345", "a")
+        assert row[0] is None
+    finally:
+        conn.close()
+
+
+def test_update_observed_max_negative_is_ignored(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        _register_seed_target(conn)
+        result = update_target_observed_max_res_no(
+            conn, "12345", "a", -5, source="article_top_preview",
+        )
+        assert result["updated"] is False
+        row = _read_observed_max_row(conn, "12345", "a")
+        assert row[0] is None
+    finally:
+        conn.close()
+
+
+def test_update_observed_max_zero_sets_empty_board(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        _register_seed_target(conn)
+        result = update_target_observed_max_res_no(
+            conn, "12345", "a", 0, source="article_top_preview",
+        )
+        assert result["updated"] is True
+        row = _read_observed_max_row(conn, "12345", "a")
+        assert row[0] == 0
+        assert row[2] == "article_top_preview"
+    finally:
+        conn.close()

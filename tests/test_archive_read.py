@@ -17,7 +17,13 @@ from archive_read import (
     write_scrape_targets_txt,
 )
 import archive_read
-from storage import init_db, open_readonly_db, register_target, save_to_db
+from storage import (
+    init_db,
+    open_readonly_db,
+    register_target,
+    save_to_db,
+    update_target_observed_max_res_no,
+)
 
 
 def _seed_archive(tmp_path, monkeypatch):
@@ -189,6 +195,7 @@ def _seed_registered_sort_case(
     created_at,
     response_numbers=None,
     latest_scraped_at=None,
+    observed_max_res_no=None,
 ):
     monkeypatch.chdir(tmp_path)
     conn = init_db()
@@ -208,6 +215,14 @@ def _seed_registered_sort_case(
             """,
             (created_at, article_id, "a"),
         )
+        if observed_max_res_no is not None:
+            update_target_observed_max_res_no(
+                conn,
+                article_id,
+                "a",
+                observed_max_res_no,
+                source="article_top_preview",
+            )
         if response_numbers:
             save_to_db(
                 conn,
@@ -607,11 +622,26 @@ def test_open_readonly_db_opens_existing_db_read_only(tmp_path, monkeypatch):
         conn.close()
 
 
-def test_registered_articles_column_label_saved_max_res_no():
+def test_registered_articles_column_shows_observed_not_saved_max():
     from archive_read import REGISTERED_ARTICLE_COLUMNS
 
-    col = next(c for c in REGISTERED_ARTICLE_COLUMNS if c["key"] == "saved_max_res_no")
-    assert col["label"] == "Saved Max Res No"
+    keys = [c["key"] for c in REGISTERED_ARTICLE_COLUMNS]
+    assert "saved_max_res_no" not in keys
+    assert "observed_max_res_no" in keys
+    col = next(
+        c for c in REGISTERED_ARTICLE_COLUMNS
+        if c["key"] == "observed_max_res_no"
+    )
+    assert col["label"] == "Observed Max Res No"
+    assert col["csv_header"] == "observed_max_res_no"
+
+
+def test_registered_articles_csv_headers_use_observed_not_saved_max():
+    from archive_read import REGISTERED_ARTICLE_COLUMNS
+
+    headers = [c["csv_header"] for c in REGISTERED_ARTICLE_COLUMNS]
+    assert "observed_max_res_no" in headers
+    assert "saved_max_res_no" not in headers
 
 
 def test_get_saved_article_summary_by_id_returns_first_match(
@@ -1177,6 +1207,7 @@ def test_query_registered_articles_sorts_max_res_no_numerically(
         created_at="2026-01-01T00:00:00+00:00",
         response_numbers=[2],
         latest_scraped_at="2026-01-01T00:00:00+00:00",
+        observed_max_res_no=2,
     )
     _seed_registered_sort_case(
         tmp_path,
@@ -1185,6 +1216,7 @@ def test_query_registered_articles_sorts_max_res_no_numerically(
         created_at="2026-01-01T00:00:00+00:00",
         response_numbers=[10],
         latest_scraped_at="2026-01-01T00:00:00+00:00",
+        observed_max_res_no=10,
     )
     _seed_registered_sort_case(
         tmp_path,
@@ -1193,10 +1225,11 @@ def test_query_registered_articles_sorts_max_res_no_numerically(
         created_at="2026-01-01T00:00:00+00:00",
         response_numbers=[100],
         latest_scraped_at="2026-01-01T00:00:00+00:00",
+        observed_max_res_no=100,
     )
 
     result = query_registered_articles(
-        sort_by="saved_max_res_no",
+        sort_by="observed_max_res_no",
         sort_order="asc",
         paginate=False,
     )
@@ -1859,3 +1892,84 @@ def test_export_registered_articles_csv_decodes_url_encoded_article_id(
     assert reader[0]["canonical_url"] == (
         f"https://dic.nicovideo.jp/a/{_ENCODED_JP}"
     )
+
+
+def _seed_observed_max_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    conn = init_db()
+    try:
+        register_target(conn, "100", "a", "https://dic.nicovideo.jp/a/100")
+        register_target(conn, "200", "a", "https://dic.nicovideo.jp/a/200")
+        register_target(conn, "300", "a", "https://dic.nicovideo.jp/a/300")
+        update_target_observed_max_res_no(
+            conn, "100", "a", 50, source="article_top_preview",
+        )
+        update_target_observed_max_res_no(
+            conn, "200", "a", 900, source="bbs_page_scrape",
+        )
+        # 300 intentionally left with NULL observed max.
+    finally:
+        conn.close()
+
+
+def test_query_registered_rows_include_observed_max_res_no(
+    tmp_path, monkeypatch,
+):
+    _seed_observed_max_targets(tmp_path, monkeypatch)
+
+    result = query_registered_articles(per_page=100, page=1)
+    by_id = {row["article_id"]: row for row in result["rows"]}
+
+    assert by_id["100"]["observed_max_res_no"] == 50
+    assert by_id["200"]["observed_max_res_no"] == 900
+    assert by_id["300"]["observed_max_res_no"] is None
+    # saved_max_res_no remains internally available on the row dict.
+    assert "saved_max_res_no" in by_id["100"]
+
+
+def test_query_registered_sort_by_observed_max_desc_nulls_last(
+    tmp_path, monkeypatch,
+):
+    _seed_observed_max_targets(tmp_path, monkeypatch)
+
+    result = query_registered_articles(
+        sort_by="observed_max_res_no",
+        sort_order="desc",
+        per_page=100,
+        page=1,
+    )
+    ordered_ids = [row["article_id"] for row in result["rows"]]
+
+    assert ordered_ids[0] == "200"
+    assert ordered_ids[1] == "100"
+    assert ordered_ids[-1] == "300"
+
+
+def test_query_registered_legacy_saved_max_sort_alias_maps_to_observed(
+    tmp_path, monkeypatch,
+):
+    _seed_observed_max_targets(tmp_path, monkeypatch)
+
+    result = query_registered_articles(
+        sort_by="saved_max_res_no",
+        sort_order="desc",
+        per_page=100,
+        page=1,
+    )
+    ordered_ids = [row["article_id"] for row in result["rows"]]
+
+    assert ordered_ids[0] == "200"
+    assert ordered_ids[-1] == "300"
+
+
+def test_query_registered_csv_export_uses_observed_header(
+    tmp_path, monkeypatch,
+):
+    from archive_read import export_registered_articles_csv
+
+    _seed_observed_max_targets(tmp_path, monkeypatch)
+
+    csv_text = export_registered_articles_csv()
+    header_line = csv_text.splitlines()[0]
+    assert "observed_max_res_no" in header_line
+    assert "saved_max_res_no" not in header_line

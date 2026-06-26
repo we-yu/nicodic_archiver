@@ -15,16 +15,18 @@ REGISTERED_SORT_ALLOWLIST = frozenset({
     "article_id",
     "created_at",
     "saved_response_count",
-    "saved_max_res_no",
+    "observed_max_res_no",
     "last_scraped_at",
 })
 
 # Sorts that order on target/article fields only; stats are fetched after paging.
+# observed_max_res_no is a plain target column, so it sorts page-first.
 REGISTERED_PAGE_FIRST_SORTS = frozenset({
     "created_at",
     "last_scraped_at",
     "title",
     "article_id",
+    "observed_max_res_no",
 })
 
 # Search only fields users can understand from the visible table.
@@ -50,9 +52,10 @@ REGISTERED_ARTICLE_COLUMNS = [
      "csv_header": "created_at"},
     {"key": "saved_response_count", "label": "Saved Responses",
      "csv_header": "saved_response_count"},
-    # saved_max_res_no is MAX(res_no) over saved rows, not live board max.
-    {"key": "saved_max_res_no", "label": "Saved Max Res No",
-     "csv_header": "saved_max_res_no"},
+    # observed_max_res_no is the board-level max observed during registration
+    # or scraping (monotonic). saved_max_res_no is kept internally only.
+    {"key": "observed_max_res_no", "label": "Observed Max Res No",
+     "csv_header": "observed_max_res_no"},
     {"key": "last_scraped_at", "label": "Last Scraped",
      "csv_header": "last_scraped_at"},
 ]
@@ -727,6 +730,15 @@ def _registered_has_target_title_column(conn):
     return "title" in cols
 
 
+def _registered_has_observed_max_column(conn):
+    """Return whether optional target.observed_max_res_no exists (DB compat)."""
+
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(target)")
+    cols = {row[1] for row in cur.fetchall()}
+    return "observed_max_res_no" in cols
+
+
 def _registered_fallback_title(article_id, canonical_url):
     parsed = urlparse(canonical_url or "")
     path_parts = [part for part in parsed.path.split("/") if part]
@@ -750,6 +762,7 @@ def _registered_build_resolved_targets_cte(
     *,
     matched_title_sql: str,
     matched_last_scraped_expr: str,
+    observed_max_expr: str = "NULL",
 ) -> str:
     return f"""
             WITH url_fallback_articles AS (
@@ -768,6 +781,7 @@ def _registered_build_resolved_targets_cte(
                     t.article_type AS target_article_type,
                     t.canonical_url AS target_canonical_url,
                     t.created_at AS target_created_at,
+                    {observed_max_expr} AS observed_max_res_no,
                     COALESCE(a_exact.article_id, a_url.article_id)
                         AS matched_article_id,
                     COALESCE(a_exact.article_type, a_url.article_type)
@@ -918,6 +932,7 @@ def _registered_page_shell_row_to_dict(shell_row, stats_map):
         matched_article_id,
         matched_article_type,
         last_scraped_at,
+        observed_max_res_no,
     ) = shell_row
     stat = None
     if matched_article_id is not None and matched_article_type is not None:
@@ -939,6 +954,7 @@ def _registered_page_shell_row_to_dict(shell_row, stats_map):
             saved_response_count,
             display_max,
             last_scraped_at,
+            observed_max_res_no,
         )
     )
 
@@ -1008,12 +1024,9 @@ def _registered_order_by_clause(sort_by, order_dir, *, max_res_sql: str):
         "saved_response_count": [
             f"COALESCE(rs.saved_response_count, 0) {order_dir}",
         ],
-        "saved_max_res_no": [
-            (
-                f"CASE WHEN {max_res_sql} IS NULL "
-                "THEN 1 ELSE 0 END ASC"
-            ),
-            f"{max_res_sql} {order_dir}",
+        "observed_max_res_no": [
+            "CASE WHEN rt.observed_max_res_no IS NULL THEN 1 ELSE 0 END ASC",
+            f"rt.observed_max_res_no {order_dir}",
         ],
         "last_scraped_at": [
             "CASE WHEN rt.matched_last_scraped_at IS NULL THEN 1 ELSE 0 END ASC",
@@ -1081,6 +1094,7 @@ def _registered_row_to_dict(row):
         saved_response_count,
         saved_max_res_no,
         last_scraped_at,
+        observed_max_res_no,
     ) = row
     aid = (article_id or "").strip()
     if aid.isdigit():
@@ -1095,7 +1109,9 @@ def _registered_row_to_dict(row):
         "canonical_url": canonical_url or "",
         "created_at": created_at or "",
         "saved_response_count": saved_response_count or 0,
+        # saved_max_res_no is kept internally for diagnostics; not displayed.
         "saved_max_res_no": saved_max_res_no,
+        "observed_max_res_no": observed_max_res_no,
         "last_scraped_at": last_scraped_at,
     }
 
@@ -1117,8 +1133,9 @@ def query_registered_articles(
     Set paginate=False to return all matching rows without LIMIT/OFFSET;
     that is the internal all-records export route.
     """
-    if sort_by == "latest_scraped_max_res_no":
-        sort_by = "saved_max_res_no"
+    # Legacy saved-stat sort aliases now map to the user-facing observed max.
+    if sort_by in ("latest_scraped_max_res_no", "saved_max_res_no"):
+        sort_by = "observed_max_res_no"
     if sort_by not in REGISTERED_SORT_ALLOWLIST:
         sort_by = DEFAULT_REGISTERED_SORT_BY
     order_dir = "ASC" if sort_order == "asc" else "DESC"
@@ -1143,9 +1160,15 @@ def query_registered_articles(
             )
         else:
             matched_title_sql = "COALESCE(a_exact.title, a_url.title)"
+        observed_max_expr = (
+            "t.observed_max_res_no"
+            if _registered_has_observed_max_column(conn)
+            else "NULL"
+        )
         base_cte_sql = _registered_build_resolved_targets_cte(
             matched_title_sql=matched_title_sql,
             matched_last_scraped_expr=matched_last_scraped_expr,
+            observed_max_expr=observed_max_expr,
         )
         where_sql, where_params = _registered_build_search_clause(search)
         max_res_sql = _registered_saved_max_res_no_display_sql()
@@ -1185,7 +1208,8 @@ def query_registered_articles(
                     rt.target_created_at,
                     rt.matched_article_id,
                     rt.matched_article_type,
-                    rt.matched_last_scraped_at
+                    rt.matched_last_scraped_at,
+                    rt.observed_max_res_no
                 FROM resolved_targets AS rt
                 {where_sql}
                 ORDER BY
@@ -1228,7 +1252,8 @@ def query_registered_articles(
                     rt.target_created_at,
                     COALESCE(rs.saved_response_count, 0) AS saved_response_count,
                     ({max_res_sql}) AS saved_max_res_no,
-                    rt.matched_last_scraped_at AS last_scraped_at
+                    rt.matched_last_scraped_at AS last_scraped_at,
+                    rt.observed_max_res_no AS observed_max_res_no
                 FROM resolved_targets AS rt
                 LEFT JOIN {stats_source_sql} AS rs
                     ON rt.matched_article_id = rs.article_id

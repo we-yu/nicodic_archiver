@@ -1,3 +1,4 @@
+import sqlite3
 from unittest.mock import patch
 
 from target_list import (
@@ -14,7 +15,11 @@ from target_list import (
 )
 
 
-def _mock_resolve_for_slug_numeric_pair(canonical_url: str, numeric_id: str):
+def _mock_resolve_for_slug_numeric_pair(
+    canonical_url: str,
+    numeric_id: str,
+    observed_max_res_no=None,
+):
     return {
         "ok": True,
         "canonical_target": {
@@ -25,7 +30,67 @@ def _mock_resolve_for_slug_numeric_pair(canonical_url: str, numeric_id: str):
         "title": "Sample",
         "matched_by": "article_url",
         "normalized_input": canonical_url,
+        "observed_max_res_no": observed_max_res_no,
     }
+
+
+def _read_target_observed_max(db_path, article_id, article_type="a"):
+    conn = sqlite3.connect(str(db_path))
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT observed_max_res_no, observed_max_res_no_source
+            FROM target
+            WHERE article_id=? AND article_type=?
+            """,
+            (article_id, article_type),
+        )
+        return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def test_register_target_url_persists_observed_max_when_present(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+
+    with patch(
+        "target_list.resolve_article_input",
+        return_value=_mock_resolve_for_slug_numeric_pair(
+            "https://dic.nicovideo.jp/a/12345",
+            "11111",
+            observed_max_res_no=500,
+        ),
+    ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
+
+    row = _read_target_observed_max(target_db_path, "11111")
+    assert row[0] == 500
+    assert row[1] == "article_top_preview"
+
+
+def test_register_target_url_leaves_observed_max_null_when_none(tmp_path):
+    target_db_path = tmp_path / "targets.db"
+
+    with patch(
+        "target_list.resolve_article_input",
+        return_value=_mock_resolve_for_slug_numeric_pair(
+            "https://dic.nicovideo.jp/a/12345",
+            "11111",
+            observed_max_res_no=None,
+        ),
+    ):
+        register_target_url(
+            "https://dic.nicovideo.jp/a/12345",
+            str(target_db_path),
+        )
+
+    row = _read_target_observed_max(target_db_path, "11111")
+    assert row[0] is None
+    assert row[1] is None
 
 
 def test_list_active_target_urls_missing_db_does_not_create_file(tmp_path):
