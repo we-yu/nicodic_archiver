@@ -226,7 +226,7 @@ def test_compact_host_run_groups_page_tokens_and_hashes_step_end_shapes():
     assert "[RUN DIGEST]" in text
 
 
-def test_compact_host_run_compresses_clean_ok0_target_to_one_line():
+def test_compact_host_run_summarizes_clean_ok0_target_by_default():
     started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
     clock = FixedClock(
         [
@@ -280,20 +280,273 @@ def test_compact_host_run_compresses_clean_ok0_target_to_one_line():
     reporter.finish_run("success")
 
     text = stream.getvalue()
-    assert "[STEP OK0 🟢]" in text
+    assert "[STEP OK0 🟢]" not in text
     ok0_line = next(
-        line for line in text.splitlines() if "[STEP OK0 🟢]" in line
+        line for line in text.splitlines() if "[OK0 SUM 🟢]" in line
     )
-    assert "step=44/12192" in ok0_line
-    assert 'article_id=5492955 title="巨影都市"' in ok0_line
-    assert "saved=514 observed=514 page=511 elapsed=0s" in ok0_line
-    assert "reason=already_up_to_date" in ok0_line
-    assert " url=" not in ok0_line
+    assert "steps=44-44/12192" in ok0_line
+    assert "cnt=1" in ok0_line
+    assert "total_ok0=1" in ok0_line
+    assert "last_id=5492955" in ok0_line
+    assert "last_page=511" in ok0_line
+    assert "elapsed=" in ok0_line
     assert "[STEP START]" not in text
     assert "[PAGE]" not in text
     assert "[STEP END" not in text
     assert "OK0=1" in text
     assert "[OK0] others=1" in text
+
+
+def test_compact_host_run_ok0_mode_line_keeps_legacy_per_target_line(monkeypatch):
+    monkeypatch.setenv("HOST_CRON_OK0_MODE", "line")
+    started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 45),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+
+    reporter.begin_compact_host_run(
+        started_at_iso=started.isoformat().replace("+00:00", "Z"),
+        batch_ref="ok0line",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.note_targets_loaded(1, "/app/data/registry.db")
+    reporter.start_target(
+        5,
+        10,
+        "巨影都市",
+        "https://dic.nicovideo.jp/a/5492955",
+        article_id="5492955",
+        saved_before=514,
+        observed_before="514",
+    )
+    reporter.page_progress(
+        "https://dic.nicovideo.jp/b/a/5492955/511-",
+        514,
+        514,
+    )
+    reporter.finish_target(
+        "success",
+        "巨影都市",
+        514,
+        "5492955",
+        reason="already_up_to_date",
+        stored_new=0,
+        saved_after=514,
+        observed_after=514,
+        pages_ok=1,
+        elapsed_s=0,
+    )
+    reporter.finish_run("success")
+
+    text = stream.getvalue()
+    assert "[STEP OK0 🟢]" in text
+    assert "[OK0 SUM 🟢]" not in text
+
+
+def test_compact_host_run_ok0_sum_interval_groups_targets(monkeypatch):
+    monkeypatch.setenv("HOST_CRON_OK0_SUM_EVERY", "2")
+    started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 41),
+            datetime(2026, 5, 17, 13, 21, 44),
+            datetime(2026, 5, 17, 13, 21, 48),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+
+    reporter.begin_compact_host_run(
+        started_at_iso=started.isoformat().replace("+00:00", "Z"),
+        batch_ref="ok0sum",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.note_targets_loaded(3, "/app/data/registry.db")
+    for idx, aid, page in [
+        (1, "101", "1-"),
+        (2, "102", "31-"),
+        (3, "103", "61-"),
+    ]:
+        reporter.start_target(
+            idx,
+            3,
+            f"T{aid}",
+            f"https://dic.nicovideo.jp/a/{aid}",
+            article_id=aid,
+            saved_before=10,
+            observed_before="10",
+        )
+        reporter.page_progress(
+            f"https://dic.nicovideo.jp/b/a/{aid}/{page}",
+            10,
+            10,
+        )
+        reporter.finish_target(
+            "success",
+            f"T{aid}",
+            10,
+            aid,
+            reason="already_up_to_date",
+            stored_new=0,
+            saved_after=10,
+            observed_after=10,
+            pages_ok=1,
+            elapsed_s=0,
+        )
+    reporter.finish_run("success")
+
+    lines = [ln for ln in stream.getvalue().splitlines() if "[OK0 SUM 🟢]" in ln]
+    assert len(lines) == 2
+    assert "steps=1-2/3" in lines[0]
+    assert "cnt=2" in lines[0]
+    assert "total_ok0=2" in lines[0]
+    assert "steps=3-3/3" in lines[1]
+    assert "cnt=1" in lines[1]
+    assert "total_ok0=3" in lines[1]
+
+
+def test_compact_host_run_flushes_pending_ok0_sum_before_hit_detail(monkeypatch):
+    monkeypatch.setenv("HOST_CRON_OK0_MODE", "sum")
+    monkeypatch.setenv("HOST_CRON_OK0_SUM_EVERY", "250")
+    started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 40),
+            datetime(2026, 5, 17, 13, 21, 42),
+            datetime(2026, 5, 17, 13, 21, 49),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+
+    reporter.begin_compact_host_run(
+        started_at_iso=started.isoformat().replace("+00:00", "Z"),
+        batch_ref="ok0flush",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.note_targets_loaded(2, "/app/data/registry.db")
+    reporter.start_target(
+        1,
+        2,
+        "OK0",
+        "https://dic.nicovideo.jp/a/1",
+        article_id="1",
+        saved_before=10,
+        observed_before="10",
+    )
+    reporter.page_progress("https://dic.nicovideo.jp/b/a/1/1-", 10, 10)
+    reporter.finish_target(
+        "success",
+        "OK0",
+        10,
+        "1",
+        reason="already_up_to_date",
+        stored_new=0,
+        saved_after=10,
+        observed_after=10,
+        pages_ok=1,
+        elapsed_s=0,
+    )
+
+    reporter.start_target(
+        2,
+        2,
+        "HIT",
+        "https://dic.nicovideo.jp/a/2",
+        article_id="2",
+        saved_before=10,
+        observed_before="40",
+    )
+    reporter.page_progress("https://dic.nicovideo.jp/b/a/2/11-", 30, 40)
+    reporter.page_progress("https://dic.nicovideo.jp/b/a/2/41-", 10, 50)
+    reporter.finish_target(
+        "success",
+        "HIT",
+        50,
+        "2",
+        reason=None,
+        stored_new=40,
+        saved_after=50,
+        observed_after=50,
+        pages_ok=2,
+        elapsed_s=1,
+    )
+    reporter.finish_run("success")
+
+    text = stream.getvalue()
+    ok0_pos = text.index("[OK0 SUM 🟢]")
+    step_start_pos = text.index("[STEP START]")
+    assert ok0_pos < step_start_pos
+    assert "[STEP END OK 🟢]" in text
+
+
+def test_compact_host_run_invalid_ok0_mode_falls_back_to_sum(monkeypatch):
+    monkeypatch.setenv("HOST_CRON_OK0_MODE", "invalid")
+    started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 45),
+            datetime(2026, 5, 17, 13, 21, 50),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+
+    reporter.begin_compact_host_run(
+        started_at_iso=started.isoformat().replace("+00:00", "Z"),
+        batch_ref="ok0invalid",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.note_targets_loaded(1, "/app/data/registry.db")
+    reporter.start_target(
+        1,
+        1,
+        "OK0",
+        "https://dic.nicovideo.jp/a/1",
+        article_id="1",
+        saved_before=10,
+        observed_before="10",
+    )
+    reporter.page_progress("https://dic.nicovideo.jp/b/a/1/1-", 10, 10)
+    reporter.finish_target(
+        "success",
+        "OK0",
+        10,
+        "1",
+        reason="already_up_to_date",
+        stored_new=0,
+        saved_after=10,
+        observed_after=10,
+        pages_ok=1,
+        elapsed_s=0,
+    )
+    reporter.finish_run("success")
+
+    text = stream.getvalue()
+    assert "[OK0 SUM 🟢]" in text
+    assert "[STEP OK0 🟢]" not in text
+
+
+def test_compact_host_run_invalid_ok0_sum_every_falls_back_to_250(monkeypatch):
+    monkeypatch.setenv("HOST_CRON_OK0_SUM_EVERY", "bad")
+    reporter = HostCronReporter(StringIO(), now_provider=FixedClock([]))
+    assert reporter._ok0_sum_every == 250
 
 
 def test_compact_host_run_hit_target_keeps_detailed_step_lines():
