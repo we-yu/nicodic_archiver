@@ -1,6 +1,7 @@
 import tarfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+import os
 from pathlib import Path
 import re
 import shutil
@@ -38,6 +39,31 @@ RUN_START_RE = re.compile(
 RUN_START_COMPACT_TS_RE = re.compile(
     r"^\[RUN START\] ts=(\d{4})-(\d{2})-(\d{2})T"
 )
+HOST_CRON_OK0_SUM_MODE = "sum"
+HOST_CRON_OK0_LINE_MODE = "line"
+DEFAULT_HOST_CRON_OK0_SUM_EVERY = 250
+
+
+def host_cron_ok0_mode_from_env() -> str:
+    raw = os.environ.get("HOST_CRON_OK0_MODE", "")
+    mode = raw.strip().lower()
+    if mode == HOST_CRON_OK0_LINE_MODE:
+        return HOST_CRON_OK0_LINE_MODE
+    return HOST_CRON_OK0_SUM_MODE
+
+
+def host_cron_ok0_sum_every_from_env() -> int:
+    raw = os.environ.get("HOST_CRON_OK0_SUM_EVERY", "")
+    text = raw.strip()
+    if not text:
+        return DEFAULT_HOST_CRON_OK0_SUM_EVERY
+    try:
+        value = int(text)
+    except ValueError:
+        return DEFAULT_HOST_CRON_OK0_SUM_EVERY
+    if value <= 0:
+        return DEFAULT_HOST_CRON_OK0_SUM_EVERY
+    return value
 
 
 def local_now() -> datetime:
@@ -265,6 +291,14 @@ class HostCronReporter:
         self._compact_started_at_iso = ""
         self._compact_digest_duration_seconds: int | None = None
         self._compact_digest_end: str = ""
+        self._ok0_mode = host_cron_ok0_mode_from_env()
+        self._ok0_sum_every = host_cron_ok0_sum_every_from_env()
+        self._ok0_sum_pending_count = 0
+        self._ok0_sum_first_step: int | None = None
+        self._ok0_sum_last_step: int | None = None
+        self._ok0_sum_last_total: int | None = None
+        self._ok0_sum_last_id = "unknown"
+        self._ok0_sum_last_page: str | None = None
         self._batch_totals: dict[str, int] | None = None
         self._digest_hit_msgs: list[str] = []
         self._digest_warn_msgs: list[str] = []
@@ -304,6 +338,12 @@ class HostCronReporter:
         self._compact_trigger = trigger
         self._compact_digest_duration_seconds = None
         self._compact_digest_end = ""
+        self._ok0_sum_pending_count = 0
+        self._ok0_sum_first_step = None
+        self._ok0_sum_last_step = None
+        self._ok0_sum_last_total = None
+        self._ok0_sum_last_id = "unknown"
+        self._ok0_sum_last_page = None
         self._reset_compact_digest_counters()
         self.emit("RUN", f"START {format_run_timestamp(self._started_at)}")
         compact_body = run_start_compact_fields(
@@ -476,8 +516,53 @@ class HostCronReporter:
             return
         if self._compact_step_detail_started:
             return
+        self._flush_ok0_sum_pending()
         self.emit("STEP START", self._format_compact_step_start(), 1)
         self._compact_step_detail_started = True
+
+    def _record_ok0_sum_target(self, ref: str) -> None:
+        if self._ok0_sum_pending_count == 0:
+            self._ok0_sum_first_step = self._step_index
+        self._ok0_sum_pending_count += 1
+        self._ok0_sum_last_step = self._step_index
+        self._ok0_sum_last_total = self._step_total
+        self._ok0_sum_last_id = observe_val(self._step_article_id or ref)
+        self._ok0_sum_last_page = self._last_page_key
+
+    def _flush_ok0_sum_pending(self) -> None:
+        if not self._compact_run:
+            return
+        if self._ok0_mode != HOST_CRON_OK0_SUM_MODE:
+            return
+        if self._ok0_sum_pending_count <= 0:
+            return
+
+        step_first = self._ok0_sum_first_step or self._step_index
+        step_last = self._ok0_sum_last_step or step_first
+        step_total = self._ok0_sum_last_total or self._step_total
+        elapsed_seconds = 0
+        now_dt = self._now_provider()
+        if self._started_at is not None:
+            elapsed_seconds = int(
+                max((now_dt - self._started_at).total_seconds(), 0),
+            )
+        parts = [
+            f"steps={step_first}-{step_last}/{step_total}",
+            f"cnt={self._ok0_sum_pending_count}",
+            f"total_ok0={self._digest_ok0}",
+            f"last_id={self._ok0_sum_last_id}",
+            f"elapsed={elapsed_seconds}s",
+        ]
+        if self._ok0_sum_last_page is not None:
+            parts.append(f"last_page={self._ok0_sum_last_page}")
+        self.emit("OK0 SUM 🟢", " ".join(parts), 1)
+
+        self._ok0_sum_pending_count = 0
+        self._ok0_sum_first_step = None
+        self._ok0_sum_last_step = None
+        self._ok0_sum_last_total = None
+        self._ok0_sum_last_id = "unknown"
+        self._ok0_sum_last_page = None
 
     def _is_compact_ok0_target(
         self,
@@ -606,6 +691,16 @@ class HostCronReporter:
         elapsed_s: int | None = None,
     ) -> None:
         had_step = self._compact_step_started
+        if self._compact_run:
+            self._record_compact_digest(
+                had_step=had_step,
+                status=status,
+                label=label,
+                ref=ref,
+                reason=reason,
+                stored_new=stored_new,
+                observed_after=observed_after,
+            )
         if self._compact_run and had_step:
             if self._is_compact_ok0_target(
                 status=status,
@@ -614,20 +709,26 @@ class HostCronReporter:
                 saved_after=saved_after,
                 observed_after=observed_after,
             ):
-                self.emit(
-                    "STEP OK0 🟢",
-                    self._format_step_ok0(
-                        label=label,
-                        ref=ref,
-                        reason=reason,
-                        saved_after=saved_after,
-                        observed_after=observed_after,
-                        elapsed_s=elapsed_s,
-                    ),
-                    1,
-                )
+                if self._ok0_mode == HOST_CRON_OK0_LINE_MODE:
+                    self.emit(
+                        "STEP OK0 🟢",
+                        self._format_step_ok0(
+                            label=label,
+                            ref=ref,
+                            reason=reason,
+                            saved_after=saved_after,
+                            observed_after=observed_after,
+                            elapsed_s=elapsed_s,
+                        ),
+                        1,
+                    )
+                else:
+                    self._record_ok0_sum_target(ref)
+                    if self._ok0_sum_pending_count >= self._ok0_sum_every:
+                        self._flush_ok0_sum_pending()
                 self._page_tokens.clear()
             else:
+                self._flush_ok0_sum_pending()
                 self._ensure_compact_step_detail_started()
                 self._flush_compact_pages()
                 self._emit_compact_step_end(
@@ -641,16 +742,6 @@ class HostCronReporter:
                     pages_ok=pages_ok,
                     elapsed_s=elapsed_s,
                 )
-        if self._compact_run:
-            self._record_compact_digest(
-                had_step=had_step,
-                status=status,
-                label=label,
-                ref=ref,
-                reason=reason,
-                stored_new=stored_new,
-                observed_after=observed_after,
-            )
         if not self._compact_run:
             tag = {"success": "OK", "partial": "WARN", "fail": "ERROR"}[status]
             self.emit(
@@ -882,6 +973,7 @@ class HostCronReporter:
 
     def finish_run(self, final_status: str) -> None:
         if self._compact_run:
+            self._flush_ok0_sum_pending()
             self._emit_compact_run_end(final_status)
             self._emit_compact_run_digest()
             return

@@ -346,6 +346,17 @@ To temporarily restore per-target progress blocks for debugging, set:
 
 `BATCH_LOG_VERBOSE=1`
 
+In compact host cron runs, clean OK0 targets are summarized by default as
+`[OK0 SUM 🟢]` instead of per-target lines. The summary interval is controlled
+by `HOST_CRON_OK0_SUM_EVERY` (default: `250`).
+
+To temporarily restore per-target OK0 lines for debugging, set:
+
+`HOST_CRON_OK0_MODE=line`
+
+HIT/WARN/FAIL details are still emitted per target, and batch log
+digest-first behavior is unchanged.
+
 Useful environment overrides for external schedulers:
 - `TARGET_DB_PATH` defaults to `/app/data/nicodic.db`
 - `COMPOSE_FILE_PATH` defaults to `docker-compose.runtime.yml`
