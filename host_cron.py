@@ -260,8 +260,11 @@ class HostCronReporter:
         self._response_cap_hit = False
         self._detail_emitted = False
         self._compact_run_stamp = ""
+        self._compact_batch_ref = ""
         self._compact_trigger = "host_cron"
         self._compact_started_at_iso = ""
+        self._compact_digest_duration_seconds: int | None = None
+        self._compact_digest_end: str = ""
         self._batch_totals: dict[str, int] | None = None
         self._digest_hit_msgs: list[str] = []
         self._digest_warn_msgs: list[str] = []
@@ -297,7 +300,10 @@ class HostCronReporter:
         ts_z = utc_ts_z(utc_dt)
         self._compact_run = True
         self._compact_run_stamp = stamp
+        self._compact_batch_ref = batch_ref
         self._compact_trigger = trigger
+        self._compact_digest_duration_seconds = None
+        self._compact_digest_end = ""
         self._reset_compact_digest_counters()
         self.emit("RUN", f"START {format_run_timestamp(self._started_at)}")
         compact_body = run_start_compact_fields(
@@ -832,19 +838,33 @@ class HostCronReporter:
             f"total={total_t} ok={ok_plain} warn={warn_plain} fail={fails} "
             f"skip={skips} remaining={remaining}"
         )
+        self._compact_digest_duration_seconds = duration_seconds
+        self._compact_digest_end = logged
         self.emit(tag, body, 0)
 
     def _emit_compact_run_digest(self) -> None:
-        meta = (
-            f"hit_targets={len(self._digest_hit_msgs)} "
-            f"ok0_targets={self._digest_ok0} "
-            f"warn_targets={len(self._digest_warn_msgs)} "
-            f"fail_targets={len(self._digest_fail_msgs)} "
-            f"skip_targets={len(self._digest_skip_msgs)} "
-            f"total_new_responses={self._total_new_responses} "
-            "observed_max_unknown_targets="
-            f"{self._unknown_obs_targets}"
-        )
+        totals = self._batch_totals or {}
+        meta_parts = [
+            f"B={self._compact_batch_ref or self._compact_run_stamp}",
+            (
+                f"dur={self._compact_digest_duration_seconds}s"
+                if self._compact_digest_duration_seconds is not None
+                else "dur=unknown"
+            ),
+            f"end={self._compact_digest_end or 'unknown'}",
+            f"H={len(self._digest_hit_msgs)}",
+            f"OK0={self._digest_ok0}",
+            f"W={len(self._digest_warn_msgs)}",
+            f"F={len(self._digest_fail_msgs)}",
+            f"S={len(self._digest_skip_msgs)}",
+            f"NEW={self._total_new_responses}",
+            f"UOBS={self._unknown_obs_targets}",
+        ]
+        if totals:
+            meta_parts.append(f"P={totals.get('processed', 0)}")
+            meta_parts.append(f"T={totals.get('total', 0)}")
+            meta_parts.append(f"R={totals.get('remaining', 0)}")
+        meta = " ".join(meta_parts)
         self.emit("RUN DIGEST", meta, 0)
         for m in self._digest_hit_msgs:
             self.emit("HIT", m, 1)

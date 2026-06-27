@@ -188,16 +188,13 @@ def batch_digest_counters_lines(
 ) -> list[str]:
     return [
         "BATCH_DIGEST",
-        f"  hit_targets={hit_targets}",
-        f"  ok0_targets={ok0_targets}",
-        f"  warn_targets={warn_targets}",
-        f"  fail_targets={fail_targets}",
-        f"  skip_targets={skip_targets}",
-        (f"  total_new_responses={total_new_responses}"),
-        (
-            "  observed_max_unknown_targets="
-            f"{observed_max_unknown_targets}"
-        ),
+        f"  H={hit_targets}",
+        f"  OK0={ok0_targets}",
+        f"  W={warn_targets}",
+        f"  F={fail_targets}",
+        f"  S={skip_targets}",
+        f"  NEW={total_new_responses}",
+        f"  UOBS={observed_max_unknown_targets}",
     ]
 
 

@@ -292,7 +292,7 @@ def test_compact_host_run_compresses_clean_ok0_target_to_one_line():
     assert "[STEP START]" not in text
     assert "[PAGE]" not in text
     assert "[STEP END" not in text
-    assert "ok0_targets=1" in text
+    assert "OK0=1" in text
     assert "[OK0] others=1" in text
 
 
@@ -493,6 +493,18 @@ def test_compact_host_run_digest_keeps_ok0_and_other_counters():
     reporter.finish_run("success")
 
     text = stream.getvalue()
-    assert "[RUN DIGEST] hit_targets=1 ok0_targets=1" in text
+    digest_line = next(
+        line for line in text.splitlines() if "[RUN DIGEST]" in line
+    )
+    assert "[RUN DIGEST] B=mixbatch" in text
+    assert "dur=" in digest_line
+    assert "s end=success" in digest_line
+    assert "H=1" in digest_line
+    assert "OK0=1" in digest_line
+    assert "W=0" in digest_line
+    assert "F=0" in digest_line
+    assert "S=0" in digest_line
+    assert "NEW=30" in digest_line
+    assert "P=2 T=2 R=0" in digest_line
     assert "[HIT] progress=2/2 article_id=694740" in text
     assert "[OK0] others=1" in text
