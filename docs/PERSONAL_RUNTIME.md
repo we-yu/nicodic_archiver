@@ -337,6 +337,15 @@ Article progress lines are compressed to one line per page, for example:
 	[OK] UNIX success total_collected=30
 ```
 
+Batch run logs under `runtime/logs` (or `BATCH_LOG_DIR`) now default to a
+digest-first shape. Per-target `[PROGRESS = i/n]` blocks are omitted by
+default, and the run-level `BATCH_DIGEST` / `BATCH_DIGEST_ITEMS` block remains
+as the primary summary for normal operations.
+
+To temporarily restore per-target progress blocks for debugging, set:
+
+`BATCH_LOG_VERBOSE=1`
+
 Useful environment overrides for external schedulers:
 - `TARGET_DB_PATH` defaults to `/app/data/nicodic.db`
 - `COMPOSE_FILE_PATH` defaults to `docker-compose.runtime.yml`

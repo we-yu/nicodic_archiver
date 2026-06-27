@@ -370,6 +370,13 @@ def _oneshot_limit_duration_seconds() -> float | None:
     return limit_seconds
 
 
+def _env_truthy_flag(name: str) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _format_seconds_value(value: float) -> str:
     text = f"{value:.3f}".rstrip("0").rstrip(".")
     return text or "0"
@@ -717,6 +724,7 @@ def run_batch_scrape(
     log_dir = Path(os.environ.get("BATCH_LOG_DIR", "data/batch_runs"))
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"batch_{run_id}.log"
+    batch_log_verbose = _env_truthy_flag("BATCH_LOG_VERBOSE")
 
     batch_digest_tracker: BatchDigestRecorder | None
     if progress_reporter is None:
@@ -840,16 +848,17 @@ def run_batch_scrape(
                     stored_new=0,
                     elapsed_s=0,
                 )
-            _append_batch_progress(
-                log_path,
-                idx,
-                len(targets),
-                "FAIL",
-                target,
-                "unknown",
-                0,
-                None,
-            )
+            if batch_log_verbose:
+                _append_batch_progress(
+                    log_path,
+                    idx,
+                    len(targets),
+                    "FAIL",
+                    target,
+                    "unknown",
+                    0,
+                    None,
+                )
             _append_batch_failure_detail(
                 log_path,
                 idx,
@@ -908,16 +917,17 @@ def run_batch_scrape(
                     elapsed_s=0,
                 )
             short_reason = f"{type(exc).__name__}: {exc}"
-            _append_batch_progress(
-                log_path,
-                idx,
-                len(targets),
-                "FAIL",
-                target,
-                "unknown",
-                0,
-                None,
-            )
+            if batch_log_verbose:
+                _append_batch_progress(
+                    log_path,
+                    idx,
+                    len(targets),
+                    "FAIL",
+                    target,
+                    "unknown",
+                    0,
+                    None,
+                )
             _append_batch_failure_detail(
                 log_path,
                 idx,
@@ -999,16 +1009,17 @@ def run_batch_scrape(
                         stored_new=0,
                         elapsed_s=0,
                     )
-                _append_batch_progress(
-                    log_path,
-                    idx,
-                    len(targets),
-                    "FAIL",
-                    target,
-                    getattr(scrape_result, "article_title", "unknown"),
-                    0,
-                    None,
-                )
+                if batch_log_verbose:
+                    _append_batch_progress(
+                        log_path,
+                        idx,
+                        len(targets),
+                        "FAIL",
+                        target,
+                        getattr(scrape_result, "article_title", "unknown"),
+                        0,
+                        None,
+                    )
                 _append_batch_failure_detail(
                     log_path,
                     idx,
@@ -1073,16 +1084,17 @@ def run_batch_scrape(
                     stored_new=0,
                     elapsed_s=0,
                 )
-            _append_batch_progress(
-                log_path,
-                idx,
-                len(targets),
-                "SUCCESS",
-                target,
-                getattr(scrape_result, "article_title", "unknown"),
-                0,
-                None,
-            )
+            if batch_log_verbose:
+                _append_batch_progress(
+                    log_path,
+                    idx,
+                    len(targets),
+                    "SUCCESS",
+                    target,
+                    getattr(scrape_result, "article_title", "unknown"),
+                    0,
+                    None,
+                )
             _append_batch_redirect_detail(
                 log_path,
                 idx,
@@ -1139,16 +1151,17 @@ def run_batch_scrape(
                 "short_reason",
                 None,
             ) or "run_scrape_returned_false"
-            _append_batch_progress(
-                log_path,
-                idx,
-                len(targets),
-                "FAIL",
-                target,
-                getattr(scrape_result, "article_title", "unknown"),
-                getattr(scrape_result, "collected_response_count", 0),
-                getattr(scrape_result, "observed_max_res_no", None),
-            )
+            if batch_log_verbose:
+                _append_batch_progress(
+                    log_path,
+                    idx,
+                    len(targets),
+                    "FAIL",
+                    target,
+                    getattr(scrape_result, "article_title", "unknown"),
+                    getattr(scrape_result, "collected_response_count", 0),
+                    getattr(scrape_result, "observed_max_res_no", None),
+                )
             _append_batch_failure_detail(
                 log_path,
                 idx,
@@ -1192,16 +1205,17 @@ def run_batch_scrape(
                 )
             if progress_reporter is None:
                 print(f"[OK] {target}")
-            _append_batch_progress(
-                log_path,
-                idx,
-                len(targets),
-                _batch_log_result(scrape_result),
-                target,
-                getattr(scrape_result, "article_title", "unknown"),
-                getattr(scrape_result, "collected_response_count", 0),
-                getattr(scrape_result, "observed_max_res_no", None),
-            )
+            if batch_log_verbose:
+                _append_batch_progress(
+                    log_path,
+                    idx,
+                    len(targets),
+                    _batch_log_result(scrape_result),
+                    target,
+                    getattr(scrape_result, "article_title", "unknown"),
+                    getattr(scrape_result, "collected_response_count", 0),
+                    getattr(scrape_result, "observed_max_res_no", None),
+                )
 
         _record_scrape_run_observation_with_lock_tolerance(
             archive_db_path,

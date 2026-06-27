@@ -68,6 +68,6 @@ def test_batch_digest_recorder_render_includes_counters_and_sections():
     )
     lines = rec.render_block()
     assert lines[0] == "BATCH_DIGEST"
-    assert any("hit_targets=" in ln for ln in lines)
+    assert any("H=" in ln for ln in lines)
     assert any("BATCH_DIGEST_ITEMS" in ln for ln in lines)
     assert any("SKIP " in ln for ln in lines)
