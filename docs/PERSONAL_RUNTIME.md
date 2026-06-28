@@ -319,6 +319,25 @@ Older daily logs are compacted by calendar week into `.tar.gz` archives. The
 archive cleanup is conservative: originals are removed only after a successful
 archive write.
 
+Batch run logs under `runtime/logs/batch_runs` follow the same conservative
+archive philosophy. Recent `batch_*.log` files stay plain for readability,
+older batch logs are grouped by calendar week using file mtime, and the
+original `.log` files are removed only after a successful tar.gz archive
+write. The compressed batch archives are kept for now.
+
+Batch run ids are random, so archive dates come from file mtime rather than
+from `batch_<run_id>.log` names.
+
+The hygiene pass also maintains small grep-friendly explanation files:
+
+- `runtime/logs/README.log`
+- `runtime/logs/batch_runs/README.log`
+
+These README logs begin with `DIGEST EXP` lines so future operators can run
+`grep DIGEST *.log` and still recover the compact digest key meanings. They
+are refreshed by the same runtime log hygiene pass that maintains rotation and
+weekly archive cleanup.
+
 Each cron run is written as one readable block with these tags:
 - `[RUN]`
 - `[INFO]`

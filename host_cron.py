@@ -109,6 +109,13 @@ def weekly_archive_path(log_dir: Path, start_day: date, end_day: date) -> Path:
     )
 
 
+def batch_weekly_archive_path(log_dir: Path, start_day: date, end_day: date) -> Path:
+    return log_dir / (
+        "batch_runs."
+        f"{format_day_token(start_day)}-{format_day_token(end_day)}.tar.gz"
+    )
+
+
 def week_bounds(log_day: date) -> tuple[date, date]:
     start_day = log_day - timedelta(days=log_day.weekday())
     end_day = start_day + timedelta(days=6)
@@ -190,11 +197,37 @@ def iter_daily_logs(log_dir: Path) -> list[tuple[date, Path]]:
     return daily_logs
 
 
-def plan_weekly_archives(log_dir: Path, today: date) -> list[WeeklyArchivePlan]:
+def _mtime_day(path: Path) -> date:
+    return datetime.fromtimestamp(path.stat().st_mtime).date()
+
+
+def iter_batch_run_logs(batch_runs_dir: Path) -> list[tuple[date, Path]]:
+    if not batch_runs_dir.exists():
+        return []
+
+    batch_logs: list[tuple[date, Path]] = []
+    for entry in sorted(batch_runs_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        if not entry.name.startswith("batch_"):
+            continue
+        if not entry.name.endswith(".log"):
+            continue
+        batch_logs.append((_mtime_day(entry), entry))
+    return batch_logs
+
+
+def _plan_weekly_archives(
+    logs: list[tuple[date, Path]],
+    *,
+    today: date,
+    archive_path_fn: Callable[[Path, date, date], Path],
+    archive_log_dir: Path,
+) -> list[WeeklyArchivePlan]:
     oldest_raw_day = today - timedelta(days=14)
     buckets: dict[tuple[date, date], list[Path]] = {}
 
-    for log_day, path in iter_daily_logs(log_dir):
+    for log_day, path in logs:
         start_day, end_day = week_bounds(log_day)
         if end_day > oldest_raw_day:
             continue
@@ -202,7 +235,7 @@ def plan_weekly_archives(log_dir: Path, today: date) -> list[WeeklyArchivePlan]:
 
     plans: list[WeeklyArchivePlan] = []
     for start_day, end_day in sorted(buckets):
-        archive_path = weekly_archive_path(log_dir, start_day, end_day)
+        archive_path = archive_path_fn(archive_log_dir, start_day, end_day)
         if archive_path.exists():
             continue
         member_paths = tuple(sorted(buckets[(start_day, end_day)]))
@@ -220,10 +253,36 @@ def plan_weekly_archives(log_dir: Path, today: date) -> list[WeeklyArchivePlan]:
     return plans
 
 
-def compress_weekly_archives(log_dir: Path, today: date) -> list[str]:
+def plan_weekly_archives(log_dir: Path, today: date) -> list[WeeklyArchivePlan]:
+    return _plan_weekly_archives(
+        iter_daily_logs(log_dir),
+        today=today,
+        archive_path_fn=weekly_archive_path,
+        archive_log_dir=log_dir,
+    )
+
+
+def plan_batch_run_archives(
+    batch_runs_dir: Path,
+    today: date,
+) -> list[WeeklyArchivePlan]:
+    return _plan_weekly_archives(
+        iter_batch_run_logs(batch_runs_dir),
+        today=today,
+        archive_path_fn=batch_weekly_archive_path,
+        archive_log_dir=batch_runs_dir,
+    )
+
+
+def _compress_weekly_archive_plans(
+    plans: list[WeeklyArchivePlan],
+    *,
+    archive_warning_prefix: str,
+    cleanup_warning_prefix: str,
+) -> list[str]:
     warnings: list[str] = []
 
-    for plan in plan_weekly_archives(log_dir, today):
+    for plan in plans:
         temp_path = plan.archive_path.with_name(f"{plan.archive_path.name}.tmp")
 
         try:
@@ -235,7 +294,7 @@ def compress_weekly_archives(log_dir: Path, today: date) -> list[str]:
             if temp_path.exists():
                 temp_path.unlink(missing_ok=True)
             warnings.append(
-                "host_cron_weekly_archive_failed "
+                f"{archive_warning_prefix} "
                 f"archive={plan.archive_path.name} "
                 f"reason={type(exc).__name__}:{exc}"
             )
@@ -246,11 +305,97 @@ def compress_weekly_archives(log_dir: Path, today: date) -> list[str]:
                 member_path.unlink()
             except OSError as exc:
                 warnings.append(
-                    "host_cron_daily_cleanup_failed "
+                    f"{cleanup_warning_prefix} "
                     f"path={member_path.name} "
                     f"reason={type(exc).__name__}:{exc}"
                 )
 
+    return warnings
+
+
+def _write_readme_log(path: Path, lines: list[str]) -> str | None:
+    content = "\n".join(lines) + "\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        return (
+            f"host_cron_readme_write_failed path={path.name} "
+            f"reason={type(exc).__name__}:{exc}"
+        )
+    return None
+
+
+def _host_log_readme_lines() -> list[str]:
+    return [
+        "DIGEST EXP host_cron compact log keys",
+        "DIGEST EXP RUN DIGEST -> compact end-of-run summary",
+        "DIGEST EXP B=batch/run reference",
+        "DIGEST EXP dur=run duration seconds",
+        "DIGEST EXP end=final status (success, partial_failure, failure)",
+        "DIGEST EXP H=targets with newly saved responses",
+        "DIGEST EXP OK0=success targets with zero newly saved responses",
+        "DIGEST EXP W=warning or partial targets",
+        "DIGEST EXP F=failed targets",
+        "DIGEST EXP S=skipped targets",
+        "DIGEST EXP NEW=total newly saved responses",
+        "DIGEST EXP UOBS=targets with unknown observed max after run",
+        "DIGEST EXP P=processed targets",
+        "DIGEST EXP T=total loaded targets",
+        "DIGEST EXP R=remaining targets",
+        "DIGEST EXP historical logs may use long keys such as hit_targets",
+        "DIGEST EXP historical logs may use long keys such as ok0_targets",
+    ]
+
+
+def _batch_runs_log_readme_lines() -> list[str]:
+    return [
+        "DIGEST EXP batch_run digest-first logs",
+        "DIGEST EXP BATCH_DIGEST -> compact run counters",
+        "DIGEST EXP BATCH_DIGEST_ITEMS -> per-target hit/warn/fail items",
+        "DIGEST EXP H=targets with newly saved responses",
+        "DIGEST EXP OK0=success targets with zero newly saved responses",
+        "DIGEST EXP W=warning or partial targets",
+        "DIGEST EXP F=failed targets",
+        "DIGEST EXP S=skipped targets",
+        "DIGEST EXP NEW=total newly saved responses",
+        "DIGEST EXP UOBS=targets with unknown observed max after run",
+        "DIGEST EXP BATCH_LOG_VERBOSE=1 restores per-target progress blocks",
+        "DIGEST EXP batch archives are named batch_runs.YYYYMMDD-YYYYMMDD.tar.gz",
+        "DIGEST EXP batch archive dates come from file mtime, not run ids",
+    ]
+
+
+def ensure_log_readmes(log_dir: Path) -> list[str]:
+    warnings: list[str] = []
+    host_readme_path = log_dir / "README.log"
+    warning = _write_readme_log(host_readme_path, _host_log_readme_lines())
+    if warning is not None:
+        warnings.append(warning)
+
+    batch_readme_path = log_dir / "batch_runs" / "README.log"
+    warning = _write_readme_log(batch_readme_path, _batch_runs_log_readme_lines())
+    if warning is not None:
+        warnings.append(warning)
+
+    return warnings
+
+
+def compress_weekly_archives(log_dir: Path, today: date) -> list[str]:
+    warnings = _compress_weekly_archive_plans(
+        plan_weekly_archives(log_dir, today),
+        archive_warning_prefix="host_cron_weekly_archive_failed",
+        cleanup_warning_prefix="host_cron_daily_cleanup_failed",
+    )
+    batch_runs_dir = log_dir / "batch_runs"
+    warnings.extend(
+        _compress_weekly_archive_plans(
+            plan_batch_run_archives(batch_runs_dir, today),
+            archive_warning_prefix="batch_runs_weekly_archive_failed",
+            cleanup_warning_prefix="batch_runs_log_cleanup_failed",
+        )
+    )
+    warnings.extend(ensure_log_readmes(log_dir))
     return warnings
 
 

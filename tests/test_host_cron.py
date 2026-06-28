@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime, timezone
 from io import StringIO
 import tarfile
@@ -12,6 +13,11 @@ class FixedClock:
 
     def __call__(self):
         return self._values.pop(0)
+
+
+def set_mtime(path, moment):
+    timestamp = moment.timestamp()
+    os.utime(path, (timestamp, timestamp))
 
 
 def test_parse_run_start_day_legacy_stamp():
@@ -97,6 +103,191 @@ def test_compress_weekly_archives_keeps_recent_fourteen_days_raw(tmp_path):
         "host_cron.20260318.log",
         "host_cron.20260322.log",
     ]
+
+
+def test_compress_weekly_archives_writes_readme_logs_and_ignores_them(
+    tmp_path,
+):
+    log_dir = tmp_path / "logs"
+    batch_dir = log_dir / "batch_runs"
+    batch_dir.mkdir(parents=True)
+
+    host_old = log_dir / "host_cron.20260316.log"
+    host_old.write_text("[RUN] START 2026-03-16 01:00:00\n", encoding="utf-8")
+
+    batch_old = batch_dir / "batch_alpha.log"
+    batch_old.write_text("batch\n", encoding="utf-8")
+    set_mtime(batch_old, datetime(2026, 3, 16, 12, 0, 0))
+
+    warnings = compress_weekly_archives(log_dir, date(2026, 4, 9))
+
+    assert warnings == []
+
+    host_readme = log_dir / "README.log"
+    batch_readme = batch_dir / "README.log"
+    assert host_readme.exists()
+    assert batch_readme.exists()
+
+    host_text = host_readme.read_text(encoding="utf-8")
+    batch_text = batch_readme.read_text(encoding="utf-8")
+    for token in [
+        "DIGEST EXP",
+        "RUN DIGEST",
+        "B=",
+        "dur=",
+        "end=",
+        "H=",
+        "OK0=",
+        "UOBS=",
+        "P=",
+        "T=",
+        "R=",
+    ]:
+        assert token in host_text
+    for token in [
+        "DIGEST EXP",
+        "BATCH_DIGEST",
+        "BATCH_DIGEST_ITEMS",
+        "H=",
+        "OK0=",
+        "UOBS=",
+        "BATCH_LOG_VERBOSE=1",
+        "batch_runs.YYYYMMDD-YYYYMMDD.tar.gz",
+        "mtime",
+    ]:
+        assert token in batch_text
+
+    host_archive = log_dir / "host_cron.20260316-20260322.tar.gz"
+    batch_archive = batch_dir / "batch_runs.20260316-20260322.tar.gz"
+    assert host_archive.exists()
+    assert batch_archive.exists()
+
+    with tarfile.open(host_archive, "r:gz") as archive:
+        assert archive.getnames() == ["host_cron.20260316.log"]
+    with tarfile.open(batch_archive, "r:gz") as archive:
+        assert archive.getnames() == ["batch_alpha.log"]
+
+    assert host_readme.read_text(encoding="utf-8").startswith("DIGEST EXP")
+    assert batch_readme.read_text(encoding="utf-8").startswith("DIGEST EXP")
+
+
+def test_compress_weekly_archives_keeps_recent_batch_runs_plain(tmp_path):
+    log_dir = tmp_path / "logs"
+    batch_dir = log_dir / "batch_runs"
+    batch_dir.mkdir(parents=True)
+
+    recent_path = batch_dir / "batch_19000101.log"
+    recent_path.write_text("recent\n", encoding="utf-8")
+    set_mtime(recent_path, datetime(2026, 3, 27, 12, 0, 0))
+
+    warnings = compress_weekly_archives(log_dir, date(2026, 4, 9))
+
+    assert warnings == []
+    assert recent_path.exists()
+    assert not (batch_dir / "batch_runs.20260323-20260329.tar.gz").exists()
+
+
+def test_compress_weekly_archives_groups_batch_runs_by_mtime(tmp_path):
+    log_dir = tmp_path / "logs"
+    batch_dir = log_dir / "batch_runs"
+    batch_dir.mkdir(parents=True)
+
+    old_a = batch_dir / "batch_20991231.log"
+    old_b = batch_dir / "batch_19000101.log"
+    old_c = batch_dir / "batch_77777777.log"
+    recent = batch_dir / "batch_11111111.log"
+    for path, moment in [
+        (old_a, datetime(2026, 3, 16, 12, 0, 0)),
+        (old_b, datetime(2026, 3, 18, 12, 0, 0)),
+        (old_c, datetime(2026, 3, 22, 12, 0, 0)),
+        (recent, datetime(2026, 3, 27, 12, 0, 0)),
+    ]:
+        path.write_text(f"{path.name}\n", encoding="utf-8")
+        set_mtime(path, moment)
+
+    warnings = compress_weekly_archives(log_dir, date(2026, 4, 9))
+
+    archive_path = batch_dir / "batch_runs.20260316-20260322.tar.gz"
+    assert warnings == []
+    assert archive_path.exists()
+    assert not old_a.exists()
+    assert not old_b.exists()
+    assert not old_c.exists()
+    assert recent.exists()
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = sorted(archive.getnames())
+
+    assert names == [
+        "batch_19000101.log",
+        "batch_20991231.log",
+        "batch_77777777.log",
+    ]
+
+
+def test_compress_weekly_archives_ignores_batch_run_tar_gz_inputs(tmp_path):
+    log_dir = tmp_path / "logs"
+    batch_dir = log_dir / "batch_runs"
+    batch_dir.mkdir(parents=True)
+
+    tar_path = batch_dir / "batch_runs.20260316-20260322.tar.gz"
+    tar_path.write_bytes(b"placeholder")
+
+    warnings = compress_weekly_archives(log_dir, date(2026, 4, 9))
+
+    assert warnings == []
+    assert tar_path.exists()
+
+
+def test_compress_weekly_archives_no_batch_run_candidates_is_safe(tmp_path):
+    log_dir = tmp_path / "logs"
+    (log_dir / "batch_runs").mkdir(parents=True)
+
+    warnings = compress_weekly_archives(log_dir, date(2026, 4, 9))
+
+    assert warnings == []
+
+
+def test_compress_weekly_archives_is_idempotent_for_batch_runs(tmp_path):
+    log_dir = tmp_path / "logs"
+    batch_dir = log_dir / "batch_runs"
+    batch_dir.mkdir(parents=True)
+
+    path = batch_dir / "batch_abc.log"
+    path.write_text("old\n", encoding="utf-8")
+    set_mtime(path, datetime(2026, 3, 16, 12, 0, 0))
+
+    first = compress_weekly_archives(log_dir, date(2026, 4, 9))
+    second = compress_weekly_archives(log_dir, date(2026, 4, 9))
+
+    assert first == []
+    assert second == []
+    assert not path.exists()
+    assert (batch_dir / "batch_runs.20260316-20260322.tar.gz").exists()
+
+
+def test_compress_weekly_archives_keeps_batch_run_logs_when_archive_fails(
+    tmp_path,
+    monkeypatch,
+):
+    log_dir = tmp_path / "logs"
+    batch_dir = log_dir / "batch_runs"
+    batch_dir.mkdir(parents=True)
+
+    path = batch_dir / "batch_fail.log"
+    path.write_text("old\n", encoding="utf-8")
+    set_mtime(path, datetime(2026, 3, 16, 12, 0, 0))
+
+    def fail_open(*args, **kwargs):
+        raise tarfile.TarError("boom")
+
+    monkeypatch.setattr("host_cron.tarfile.open", fail_open)
+
+    warnings = compress_weekly_archives(log_dir, date(2026, 4, 9))
+
+    assert warnings
+    assert path.exists()
+    assert not (batch_dir / "batch_runs.20260316-20260322.tar.gz").exists()
 
 
 def test_host_cron_reporter_emits_run_block_and_error_summary():
@@ -759,5 +950,6 @@ def test_compact_host_run_digest_keeps_ok0_and_other_counters():
     assert "S=0" in digest_line
     assert "NEW=30" in digest_line
     assert "P=2 T=2 R=0" in digest_line
-    assert "[HIT] progress=2/2 article_id=694740" in text
+    assert "[OK0 SUM 🟢]" in text
+    assert "[STEP OK0 🟢]" not in text
     assert "[OK0] others=1" in text
