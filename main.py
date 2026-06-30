@@ -21,6 +21,15 @@ from delete_request_feeder import (
 )
 from host_cron import HostCronReporter, compress_weekly_archives, local_now
 from host_cron import rotate_active_log
+from hotword_feeder import (
+    DEFAULT_HOT_WORD_RECENT_WEEKS,
+    HOT_WORD_FEED_SOURCE_URL,
+    format_hot_word_feed_inspect_lines,
+    format_hot_word_feed_summary,
+    inspect_hot_word_feed,
+    run_hot_word_feeder,
+    skipped_hot_word_feed_summary,
+)
 from identity_merge import (
     format_merge_summary_lines,
     merge_canonical_url_identities,
@@ -615,6 +624,32 @@ def _emit_delete_request_feed_summary(progress_reporter, summary: dict) -> None:
     )
 
 
+def _hot_word_feed_enabled() -> bool:
+    raw = os.environ.get("HOT_WORD_FEED_ENABLED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off", ""}
+
+
+def _append_hot_word_feed_summary(log_path: Path, summary: dict) -> None:
+    _append_batch_log_lines(
+        log_path,
+        [
+            "HOT_WORD_FEED",
+            f"  {format_hot_word_feed_summary(summary)}",
+        ],
+    )
+
+
+def _emit_hot_word_feed_summary(progress_reporter, summary: dict) -> None:
+    if not hasattr(progress_reporter, "emit"):
+        return
+
+    progress_reporter.emit(
+        "FEEDER",
+        f"hot_word {format_hot_word_feed_summary(summary)}",
+        indent_level=1,
+    )
+
+
 def _emit_target_order_summary(progress_reporter, log_path: Path, line: str) -> None:
     if progress_reporter is None:
         print(line)
@@ -743,6 +778,14 @@ def run_batch_scrape(
         existing_targets,
         delete_request_feed_summary["queued_target_urls"],
     )
+    if _hot_word_feed_enabled():
+        hot_word_feed_summary = run_hot_word_feeder(target_db_path)
+    else:
+        hot_word_feed_summary = skipped_hot_word_feed_summary()
+    targets = append_batch_targets(
+        targets,
+        hot_word_feed_summary["queued_target_urls"],
+    )
     target_article_ids = [stored_article_ids_by_url.get(target) for target in targets]
     effective_target_order_config = (
         target_order_config or resolve_target_order_config(environ=os.environ)
@@ -772,6 +815,10 @@ def run_batch_scrape(
             f"{format_delete_request_feed_summary(delete_request_feed_summary)}"
         )
         print(
+            "[hot-word-feed] "
+            f"{format_hot_word_feed_summary(hot_word_feed_summary)}"
+        )
+        print(
             f"Loaded {len(targets)} active scrape target(s) "
             f"from target registry {target_db_path}"
         )
@@ -784,6 +831,7 @@ def run_batch_scrape(
                 progress_reporter,
                 delete_request_feed_summary,
             )
+        _emit_hot_word_feed_summary(progress_reporter, hot_word_feed_summary)
         _emit_target_order_summary(progress_reporter, log_path, target_order_line)
         progress_reporter.note_targets_loaded(len(targets), target_db_path)
         nss = getattr(progress_reporter, "note_scrape_start_compact", None)
@@ -801,6 +849,7 @@ def run_batch_scrape(
         len(targets),
     )
     _append_delete_request_feed_summary(log_path, delete_request_feed_summary)
+    _append_hot_word_feed_summary(log_path, hot_word_feed_summary)
 
     failed_targets = 0
     controlled_stop: dict | None = None
@@ -1562,6 +1611,13 @@ def _print_delete_request_feed_usage():
     )
 
 
+def _print_hot_word_feed_usage():
+    print(
+        "Usage: inspect-hot-word-target-feed "
+        "[--source-url URL] [--recent-weeks N]"
+    )
+
+
 def _handle_operator_target(args):
     if not args:
         _print_operator_usage()
@@ -1986,6 +2042,10 @@ def main():
             "[--archive-db PATH] [--state-path PATH] [--full-scan]"
         )
         print(
+            "  python main.py inspect-hot-word-target-feed "
+            "[--source-url URL] [--recent-weeks N]"
+        )
+        print(
             "  python main.py show-scraped-res [TITLE] "
             "[--id ID] [--title TITLE] [--txt|--md|--csv]"
         )
@@ -2045,6 +2105,36 @@ def main():
             full_scan=full_scan,
         )
         for line in format_delete_request_feed_inspect_lines(scan_result):
+            print(line)
+        return
+
+    if sys.argv[1] == "inspect-hot-word-target-feed":
+        source_url = HOT_WORD_FEED_SOURCE_URL
+        recent_weeks = DEFAULT_HOT_WORD_RECENT_WEEKS
+
+        idx = 2
+        while idx < len(sys.argv):
+            if sys.argv[idx] == "--source-url" and idx + 1 < len(sys.argv):
+                source_url = sys.argv[idx + 1]
+                idx += 2
+                continue
+            if sys.argv[idx] == "--recent-weeks" and idx + 1 < len(sys.argv):
+                try:
+                    recent_weeks = int(sys.argv[idx + 1])
+                except ValueError:
+                    _print_hot_word_feed_usage()
+                    sys.exit(1)
+                idx += 2
+                continue
+
+            _print_hot_word_feed_usage()
+            sys.exit(1)
+
+        scan_result = inspect_hot_word_feed(
+            source_url=source_url,
+            recent_weeks=recent_weeks,
+        )
+        for line in format_hot_word_feed_inspect_lines(scan_result):
             print(line)
         return
 

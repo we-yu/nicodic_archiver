@@ -7,8 +7,31 @@ import sqlite3
 import pytest
 
 import main as main_module
+from hotword_feeder import skipped_hot_word_feed_summary
 from orchestrator import ScrapeResult
 from storage import init_db, save_to_db
+
+
+@pytest.fixture(autouse=True)
+def _isolate_hot_word_feeder(request):
+    """Keep existing main tests off the real HOT word feeder (default-on)."""
+    patches = [
+        patch("main.list_registered_targets", return_value=[]),
+    ]
+    if not request.node.get_closest_marker("hot_word_feeder_integration"):
+        patches.append(
+            patch(
+                "main.run_hot_word_feeder",
+                return_value=skipped_hot_word_feed_summary(),
+            )
+        )
+    for item in patches:
+        item.start()
+    try:
+        yield
+    finally:
+        for item in reversed(patches):
+            item.stop()
 
 
 def test_main_operator_stats_rebuild_requires_explicit_db(capsys):
@@ -841,6 +864,165 @@ def test_main_inspect_delete_request_feed_prints_stdout_candidates(
     out = capsys.readouterr().out
     assert "ACCEPT res_no=10" in out
     assert "SUMMARY checked_range=1-10" in out
+
+
+@pytest.mark.hot_word_feeder_integration
+@patch("main._record_scrape_run_observation")
+@patch(
+    "main.run_hot_word_feeder",
+    return_value={
+        "source_url": "https://dic.nicovideo.jp/a/hot-source",
+        "recent_weeks": 12,
+        "fetch_ok": True,
+        "extracted_candidates": 2,
+        "unique_candidates": 2,
+        "candidate_urls": [
+            "https://dic.nicovideo.jp/a/hot-a",
+            "https://dic.nicovideo.jp/a/hot-b",
+        ],
+        "added_targets": 2,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "denylisted_candidates": 0,
+        "invalid_candidates": 0,
+        "resolution_failures": 0,
+        "registration_failures": 0,
+        "queued_target_urls": [
+            "https://dic.nicovideo.jp/a/hot-a",
+            "https://dic.nicovideo.jp/a/hot-b",
+        ],
+    },
+)
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch(
+    "main.list_registered_targets",
+    return_value=[
+        {"canonical_url": "https://dic.nicovideo.jp/a/1", "article_id": "1"},
+    ],
+)
+@patch(
+    "main.list_active_target_urls",
+    return_value=["https://dic.nicovideo.jp/a/1"],
+)
+@patch(
+    "main.run_scrape",
+    side_effect=[
+        ScrapeResult(True, "ok", article_title="Existing"),
+        ScrapeResult(True, "ok", article_title="Hot A"),
+        ScrapeResult(True, "ok", article_title="Hot B"),
+    ],
+)
+def test_main_batch_appends_hot_word_targets_same_shot(
+    mock_run_scrape,
+    mock_list,
+    mock_list_registered_targets,
+    mock_run_delete_request_feeder,
+    mock_run_hot_word_feeder,
+    mock_record,
+    tmp_path,
+    capsys,
+    monkeypatch,
+):
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    with patch("sys.argv", ["main.py", "batch", "targets.db"]):
+        main_module.main()
+
+    mock_run_hot_word_feeder.assert_called_once_with("targets.db")
+    assert mock_run_scrape.call_count == 3
+    mock_run_scrape.assert_any_call("https://dic.nicovideo.jp/a/1")
+    mock_run_scrape.assert_any_call("https://dic.nicovideo.jp/a/hot-a")
+    mock_run_scrape.assert_any_call("https://dic.nicovideo.jp/a/hot-b")
+
+    out = capsys.readouterr().out
+    assert "[hot-word-feed]" in out
+    assert "added=2" in out
+
+    logs = list(Path(tmp_path).glob("batch_*.log"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert "HOT_WORD_FEED" in text
+    assert "added=2" in text
+    assert "  total_targets=3" in text
+
+
+@pytest.mark.hot_word_feeder_integration
+@patch(
+    "main.run_hot_word_feeder",
+    return_value={
+        "source_url": "https://dic.nicovideo.jp/a/hot-source",
+        "recent_weeks": 12,
+        "fetch_ok": True,
+        "extracted_candidates": 1,
+        "unique_candidates": 1,
+        "candidate_urls": ["https://dic.nicovideo.jp/a/hot-new"],
+        "added_targets": 0,
+        "reactivated_targets": 1,
+        "duplicate_targets": 0,
+        "denylisted_candidates": 0,
+        "invalid_candidates": 0,
+        "resolution_failures": 0,
+        "registration_failures": 0,
+        "queued_target_urls": ["https://dic.nicovideo.jp/a/hot-new"],
+    },
+)
+@patch(
+    "main.run_delete_request_feeder",
+    return_value={
+        "checked_from_res_no": 1,
+        "checked_to_res_no": None,
+        "responses_checked": 0,
+        "extracted_candidates": 0,
+        "handed_off_candidates": 0,
+        "updated_last_processed_res_no": 0,
+        "queued_target_urls": [],
+        "added_targets": 0,
+        "reactivated_targets": 0,
+        "duplicate_targets": 0,
+        "invalid_targets": 0,
+    },
+)
+@patch(
+    "main.list_registered_targets",
+    return_value=[
+        {"canonical_url": "https://dic.nicovideo.jp/a/1", "article_id": "1"},
+    ],
+)
+@patch(
+    "main.list_active_target_urls",
+    return_value=["https://dic.nicovideo.jp/a/1"],
+)
+@patch("main.run_scrape", return_value=ScrapeResult(True, "ok"))
+def test_main_batch_hot_word_reactivated_target_same_shot(
+    mock_run_scrape,
+    mock_list,
+    mock_list_registered_targets,
+    mock_run_delete_request_feeder,
+    mock_run_hot_word_feeder,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("BATCH_LOG_DIR", str(tmp_path))
+    with patch("sys.argv", ["main.py", "batch", "targets.db"]):
+        main_module.main()
+
+    mock_run_hot_word_feeder.assert_called_once_with("targets.db")
+    assert mock_run_scrape.call_count == 2
+    mock_run_scrape.assert_any_call("https://dic.nicovideo.jp/a/hot-new")
 
 
 @patch("main._record_scrape_run_observation")

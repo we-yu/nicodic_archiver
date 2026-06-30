@@ -5,3 +5,10 @@ from pathlib import Path
 _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "hot_word_feeder_integration: opt out of default HOT word feeder isolation",
+    )
