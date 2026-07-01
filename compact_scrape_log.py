@@ -244,6 +244,7 @@ def digest_reason_token(
     if reason:
         for key in (
             "already_up_to_date",
+            "zero_response_checked",
             "later_page_interrupted",
             "response_cap_reached",
             "redirect_detected",

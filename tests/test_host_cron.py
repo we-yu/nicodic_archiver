@@ -417,6 +417,108 @@ def test_compact_host_run_groups_page_tokens_and_hashes_step_end_shapes():
     assert "[RUN DIGEST]" in text
 
 
+def test_compact_host_run_folds_zero_response_checked_into_ok0_sum():
+    started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 45),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+
+    reporter.begin_compact_host_run(
+        started_at_iso=started.isoformat().replace("+00:00", "Z"),
+        batch_ref="zerochk",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.note_targets_loaded(1, "/app/data/registry.db")
+    reporter.start_target(
+        7,
+        100,
+        "十段戦(麻雀)",
+        "https://dic.nicovideo.jp/a/judan",
+        article_id="judan",
+        saved_before=0,
+        observed_before="unknown",
+    )
+    reporter.finish_target(
+        "success",
+        "十段戦(麻雀)",
+        0,
+        "judan",
+        reason="reason=zero_response_checked",
+        stored_new=0,
+        saved_after=None,
+        observed_after=None,
+        pages_ok=0,
+        elapsed_s=1,
+    )
+    reporter.bind_run_totals(
+        total_targets=1,
+        processed_targets=1,
+        remaining_targets=0,
+    )
+    reporter.finish_run("success")
+
+    text = stream.getvalue()
+    assert "[OK0 SUM 🟢]" in text
+    assert "[STEP END OK 🟢]" not in text
+    assert "[STEP START]" not in text
+    assert "[OK0] others=1" in text
+    assert "reason=zero_response_checked" not in text
+
+
+def test_compact_host_run_does_not_fold_generic_success_ok_reason():
+    started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
+    clock = FixedClock(
+        [
+            datetime(2026, 5, 17, 13, 21, 39),
+            datetime(2026, 5, 17, 13, 21, 42),
+        ]
+    )
+    stream = StringIO()
+    reporter = HostCronReporter(stream, now_provider=lambda: clock())
+
+    reporter.begin_compact_host_run(
+        started_at_iso=started.isoformat().replace("+00:00", "Z"),
+        batch_ref="plainok",
+        archive_db_path="/app/data/nicodic.db",
+        limit_seconds=7200,
+        trigger="host_cron",
+    )
+    reporter.start_target(
+        1,
+        1,
+        "Mystery",
+        "https://dic.nicovideo.jp/a/1",
+        article_id="1",
+        saved_before=0,
+        observed_before="unknown",
+    )
+    reporter.finish_target(
+        "success",
+        "Mystery",
+        0,
+        "1",
+        reason=None,
+        stored_new=0,
+        saved_after=None,
+        observed_after=None,
+        pages_ok=0,
+        elapsed_s=0,
+    )
+
+    text = stream.getvalue()
+    assert "[STEP END OK 🟢]" in text
+    assert "reason=ok" in text
+    assert "[OK0 SUM 🟢]" not in text
+
+
 def test_compact_host_run_summarizes_clean_ok0_target_by_default():
     started = datetime(2026, 5, 17, 4, 21, 39, tzinfo=timezone.utc)
     clock = FixedClock(

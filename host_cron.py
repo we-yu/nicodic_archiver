@@ -722,17 +722,20 @@ class HostCronReporter:
             return False
         if (stored_new if stored_new is not None else 0) != 0:
             return False
-        if self._reason_token(reason, status) != "already_up_to_date":
-            return False
+        reason_tok = self._reason_token(reason, status)
         if self._detail_emitted:
+            return False
+        if self._interrupt_http is not None:
+            return False
+        if reason_tok == "zero_response_checked":
+            return True
+        if reason_tok != "already_up_to_date":
             return False
         if self._pages_ok_step != 1:
             return False
         if observe_val(saved_after) == "unknown":
             return False
         if observe_val(observed_after) == "unknown":
-            return False
-        if self._interrupt_http is not None:
             return False
         return True
 
