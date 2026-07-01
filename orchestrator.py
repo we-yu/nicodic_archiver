@@ -838,6 +838,13 @@ def run_scrape(
             rsn_kw = "reason=later_page_interrupted"
         elif cap_reached:
             rsn_kw = "reason=response_cap_reached"
+        elif (
+            max_saved_res_no is None
+            and not responses
+            and not interrupted
+            and not cap_reached
+        ):
+            rsn_kw = "reason=zero_response_checked"
         progress_reporter.finish_target(
             display_status,
             display_label,
@@ -869,7 +876,16 @@ def run_scrape(
             if interrupted
             else "response_cap_reached"
             if cap_reached
-            else None
+            else (
+                "zero_response_checked"
+                if (
+                    max_saved_res_no is None
+                    and not responses
+                    and not interrupted
+                    and not cap_reached
+                )
+                else None
+            )
         ),
     )
 

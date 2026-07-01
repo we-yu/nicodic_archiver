@@ -979,6 +979,45 @@ def test_run_scrape_saves_empty_result_for_zero_response_case():
     mock_print.assert_any_call("No BBS responses found; saving empty result")
     mock_print.assert_any_call("Saved to SQLite")
     assert ok
+    assert ok.short_reason == "zero_response_checked"
+
+
+def test_run_scrape_zero_response_reports_reason_to_progress_reporter():
+    article_url = "https://dic.nicovideo.jp/a/12345"
+    reporter = MagicMock()
+
+    with patch(
+        "orchestrator.fetch_article_metadata",
+        return_value=("12345", "a", "Title"),
+    ):
+        with patch(
+            "orchestrator.build_bbs_base_url",
+            return_value="https://dic.nicovideo.jp/b/a/12345/",
+        ):
+            with patch("orchestrator.get_max_saved_res_no", return_value=None):
+                with patch(
+                    "orchestrator.collect_all_responses",
+                    return_value=([], False, False),
+                ) as mock_collect:
+                    conn = MagicMock()
+                    with patch("orchestrator.init_db", return_value=conn):
+                        with patch("orchestrator.save_to_db"):
+                            with patch(
+                                "orchestrator.update_target_observed_max_res_no",
+                            ):
+                                ok = run_scrape(
+                                    article_url,
+                                    progress_reporter=reporter,
+                                    target_index=3,
+                                    target_total=10,
+                                )
+
+    mock_collect.assert_called_once()
+    reporter.finish_target.assert_called_once()
+    finish_kwargs = reporter.finish_target.call_args.kwargs
+    assert finish_kwargs["reason"] == "reason=zero_response_checked"
+    assert finish_kwargs["stored_new"] == 0
+    assert ok.short_reason == "zero_response_checked"
 
 
 def test_run_scrape_logs_and_saves_partial_on_later_page_interruption():
