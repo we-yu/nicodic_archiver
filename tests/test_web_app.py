@@ -1474,3 +1474,261 @@ def test_normalize_registered_sort_by_maps_legacy_saved_max_to_observed():
         _normalize_registered_sort_by("latest_scraped_max_res_no")
         == "observed_max_res_no"
     )
+
+
+def _enable_issue_report_env(monkeypatch, webhook_url="https://hooks.example/slack"):
+    monkeypatch.setenv(
+        "NICOARC_ISSUE_REPORT_SLACK_WEBHOOK_URL",
+        webhook_url,
+    )
+    monkeypatch.setenv("NICOARC_ISSUE_REPORT_ENABLED", "1")
+    monkeypatch.setenv("NICOARC_ISSUE_REPORT_RATE_LIMIT_SECONDS", "600")
+
+
+def test_top_page_renders_issue_report_section():
+    response = _run_wsgi_request("GET", path="/")
+
+    assert response["status"] == "200 OK"
+    assert "Report a problem" in response["body"]
+    assert 'action="/issue-report"' in response["body"]
+    assert 'name="report_body"' in response["body"]
+    assert 'name="website"' in response["body"]
+
+
+def test_archive_failure_includes_issue_context_block():
+    check_result = {
+        "status": "resolution_failure",
+        "input": "fafdada",
+        "failure_kind": "not_found",
+        "message": "Could not resolve the input.",
+    }
+    with patch("web_app.check_article_status", return_value=check_result):
+        response = _run_wsgi_request(
+            "POST",
+            body="article_input=fafdada&requested_format=txt",
+        )
+
+    assert response["status"] == "200 OK"
+    assert "Issue report context:" in response["body"]
+    assert "reference_id:" in response["body"]
+    assert "fafdada" in response["body"]
+    assert "download_format: txt" in response["body"]
+    assert "result: not_found" in response["body"]
+    assert "Article was not found." in response["body"]
+    assert "data-copy-target" in response["body"]
+
+
+def test_issue_context_includes_action_and_result_category():
+    check_result = {
+        "status": "resolution_failure",
+        "input": "missing-article",
+        "failure_kind": "not_found",
+        "message": "Could not resolve the input.",
+    }
+    with patch("web_app.check_article_status", return_value=check_result):
+        response = _run_wsgi_request(
+            "POST",
+            body=(
+                "article_input=missing-article"
+                "&requested_format=csv"
+            ),
+        )
+
+    body = response["body"]
+    assert "action: archive_check" in body
+    assert "input: missing-article" in body
+    assert "download_format: csv" in body
+    assert "result: not_found" in body
+    assert "path: /" in body
+
+
+def test_valid_issue_report_posts_to_slack_sender(monkeypatch, tmp_path):
+    _enable_issue_report_env(monkeypatch)
+    sent = []
+
+    def fake_send(url, text, timeout_seconds):
+        sent.append({"url": url, "text": text, "timeout": timeout_seconds})
+
+    app = create_app(web_action_log_path=str(tmp_path / "web_action.log"))
+    with patch("issue_report.send_slack_webhook_message", side_effect=fake_send):
+        response = _run_wsgi_request(
+            "POST",
+            path="/issue-report",
+            body="report_body=broken+download",
+            app=app,
+        )
+
+    assert response["status"] == "200 OK"
+    assert "Report received" in response["body"]
+    assert "Reference ID:" in response["body"]
+    assert len(sent) == 1
+    assert "NicoArc web issue report" in sent[0]["text"]
+    assert "broken download" in sent[0]["text"]
+    assert "https://hooks.example/slack" not in response["body"]
+
+
+def test_empty_issue_report_is_rejected(monkeypatch, tmp_path):
+    _enable_issue_report_env(monkeypatch)
+    sent = []
+
+    def fake_send(url, text, timeout_seconds):
+        sent.append(text)
+
+    app = create_app(web_action_log_path=str(tmp_path / "web_action.log"))
+    with patch("issue_report.send_slack_webhook_message", side_effect=fake_send):
+        response = _run_wsgi_request(
+            "POST",
+            path="/issue-report",
+            body="report_body=",
+            app=app,
+        )
+
+    assert "Please enter a report message" in response["body"]
+    assert sent == []
+
+
+def test_whitespace_only_issue_report_is_rejected(monkeypatch, tmp_path):
+    _enable_issue_report_env(monkeypatch)
+    sent = []
+
+    def fake_send(url, text, timeout_seconds):
+        sent.append(text)
+
+    app = create_app(web_action_log_path=str(tmp_path / "web_action.log"))
+    with patch("issue_report.send_slack_webhook_message", side_effect=fake_send):
+        response = _run_wsgi_request(
+            "POST",
+            path="/issue-report",
+            body="report_body=%20%20%20",
+            app=app,
+        )
+
+    assert "Please enter a report message" in response["body"]
+    assert sent == []
+
+
+def test_overlong_issue_report_is_rejected(monkeypatch, tmp_path):
+    _enable_issue_report_env(monkeypatch)
+    sent = []
+
+    def fake_send(url, text, timeout_seconds):
+        sent.append(text)
+
+    long_body = "x" * 1001
+    app = create_app(web_action_log_path=str(tmp_path / "web_action.log"))
+    with patch("issue_report.send_slack_webhook_message", side_effect=fake_send):
+        response = _run_wsgi_request(
+            "POST",
+            path="/issue-report",
+            body=f"report_body={quote_plus(long_body)}",
+            app=app,
+        )
+
+    assert "too long" in response["body"].lower()
+    assert sent == []
+
+
+def test_honeypot_field_prevents_slack_send(monkeypatch, tmp_path):
+    _enable_issue_report_env(monkeypatch)
+    sent = []
+
+    def fake_send(url, text, timeout_seconds):
+        sent.append(text)
+
+    app = create_app(web_action_log_path=str(tmp_path / "web_action.log"))
+    with patch("issue_report.send_slack_webhook_message", side_effect=fake_send):
+        response = _run_wsgi_request(
+            "POST",
+            path="/issue-report",
+            body="report_body=real+report&website=bot-filled",
+            app=app,
+        )
+
+    assert "Thank you." in response["body"]
+    assert sent == []
+
+
+def test_issue_report_rate_limit_blocks_repeat_submit(monkeypatch, tmp_path):
+    _enable_issue_report_env(monkeypatch)
+    monkeypatch.setenv("NICOARC_ISSUE_REPORT_RATE_LIMIT_SECONDS", "600")
+    sent = []
+
+    def fake_send(url, text, timeout_seconds):
+        sent.append(text)
+
+    from issue_report import IssueReportRateLimiter
+
+    limiter = IssueReportRateLimiter()
+    app = create_app(
+        web_action_log_path=str(tmp_path / "web_action.log"),
+        issue_report_rate_limiter=limiter,
+    )
+    environ = {"REMOTE_ADDR": "203.0.113.10"}
+    with patch("issue_report.send_slack_webhook_message", side_effect=fake_send):
+        first = _run_wsgi_request(
+            "POST",
+            path="/issue-report",
+            body="report_body=first+report",
+            app=app,
+            extra_environ=environ,
+        )
+        second = _run_wsgi_request(
+            "POST",
+            path="/issue-report",
+            body="report_body=second+report",
+            app=app,
+            extra_environ=environ,
+        )
+
+    assert "Report received" in first["body"]
+    assert "Please wait before submitting another report" in second["body"]
+    assert len(sent) == 1
+
+
+def test_issue_report_disabled_does_not_claim_success(monkeypatch, tmp_path):
+    monkeypatch.delenv("NICOARC_ISSUE_REPORT_SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.setenv("NICOARC_ISSUE_REPORT_ENABLED", "0")
+    sent = []
+
+    def fake_send(url, text, timeout_seconds):
+        sent.append(text)
+
+    app = create_app(web_action_log_path=str(tmp_path / "web_action.log"))
+    with patch("issue_report.send_slack_webhook_message", side_effect=fake_send):
+        response = _run_wsgi_request(
+            "POST",
+            path="/issue-report",
+            body="report_body=needs+help",
+            app=app,
+        )
+
+    assert "not available" in response["body"]
+    assert "Report received" not in response["body"]
+    assert sent == []
+
+
+def test_slack_send_failure_returns_safe_message(monkeypatch, tmp_path):
+    _enable_issue_report_env(
+        monkeypatch,
+        webhook_url="https://hooks.example/secret-webhook",
+    )
+
+    def fake_send_fail(url, text, timeout_seconds):
+        raise OSError("network down")
+
+    app = create_app(web_action_log_path=str(tmp_path / "web_action.log"))
+    with patch(
+        "issue_report.send_slack_webhook_message",
+        side_effect=fake_send_fail,
+    ):
+        response = _run_wsgi_request(
+            "POST",
+            path="/issue-report",
+            body="report_body=send+should+fail",
+            app=app,
+        )
+
+    assert "Could not send the report" in response["body"]
+    assert "Reference ID:" in response["body"]
+    assert "secret-webhook" not in response["body"]
+    assert "network down" not in response["body"]

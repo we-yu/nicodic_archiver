@@ -64,6 +64,10 @@ Expected keys:
 - `TARGET_ORDER_START_ARTICLE_ID`
 - `SOFT_TERMINATE_FILE`
 - `ONESHOT_LIMIT_DURATION_SECONDS`
+- `NICOARC_ISSUE_REPORT_SLACK_WEBHOOK_URL` (optional)
+- `NICOARC_ISSUE_REPORT_ENABLED` (optional)
+- `NICOARC_ISSUE_REPORT_TIMEOUT_SECONDS` (optional)
+- `NICOARC_ISSUE_REPORT_RATE_LIMIT_SECONDS` (optional)
 
 The file is intentionally local-only and should not be committed. Use the
 tracked template as a starting point:
