@@ -21,6 +21,12 @@ from archive_read import (
     query_registered_articles,
 )
 from article_resolver import resolve_article_input
+from issue_report import (
+    IssueReportRateLimiter,
+    format_issue_context_block,
+    issue_report_enabled,
+    submit_issue_report,
+)
 from target_list import register_target_url
 
 
@@ -443,7 +449,15 @@ def _build_registered_ui_result(check_result: dict) -> dict:
     }
 
 
-def _build_error_ui_result(result: dict, reference_id: str | None) -> dict:
+def _build_error_ui_result(
+    result: dict,
+    reference_id: str | None,
+    *,
+    article_input: str | None = None,
+    requested_format: str | None = None,
+    path: str = "/",
+    action: str = "archive_check",
+) -> dict:
     error_result = {
         "status": "error",
         "message": _user_error_message(result),
@@ -451,7 +465,52 @@ def _build_error_ui_result(result: dict, reference_id: str | None) -> dict:
     }
     if reference_id is not None:
         error_result["reference_id"] = reference_id
+        input_value = (
+            article_input
+            if article_input is not None
+            else result.get("input", "")
+        )
+        fmt = requested_format or DEFAULT_DOWNLOAD_FORMAT
+        error_result["issue_context_text"] = format_issue_context_block(
+            reference_id=reference_id,
+            action=action,
+            input_value=input_value,
+            download_format=fmt,
+            result=_result_error_code(result),
+            message=error_result["message"],
+            path=path,
+        )
     return error_result
+
+
+def _log_issue_report_action(
+    web_action_log_path: str,
+    environ: dict,
+    report_result: dict,
+) -> None:
+    try:
+        _append_web_action_log_lines(
+            Path(web_action_log_path),
+            [
+                "",
+                "WEB_ACTION_START",
+                f"  action_id={report_result['reference_id']}",
+                f"  timestamp={report_result['timestamp']}",
+                "  action_kind=issue_report",
+                f"  visitor_hint={_visitor_hint(environ)}",
+                f"  path={_web_log_value(report_result.get('path', '/'))}",
+                f"  outcome={_web_log_value(report_result.get('outcome'))}",
+                f"  reason={_web_log_value(report_result.get('reason'))}",
+                (
+                    "  report_length="
+                    f"{report_result.get('report_length', 0)}"
+                ),
+                "WEB_ACTION_END",
+                "",
+            ],
+        )
+    except OSError:
+        pass
 
 
 def _build_download_query(check_result: dict, requested_format: str) -> str:
@@ -507,6 +566,16 @@ def _submit_archive_check(
     requested_format = _normalize_download_format(
         environ.get("copilot.requested_format")
     )
+    request_path = environ.get("PATH_INFO", "/") or "/"
+
+    def _archive_error(result: dict, reference_id: str | None) -> dict:
+        return _build_error_ui_result(
+            result,
+            reference_id,
+            article_input=article_input,
+            requested_format=requested_format,
+            path=request_path,
+        )
 
     if check_result["status"] == "saved":
         return _build_saved_ui_result(
@@ -545,7 +614,7 @@ def _submit_archive_check(
                 error_code="registration_failed",
                 error_detail=str(exc),
             )
-            return _build_error_ui_result(failure_result, reference_id), None
+            return _archive_error(failure_result, reference_id), None
 
         if registration_status in {"added", "reactivated", "duplicate"}:
             _log_web_action(
@@ -584,7 +653,7 @@ def _submit_archive_check(
                 resolved_canonical_url=check_result["article_url"],
                 error_code="resolution_failure",
             )
-            return _build_error_ui_result(failure_result, reference_id), None
+            return _archive_error(failure_result, reference_id), None
 
         if registration_status == "denylisted":
             reference_id = _log_web_action(
@@ -600,7 +669,7 @@ def _submit_archive_check(
                 resolved_canonical_url=check_result["article_url"],
                 error_code="denylisted",
             )
-            return _build_error_ui_result(
+            return _archive_error(
                 {"status": "denylisted"},
                 reference_id,
             ), None
@@ -626,7 +695,7 @@ def _submit_archive_check(
             error_code="registration_failed",
             error_detail=failure_result["error_detail"],
         )
-        return _build_error_ui_result(failure_result, reference_id), None
+        return _archive_error(failure_result, reference_id), None
 
     reference_id = _log_web_action(
         web_action_log_path,
@@ -642,7 +711,7 @@ def _submit_archive_check(
         error_code=_result_error_code(check_result),
         error_detail=check_result.get("error_detail") or check_result["message"],
     )
-    return _build_error_ui_result(check_result, reference_id), None
+    return _archive_error(check_result, reference_id), None
 
 
 def _render_result_detail(label: str, value: str) -> str:
@@ -756,15 +825,93 @@ def _render_message_area(
                 result["reference_id"],
             )
         )
+        issue_context = result.get("issue_context_text")
+        if issue_context:
+            lines.append(_render_issue_context_block(issue_context))
 
     lines.append("</section>")
     return "".join(lines)
+
+
+def _render_issue_context_block(issue_context_text: str) -> str:
+    context_id = f"issue-context-{uuid4().hex[:8]}"
+    safe_text = escape(issue_context_text)
+    return (
+        '<div class="issue-context-block">'
+        '<p class="issue-context-heading">Issue report context:</p>'
+        f'<textarea id="{context_id}" class="issue-context-text" '
+        'readonly rows="8">'
+        f"{safe_text}"
+        "</textarea>"
+        f'<button type="button" class="copy-context-btn" '
+        f'data-copy-target="{context_id}">Copy</button>'
+        "</div>"
+    )
+
+
+def _render_issue_report_section(
+    issue_report_result: dict | None = None,
+    issue_context_prefill: str | None = None,
+) -> str:
+    open_attr = " open" if issue_report_result else ""
+    status_html = ""
+    if issue_report_result is not None:
+        status_class = (
+            "issue-report-status ok"
+            if issue_report_result.get("ok")
+            else "issue-report-status error"
+        )
+        status_html = (
+            f'<p class="{status_class}">'
+            f"{escape(issue_report_result['message'])}"
+            "</p>"
+        )
+    configured = issue_report_enabled()
+    if configured:
+        availability_note = (
+            '<p class="issue-report-note">'
+            "Send a short problem report to the site operator."
+            "</p>"
+        )
+    else:
+        availability_note = (
+            '<p class="issue-report-note">'
+            "Issue reporting is not configured on this server."
+            "</p>"
+        )
+    context_hidden = ""
+    if issue_context_prefill:
+        context_hidden = (
+            '<input type="hidden" name="issue_context" '
+            f'value="{escape(issue_context_prefill)}">'
+        )
+    return (
+        f'<details class="issue-report"{open_attr}>'
+        "<summary>Report a problem</summary>"
+        '<div class="issue-report-body">'
+        f"{availability_note}"
+        f"{status_html}"
+        '<form method="post" action="/issue-report">'
+        '<label for="report_body">Describe the problem</label>'
+        '<textarea id="report_body" name="report_body" rows="5" '
+        'maxlength="1000"></textarea>'
+        f"{context_hidden}"
+        '<label class="hp-field" aria-hidden="true">'
+        'Website<input type="text" name="website" tabindex="-1" '
+        'autocomplete="off">'
+        "</label>"
+        '<button type="submit">Send report</button>'
+        "</form>"
+        "</div>"
+        "</details>"
+    )
 
 
 def _render_page(
     article_input: str,
     result: dict | None = None,
     download_query: str | None = None,
+    issue_report_result: dict | None = None,
 ) -> bytes:
     safe_input = escape(article_input)
     selected_format = DEFAULT_DOWNLOAD_FORMAT
@@ -775,6 +922,13 @@ def _render_page(
         )
     format_name = _display_format_name(DEFAULT_DOWNLOAD_FORMAT)
     message_area = _render_message_area(result, download_query)
+    issue_context_prefill = None
+    if result is not None and result.get("status") == "error":
+        issue_context_prefill = result.get("issue_context_text")
+    issue_report_section = _render_issue_report_section(
+        issue_report_result=issue_report_result,
+        issue_context_prefill=issue_context_prefill,
+    )
     html = f"""<!doctype html>
 <html lang=\"en\">
 <head>
@@ -901,6 +1055,68 @@ def _render_page(
       background: transparent;
     }}
     .list-btn:hover {{ background: rgba(15, 118, 110, 0.08); }}
+    .issue-context-block {{
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px dashed var(--border);
+    }}
+    .issue-context-heading {{
+      margin: 0 0 8px;
+      font-weight: 700;
+    }}
+    .issue-context-text {{
+      width: 100%;
+      font-family: ui-monospace, monospace;
+      font-size: 0.85rem;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #fff;
+      resize: vertical;
+    }}
+    .copy-context-btn {{
+      margin-top: 8px;
+      font-size: 0.9rem;
+    }}
+    .issue-report {{
+      margin-top: 24px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }}
+    .issue-report summary {{
+      cursor: pointer;
+      font-weight: 700;
+      color: var(--accent);
+    }}
+    .issue-report-body {{
+      margin-top: 12px;
+      display: grid;
+      gap: 10px;
+    }}
+    .issue-report-note {{
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }}
+    .issue-report-status.ok {{ color: var(--saved); }}
+    .issue-report-status.error {{ color: var(--error); }}
+    .issue-report textarea {{
+      width: 100%;
+      min-height: 120px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #fff;
+      font: inherit;
+      resize: vertical;
+    }}
+    .hp-field {{
+      position: absolute;
+      left: -10000px;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }}
     @media (max-width: 640px) {{
       main {{ padding: 24px 14px 36px; }}
       .panel {{ padding: 18px; }}
@@ -937,6 +1153,7 @@ def _render_page(
         </p>
       </form>
       {message_area}
+      {issue_report_section}
     </section>
   </main>
   <script>
@@ -983,6 +1200,25 @@ def _render_page(
     if (autoDownloadForm) {{
       autoDownloadForm.submit();
     }}
+    document.querySelectorAll("[data-copy-target]").forEach((button) => {{
+      button.addEventListener("click", () => {{
+        const targetId = button.getAttribute("data-copy-target");
+        const target = targetId ? document.getElementById(targetId) : null;
+        if (!target) {{
+          return;
+        }}
+        target.focus();
+        target.select();
+        if (typeof target.setSelectionRange === "function") {{
+          target.setSelectionRange(0, target.value.length);
+        }}
+        try {{
+          navigator.clipboard.writeText(target.value);
+        }} catch (err) {{
+          document.execCommand("copy");
+        }}
+      }});
+    }});
   </script>
 </body>
 </html>
@@ -1463,13 +1699,43 @@ def _render_registered_list_page(query_params: dict) -> bytes:
 def create_app(
     target_db_path: str = DEFAULT_TARGET_DB_PATH,
     web_action_log_path: str = DEFAULT_WEB_ACTION_LOG_PATH,
+    issue_report_rate_limiter: IssueReportRateLimiter | None = None,
 ):
+    rate_limiter = issue_report_rate_limiter or IssueReportRateLimiter()
+
     def app(environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET").upper()
         path = environ.get("PATH_INFO", "/")
 
         if method == "GET" and path == "/":
             body = _render_page("")
+            start_response(
+                "200 OK",
+                [
+                    ("Content-Type", "text/html; charset=utf-8"),
+                    ("Content-Length", str(len(body))),
+                ],
+            )
+            return [body]
+
+        if method == "POST" and path == "/issue-report":
+            form = _read_post_form(environ)
+            report_result = submit_issue_report(
+                report_body=form.get("report_body", ""),
+                issue_context=form.get("issue_context", ""),
+                honeypot=form.get("website", ""),
+                environ=environ,
+                rate_limiter=rate_limiter,
+            )
+            _log_issue_report_action(
+                web_action_log_path,
+                environ,
+                report_result,
+            )
+            body = _render_page(
+                "",
+                issue_report_result=report_result,
+            )
             start_response(
                 "200 OK",
                 [
@@ -1544,14 +1810,21 @@ def create_app(
                     error_code="download_missing",
                     error_detail="Saved article was not found for download.",
                 )
+                error_result = _build_error_ui_result(
+                    {
+                        "status": "internal_error",
+                        "input": article_input,
+                        "message": "An unexpected internal error occurred.",
+                    },
+                    reference_id,
+                    article_input=article_input,
+                    requested_format=requested_format,
+                    path="/download",
+                    action="download",
+                )
                 body = _render_page(
                     article_input,
-                    {
-                        "status": "error",
-                        "message": "An unexpected internal error occurred.",
-                        "error_code": "download_missing",
-                        "reference_id": reference_id,
-                    },
+                    error_result,
                 )
                 start_response(
                     "200 OK",
