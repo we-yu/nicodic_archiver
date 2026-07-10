@@ -13,6 +13,7 @@ from storage import (
     set_target_active_state,
     update_target_observed_max_res_no,
 )
+from target_addition_log import append_target_added_event
 
 
 def _parse_target_line(raw_line: str) -> str | None:
@@ -66,7 +67,12 @@ def validate_target_url(article_url: str) -> bool:
     return parse_target_identity(article_url) is not None
 
 
-def register_target_url(article_url: str, target_db_path: str) -> str:
+def register_target_url(
+    article_url: str,
+    target_db_path: str,
+    *,
+    source: str = "unknown",
+) -> str:
     """Resolve numeric identity via metadata, then persist one target row."""
 
     candidate = article_url.strip()
@@ -117,7 +123,16 @@ def register_target_url(article_url: str, target_db_path: str) -> str:
     finally:
         conn.close()
 
-    return result["status"]
+    status = result["status"]
+    if status == "added":
+        entry = result.get("entry") or {}
+        append_target_added_event(
+            article_id=numeric_id,
+            title=entry.get("title") or title or None,
+            source=source,
+            article_type=canonical_target["article_type"],
+        )
+    return status
 
 
 def inspect_registered_target(
@@ -276,7 +291,11 @@ def import_targets_from_text_file(
             continue
 
         counts["processed"] += 1
-        result = register_target_url(line, target_db_path)
+        result = register_target_url(
+            line,
+            target_db_path,
+            source="import",
+        )
         counts[result] += 1
 
     return counts

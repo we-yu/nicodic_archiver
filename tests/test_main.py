@@ -232,6 +232,7 @@ def test_main_add_target_calls_register_target_url(mock_add_target, capsys):
     mock_add_target.assert_called_once_with(
         "https://dic.nicovideo.jp/a/12345",
         "targets.db",
+        source="operator",
     )
     out = capsys.readouterr().out
     assert "Added target: https://dic.nicovideo.jp/a/12345" in out
@@ -255,6 +256,7 @@ def test_main_add_target_reports_denylisted_target(mock_add_target, capsys):
     mock_add_target.assert_called_once_with(
         "https://dic.nicovideo.jp/id/480340",
         "targets.db",
+        source="operator",
     )
     out = capsys.readouterr().out
     assert "Target is excluded from archive collection:" in out
@@ -326,6 +328,7 @@ def test_main_add_target_reports_duplicate_without_error(mock_add_target, capsys
     mock_add_target.assert_called_once_with(
         "https://dic.nicovideo.jp/a/12345",
         "targets.db",
+        source="operator",
     )
     out = capsys.readouterr().out
     assert "Target already exists: https://dic.nicovideo.jp/a/12345" in out
@@ -341,7 +344,11 @@ def test_main_add_target_exits_non_zero_for_invalid_url(mock_add_target, capsys)
             main_module.main()
 
     assert exc_info.value.code == 1
-    mock_add_target.assert_called_once_with("not-a-url", "targets.db")
+    mock_add_target.assert_called_once_with(
+        "not-a-url",
+        "targets.db",
+        source="operator",
+    )
     out = capsys.readouterr().out
     assert "Invalid target URL: not-a-url" in out
 
@@ -362,6 +369,7 @@ def test_main_add_target_reports_reactivated_target(mock_add_target, capsys):
     mock_add_target.assert_called_once_with(
         "https://dic.nicovideo.jp/a/12345",
         "targets.db",
+        source="operator",
     )
     out = capsys.readouterr().out
     assert "Reactivated target: https://dic.nicovideo.jp/a/12345" in out

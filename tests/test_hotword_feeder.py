@@ -140,7 +140,7 @@ def test_scan_reports_counts_without_registering(monkeypatch):
     monkeypatch.setattr(
         hotword_feeder,
         "register_target_url",
-        lambda url, db: calls.append(url) or "added",
+        lambda url, db, **kwargs: calls.append(url) or "added",
     )
     scan = scan_hot_word_feed(
         source_url="http://example/test",
@@ -167,7 +167,7 @@ def test_run_registers_via_boundary_and_queues_new(monkeypatch):
     }
     seen = []
 
-    def fake_register(url, db):
+    def fake_register(url, db, **kwargs):
         seen.append((url, db))
         return statuses[url]
 
@@ -193,7 +193,7 @@ def test_source_fetch_failure_is_contained(monkeypatch):
     monkeypatch.setattr(
         hotword_feeder,
         "register_target_url",
-        lambda url, db: register_calls.append(url) or "added",
+        lambda url, db, **kwargs: register_calls.append(url) or "added",
     )
 
     def boom(url):
@@ -207,7 +207,7 @@ def test_source_fetch_failure_is_contained(monkeypatch):
 
 
 def test_candidate_level_failure_is_contained(monkeypatch):
-    def flaky_register(url, db):
+    def flaky_register(url, db, **kwargs):
         if url == _u("CCC"):
             raise RuntimeError("boom")
         return "added"
@@ -225,7 +225,7 @@ def test_candidate_level_failure_is_contained(monkeypatch):
 
 
 def test_inspect_has_no_registration_side_effects(monkeypatch):
-    def fail_if_called(url, db):
+    def fail_if_called(url, db, **kwargs):
         raise AssertionError("inspect must not register")
 
     monkeypatch.setattr(hotword_feeder, "register_target_url", fail_if_called)

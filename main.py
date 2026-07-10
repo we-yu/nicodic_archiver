@@ -11,6 +11,7 @@ from archive_read import write_scrape_targets_txt
 from article_resolver import resolve_article_input
 from cli import export_all_articles, export_article, inspect_article, list_articles
 from compact_scrape_log import BatchDigestRecorder
+from daily_report import attempt_daily_runtime_report
 from delete_request_feeder import (
     DEFAULT_DELETE_REQUEST_FEED_STATE_PATH,
     append_batch_targets,
@@ -770,6 +771,36 @@ def run_batch_scrape(
     existing_targets, stored_article_ids_by_url = _load_active_targets_for_ordering(
         target_db_path
     )
+    try:
+        daily_report_result = attempt_daily_runtime_report(
+            target_db_path=target_db_path,
+            batch_log_dir=log_dir,
+        )
+        reason = daily_report_result.get("reason", "unknown")
+        _append_batch_log_lines(
+            log_path,
+            [
+                "DAILY_REPORT",
+                f"  outcome={reason}",
+                (
+                    "  report_date="
+                    f"{daily_report_result.get('report_date')}"
+                ),
+            ],
+        )
+    except Exception as exc:
+        try:
+            _append_batch_log_lines(
+                log_path,
+                [
+                    "DAILY_REPORT",
+                    "  outcome=failed_outer",
+                    "  report_date=unknown",
+                    f"  reason={type(exc).__name__}",
+                ],
+            )
+        except Exception:
+            pass
     delete_request_feed_summary = run_delete_request_feeder(
         target_db_path,
         archive_db_path=archive_db_path,
@@ -2223,7 +2254,11 @@ def main():
             print("Usage: add-target <article_url> <target_db_path>")
             sys.exit(1)
 
-        result = register_target_url(sys.argv[2], sys.argv[3])
+        result = register_target_url(
+            sys.argv[2],
+            sys.argv[3],
+            source="operator",
+        )
         if result == "added":
             print(f"Added target: {sys.argv[2]}")
             return

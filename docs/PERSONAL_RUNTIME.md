@@ -68,6 +68,9 @@ Expected keys:
 - `NICOARC_ISSUE_REPORT_ENABLED` (optional)
 - `NICOARC_ISSUE_REPORT_TIMEOUT_SECONDS` (optional)
 - `NICOARC_ISSUE_REPORT_RATE_LIMIT_SECONDS` (optional)
+- `NICOARC_DAILY_REPORT_ENABLED` (optional; default disabled)
+- `DAILY_REPORT_STATE_PATH` (optional)
+- `TARGET_ADDITION_LOG_DIR` (optional)
 
 The file is intentionally local-only and should not be committed. Use the
 tracked template as a starting point:
@@ -122,6 +125,32 @@ If it is unset or empty, the runtime uses
 elapsed wall-clock time. If it is unset, empty, invalid, non-finite,
 negative, or `0`, the limit is disabled. A positive value such as `3600`
 stops only at an article boundary after the current article finishes.
+
+## Daily Slack Runtime Report
+
+`NICOARC_DAILY_REPORT_ENABLED` controls the once-per-UTC-day Slack runtime
+report. Default is disabled (`0` / unset). When enabled, the first eligible
+periodic batch shot after UTC midnight attempts a report for the previous UTC
+calendar day (half-open `[D 00:00:00, D+1 00:00:00)`). With the usual host
+schedule the first attempt is around 00:05 UTC.
+
+The report reuses `NICOARC_ISSUE_REPORT_SLACK_WEBHOOK_URL` and does **not**
+depend on `NICOARC_ISSUE_REPORT_ENABLED`. Missing webhook or disabled mode
+skips sending with compact operator logging only.
+
+Send state is persisted under the mounted runtime data area
+(`DAILY_REPORT_STATE_PATH`, default `/app/data/daily_report_state.json` in
+Compose). State updates only after successful Slack delivery, so a failed
+attempt can retry on a later batch shot the same UTC day.
+
+Run metrics come from completed plain batch logs under `BATCH_LOG_DIR`
+(`BATCH_RUN_END` + `BATCH_DIGEST`). New target names come from the target
+registry `created_at` interval. Best-effort source labels come from JSONL
+files under `TARGET_ADDITION_LOG_DIR` (default `/runtime/logs/target_additions`
+in Compose). Missing source events display as `Unknown source`. At most 10
+target rows are listed.
+
+Daily-report failures are non-fatal: feeders and scraping continue.
 
 ## Host UID/GID Handling
 

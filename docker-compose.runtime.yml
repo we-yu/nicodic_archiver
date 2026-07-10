@@ -15,6 +15,9 @@ services:
       NICOARC_ISSUE_REPORT_ENABLED: "${NICOARC_ISSUE_REPORT_ENABLED:-}"
       NICOARC_ISSUE_REPORT_TIMEOUT_SECONDS: "${NICOARC_ISSUE_REPORT_TIMEOUT_SECONDS:-}"
       NICOARC_ISSUE_REPORT_RATE_LIMIT_SECONDS: "${NICOARC_ISSUE_REPORT_RATE_LIMIT_SECONDS:-}"
+      NICOARC_DAILY_REPORT_ENABLED: "${NICOARC_DAILY_REPORT_ENABLED:-}"
+      DAILY_REPORT_STATE_PATH: "${DAILY_REPORT_STATE_PATH:-/app/data/daily_report_state.json}"
+      TARGET_ADDITION_LOG_DIR: "${TARGET_ADDITION_LOG_DIR:-/runtime/logs/target_additions}"
     volumes:
       - ./runtime/control:/app/runtime/control
       - ./runtime/targets:/runtime/targets

@@ -70,7 +70,11 @@ def inspect_target_for_operator(article_id, article_type, target_db_path):
 
 
 def add_target_for_operator(article_url, target_db_path):
-    result = register_target_url(article_url, target_db_path)
+    result = register_target_url(
+        article_url,
+        target_db_path,
+        source="operator",
+    )
     if result == "added":
         print("Target registry updated")
         print("Action: add")
