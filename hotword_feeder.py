@@ -214,7 +214,11 @@ def run_hot_word_feeder(
     summary = {**scan, **_empty_register_counters()}
     for url in scan["candidate_urls"]:
         try:
-            status = register_target_url(url, target_db_path)
+            status = register_target_url(
+                url,
+                target_db_path,
+                source="hot_word",
+            )
         except Exception:
             summary["registration_failures"] += 1
             continue

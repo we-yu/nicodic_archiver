@@ -591,6 +591,7 @@ def _submit_archive_check(
             registration_status = register_target_url(
                 check_result["article_url"],
                 target_db_path,
+                source="web_user",
             )
         except Exception as exc:
             failure_result = {

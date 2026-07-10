@@ -411,7 +411,11 @@ def run_delete_request_feeder(
 
         canonical_url = resolution["canonical_target"]["article_url"]
         try:
-            register_status = register_target_url(canonical_url, target_db_path)
+            register_status = register_target_url(
+                canonical_url,
+                target_db_path,
+                source="delete_feeder",
+            )
         except Exception:
             skipped_registration_failures += 1
             continue
