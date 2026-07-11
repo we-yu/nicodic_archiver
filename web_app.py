@@ -1839,6 +1839,7 @@ def _render_registered_list_page(query_params: dict) -> bytes:
     table {{
       border-collapse: collapse;
       width: 100%;
+      min-width: 1080px;
       table-layout: fixed;
       background: var(--panel);
     }}
