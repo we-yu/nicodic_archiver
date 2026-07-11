@@ -723,6 +723,7 @@ def _render_format_selector(selected_format: str) -> str:
     lines = [
         '<fieldset class="format-selector">',
         '<legend>Download format</legend>',
+        '<div class="format-options">',
     ]
     for download_format in DOWNLOAD_FORMATS:
         checked = " checked" if download_format == selected_format else ""
@@ -731,12 +732,165 @@ def _render_format_selector(selected_format: str) -> str:
                 '<label class="format-option">'
                 f'<input type="radio" name="requested_format" '
                 f'value="{escape(download_format)}"{checked}>'
+                '<span class="format-option-label">'
                 f'{escape(_display_format_name(download_format))}'
+                '</span>'
                 '</label>'
             )
         )
+    lines.append("</div>")
     lines.append("</fieldset>")
     return "".join(lines)
+
+
+def _shared_console_style() -> str:
+    """Design tokens and chrome shared by the top page and Registered page."""
+    return """
+    :root {
+      color-scheme: light;
+      --ink: #171b26;
+      --ink-soft: #3d4354;
+      --muted: #6b7280;
+      --paper: #f3efe2;
+      --paper-deep: #eae1cb;
+      --panel: #fffdf7;
+      --panel-alt: #faf4e5;
+      --border: #e1d5b6;
+      --border-strong: #cdba8a;
+      --header-bg: #12172a;
+      --header-bg-soft: #1c2247;
+      --header-ink: #f4f1e6;
+      --accent: #0f766e;
+      --accent-strong: #0b5a54;
+      --accent-soft: rgba(15, 118, 110, 0.14);
+      --gold: #b3803c;
+      --saved: #146c43;
+      --registered: #92400e;
+      --error: #b3261e;
+      --focus: #2f6fed;
+      --radius-lg: 20px;
+      --radius-md: 12px;
+      --radius-sm: 8px;
+      --shadow-panel: 0 24px 48px rgba(15, 17, 26, 0.10);
+      --shadow-header: 0 8px 24px rgba(10, 12, 20, 0.22);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, -apple-system,
+        "Helvetica Neue", Arial, sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    a { color: var(--accent-strong); }
+    :focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    .app-shell { min-height: 100%; }
+    .site-header {
+      background: linear-gradient(
+        135deg, var(--header-bg) 0%, var(--header-bg-soft) 100%
+      );
+      color: var(--header-ink);
+      box-shadow: var(--shadow-header);
+      border-bottom: 3px solid var(--gold);
+    }
+    .site-header-inner {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--header-ink);
+      text-decoration: none;
+    }
+    .brand-mark {
+      display: inline-grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      background: linear-gradient(155deg, var(--gold), #8a5e26);
+      color: #1c1406;
+      font-weight: 700;
+      font-size: 1.05rem;
+    }
+    .brand-text { display: flex; flex-direction: column; line-height: 1.15; }
+    .brand-name { font-weight: 700; font-size: 1.05rem; letter-spacing: 0.01em; }
+    .brand-tagline {
+      font-size: 0.7rem;
+      color: rgba(244, 241, 230, 0.68);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .site-nav { display: flex; gap: 8px; flex-wrap: wrap; }
+    .site-nav-link {
+      color: var(--header-ink);
+      text-decoration: none;
+      font-size: 0.86rem;
+      padding: 7px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(244, 241, 230, 0.25);
+      background: rgba(244, 241, 230, 0.06);
+      white-space: nowrap;
+    }
+    .site-nav-link:hover { background: rgba(244, 241, 230, 0.18); }
+    .site-nav-link.is-current {
+      background: rgba(244, 241, 230, 0.92);
+      color: var(--header-bg);
+      border-color: transparent;
+      font-weight: 600;
+    }
+    .site-footer {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 26px 20px 40px;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    button, .btn, .page-btn, a {
+      -webkit-tap-highlight-color: transparent;
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .panel, .page-btn, .site-nav-link, button, .btn, tr {
+        transition: box-shadow 0.15s ease, transform 0.15s ease,
+          background-color 0.15s ease, border-color 0.15s ease;
+      }
+    }
+    """
+
+
+def _site_header_html(current: str) -> str:
+    top_current = " is-current" if current == "top" else ""
+    reg_current = " is-current" if current == "registered" else ""
+    return (
+        '<header class="site-header">'
+        '<div class="site-header-inner">'
+        '<a class="brand" href="/">'
+        '<span class="brand-mark" aria-hidden="true">N</span>'
+        '<span class="brand-text">'
+        '<span class="brand-name">NicoArc</span>'
+        '<span class="brand-tagline">Archive Console</span>'
+        "</span>"
+        "</a>"
+        '<nav class="site-nav" aria-label="Primary">'
+        f'<a href="/" class="site-nav-link{top_current}">Top</a>'
+        f'<a href="/registered" target="_blank" '
+        f'class="site-nav-link{reg_current}">登録済み記事一覧</a>'
+        "</nav>"
+        "</div>"
+        "</header>"
+    )
 
 
 def _render_message_area(
@@ -937,125 +1091,175 @@ def _render_page(
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
   <title>{escape(UI_TEXTS['page_title'])}</title>
   <style>
-    :root {{
-      color-scheme: light;
-      --bg: #f4efe5;
-      --panel: #fffaf2;
-      --ink: #1f2430;
-      --accent: #0f766e;
-      --accent-disabled: #6b8f8b;
-      --border: #d9ccb4;
-      --muted: #6b7280;
-      --saved: #14532d;
-      --registered: #92400e;
-      --error: #991b1b;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      font-family: Georgia, \"Times New Roman\", serif;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at top, rgba(15, 118, 110, 0.12), transparent 35%),
-        linear-gradient(180deg, #efe6d7 0%, var(--bg) 100%);
-    }}
+    {_shared_console_style()}
     main {{
       max-width: 760px;
       margin: 0 auto;
-      padding: 48px 20px 64px;
+      padding: 36px 20px 64px;
+      display: grid;
+      gap: 18px;
     }}
     .panel {{
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 18px;
+      border-radius: var(--radius-lg);
       padding: 24px;
-      box-shadow: 0 20px 40px rgba(31, 36, 48, 0.08);
+      box-shadow: var(--shadow-panel);
     }}
+    .hero {{
+      background: linear-gradient(
+        165deg, var(--panel) 0%, var(--panel-alt) 100%
+      );
+      border-top: 3px solid var(--gold);
+    }}
+    .hero-top {{
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    .eyebrow {{
+      margin: 0 0 6px;
+      color: var(--accent-strong);
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }}
+    .secondary-action {{
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 16px;
+      border: 1px solid var(--accent);
+      border-radius: 999px;
+      color: var(--accent-strong);
+      text-decoration: none;
+      font-size: 0.86rem;
+      font-weight: 600;
+      background: #fff;
+      white-space: nowrap;
+    }}
+    .secondary-action:hover {{ background: var(--accent-soft); }}
     h1 {{
-      margin: 0 0 12px;
-      font-size: clamp(2rem, 4vw, 3rem);
-      line-height: 1.05;
+      margin: 0 0 10px;
+      font-size: clamp(1.7rem, 3.4vw, 2.4rem);
+      line-height: 1.15;
+      letter-spacing: -0.01em;
     }}
-    p {{ line-height: 1.5; }}
-    .lede {{ color: var(--muted); margin: 0 0 24px; }}
-    form {{ display: grid; gap: 12px; }}
-    label {{ font-weight: 700; }}
+    p {{ line-height: 1.55; }}
+    .lede {{ color: var(--ink-soft); margin: 0; max-width: 56ch; }}
+    .panel-title {{
+      margin: 0 0 14px;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--ink);
+    }}
+    form {{ display: grid; gap: 14px; }}
+    .field {{ display: grid; gap: 6px; }}
+    label {{ font-weight: 700; font-size: 0.92rem; }}
     input[type=\"text\"] {{
       width: 100%;
-      padding: 14px 16px;
-      border-radius: 12px;
-      border: 1px solid var(--border);
+      padding: 13px 15px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-strong);
       background: #fff;
       font: inherit;
+      color: var(--ink);
+    }}
+    input[type=\"text\"]:focus-visible {{ border-color: var(--focus); }}
+    .actions-row {{
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-top: 4px;
     }}
     button {{
       width: fit-content;
-      padding: 12px 18px;
+      padding: 12px 22px;
       border: 0;
       border-radius: 999px;
-      background: var(--accent);
+      background: linear-gradient(155deg, var(--accent), var(--accent-strong));
       color: #fff;
       font: inherit;
+      font-weight: 600;
       cursor: pointer;
+      box-shadow: 0 10px 20px rgba(15, 118, 110, 0.25);
     }}
+    button:hover {{ box-shadow: 0 12px 24px rgba(15, 118, 110, 0.32); }}
     button[disabled] {{
-      background: var(--accent-disabled);
+      background: var(--muted);
+      box-shadow: none;
       cursor: progress;
     }}
     .busy-message {{
       margin: 0;
       color: var(--muted);
-      font-size: 0.95rem;
+      font-size: 0.9rem;
     }}
-        .format-selector {{
-            margin: 16px 0;
-            padding: 12px 14px;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            display: flex;
-            gap: 14px;
-            flex-wrap: wrap;
-        }}
-        .format-selector legend {{
-            padding: 0 6px;
-            font-weight: 700;
-        }}
-        .format-option {{
-            display: inline-flex;
-            gap: 6px;
-            align-items: center;
-            font-weight: 400;
-        }}
+    .format-selector {{
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }}
+    .format-selector legend {{
+      padding: 0 0 8px;
+      font-weight: 700;
+      font-size: 0.92rem;
+    }}
+    .format-options {{
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+    .format-option {{
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      font-weight: 500;
+      padding: 8px 14px;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      background: #fff;
+      cursor: pointer;
+    }}
+    .format-option input {{ accent-color: var(--accent); }}
+    .format-option:has(input:checked) {{
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent-strong);
+    }}
+    .result-shell {{ padding: 0; overflow: hidden; }}
     .message-area {{
-      margin-top: 24px;
-      padding: 18px;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: rgba(255, 255, 255, 0.72);
+      padding: 20px 24px;
+      border-left: 5px solid var(--border-strong);
     }}
-        .message-area p {{
-            overflow-wrap: anywhere;
-            word-break: break-word;
-        }}
-    .message-area h2 {{ margin-top: 0; font-size: 1.2rem; }}
+    .message-area p {{
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }}
+    .message-area h2 {{
+      margin-top: 0;
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }}
     .message-area.empty {{ color: var(--muted); }}
+    .status-line {{ font-size: 1.05rem; font-weight: 600; margin-top: 0; }}
+    .message-area.saved {{ border-left-color: var(--saved); }}
     .message-area.saved .status-line {{ color: var(--saved); }}
+    .message-area.saved .status-line::before {{ content: \"\\2713  \"; }}
+    .message-area.registered {{ border-left-color: var(--registered); }}
     .message-area.registered .status-line {{ color: var(--registered); }}
+    .message-area.registered .status-line::before {{ content: \"+  \"; }}
+    .message-area.error {{ border-left-color: var(--error); }}
     .message-area.error .status-line {{ color: var(--error); }}
+    .message-area.error .status-line::before {{ content: \"!  \"; }}
     .followup-note {{ color: var(--muted); }}
     .download-frame {{ display: none; width: 0; height: 0; border: 0; }}
-    .list-link-line {{ margin: 0 0 16px; }}
-    .list-btn {{
-      display: inline-block;
-      padding: 7px 18px;
-      border: 1px solid var(--accent);
-      border-radius: 8px;
-      color: var(--accent);
-      text-decoration: none;
-      font-size: 0.9rem;
-      background: transparent;
-    }}
-    .list-btn:hover {{ background: rgba(15, 118, 110, 0.08); }}
     .issue-context-block {{
       margin-top: 14px;
       padding-top: 12px;
@@ -1067,46 +1271,49 @@ def _render_page(
     }}
     .issue-context-text {{
       width: 100%;
-      font-family: ui-monospace, monospace;
+      font-family: ui-monospace, \"Cascadia Mono\", Consolas, monospace;
       font-size: 0.85rem;
       padding: 10px 12px;
-      border-radius: 10px;
+      border-radius: var(--radius-sm);
       border: 1px solid var(--border);
-      background: #fff;
+      background: var(--panel-alt);
       resize: vertical;
+      color: var(--ink);
     }}
     .copy-context-btn {{
       margin-top: 8px;
-      font-size: 0.9rem;
+      padding: 8px 16px;
+      font-size: 0.85rem;
+      background: var(--ink);
+      box-shadow: none;
     }}
-    .issue-report {{
-      margin-top: 24px;
-      padding-top: 8px;
-      border-top: 1px solid var(--border);
-    }}
+    .issue-panel {{ padding: 0; }}
+    .issue-report {{ padding: 18px 24px; }}
     .issue-report summary {{
       cursor: pointer;
       font-weight: 700;
-      color: var(--accent);
+      color: var(--accent-strong);
+      list-style: none;
     }}
+    .issue-report summary::before {{ content: \"\\270E  \"; }}
     .issue-report-body {{
-      margin-top: 12px;
+      margin-top: 14px;
       display: grid;
       gap: 10px;
     }}
     .issue-report-note {{
       margin: 0;
       color: var(--muted);
-      font-size: 0.95rem;
+      font-size: 0.9rem;
     }}
-    .issue-report-status.ok {{ color: var(--saved); }}
-    .issue-report-status.error {{ color: var(--error); }}
+    .issue-report-status.ok {{ color: var(--saved); font-weight: 600; }}
+    .issue-report-status.error {{ color: var(--error); font-weight: 600; }}
     .issue-report textarea {{
       width: 100%;
       min-height: 120px;
       padding: 12px 14px;
-      border-radius: 12px;
-      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-strong);
       background: #fff;
       font: inherit;
       resize: vertical;
@@ -1119,44 +1326,66 @@ def _render_page(
       overflow: hidden;
     }}
     @media (max-width: 640px) {{
-      main {{ padding: 24px 14px 36px; }}
+      main {{ padding: 20px 14px 40px; }}
       .panel {{ padding: 18px; }}
+      .message-area {{ padding: 16px; }}
+      .issue-report {{ padding: 16px; }}
       button {{ width: 100%; }}
     }}
   </style>
 </head>
 <body>
-  <main>
-    <section class=\"panel\">
-      <h1>{escape(UI_TEXTS['heading'])}</h1>
-      <p class=\"lede\">{escape(UI_TEXTS['lede'])}</p>
-      <p class=\"list-link-line\">
-        <a href=\"/registered\" target=\"_blank\" class=\"list-btn\">
-          登録済み記事一覧
-        </a>
-      </p>
-      <form method=\"post\" action=\"/\" data-archive-check-form>
-        <label for=\"article_input\">{escape(UI_TEXTS['input_label'])}</label>
-        <input
-          id=\"article_input\"
-          name=\"article_input\"
-          type=\"text\"
-          value=\"{safe_input}\"
-          placeholder=\"{escape(UI_TEXTS['input_placeholder'])}\"
-          autocomplete=\"off\"
-        >
-                {_render_format_selector(selected_format)}
-        <button type=\"submit\" data-submit-button>
-          {escape(UI_TEXTS['submit_label'])}
-        </button>
-        <p class=\"busy-message\" data-busy-message hidden aria-live=\"polite\">
-          {escape(UI_TEXTS['busy_message'].format(format_name=format_name))}
-        </p>
-      </form>
-      {message_area}
-      {issue_report_section}
-    </section>
-  </main>
+  <div class=\"app-shell\">
+    {_site_header_html("top")}
+    <main>
+      <section class=\"panel hero\">
+        <div class=\"hero-top\">
+          <p class=\"eyebrow\">Web Archive Utility</p>
+          <a href=\"/registered\" target=\"_blank\"
+             class=\"secondary-action\">登録済み記事一覧</a>
+        </div>
+        <h1>{escape(UI_TEXTS['heading'])}</h1>
+        <p class=\"lede\">{escape(UI_TEXTS['lede'])}</p>
+      </section>
+      <section class=\"panel\">
+        <h2 class=\"panel-title\">Check an article</h2>
+        <form method=\"post\" action=\"/\" data-archive-check-form>
+          <div class=\"field\">
+            <label for=\"article_input\">
+              {escape(UI_TEXTS['input_label'])}
+            </label>
+            <input
+              id=\"article_input\"
+              name=\"article_input\"
+              type=\"text\"
+              value=\"{safe_input}\"
+              placeholder=\"{escape(UI_TEXTS['input_placeholder'])}\"
+              autocomplete=\"off\"
+            >
+          </div>
+          {_render_format_selector(selected_format)}
+          <div class=\"actions-row\">
+            <button type=\"submit\" data-submit-button>
+              {escape(UI_TEXTS['submit_label'])}
+            </button>
+            <p class=\"busy-message\" data-busy-message hidden
+               aria-live=\"polite\">
+              {escape(UI_TEXTS['busy_message'].format(format_name=format_name))}
+            </p>
+          </div>
+        </form>
+      </section>
+      <section class=\"panel result-shell\">
+        {message_area}
+      </section>
+      <section class=\"panel issue-panel\">
+        {issue_report_section}
+      </section>
+    </main>
+    <footer class=\"site-footer\">
+      <p>NicoArc Archive Console &mdash; local archive utility.</p>
+    </footer>
+  </div>
   <script>
     const form = document.querySelector("[data-archive-check-form]");
     if (form) {{
@@ -1511,119 +1740,164 @@ def _render_registered_list_page(query_params: dict) -> bytes:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Registered Articles</title>
   <style>
-    body {{
-      font-family: Georgia, serif;
-      margin: 0;
-      padding: 24px 20px;
-      background: #f4efe5;
-      color: #1f2430;
+    {_shared_console_style()}
+    .registered-main {{
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 28px 20px 48px;
+      display: grid;
+      gap: 16px;
     }}
-    h1 {{ margin: 0 0 8px; font-size: 1.8rem; }}
-    .meta {{ color: #6b7280; margin: 0 0 12px; font-size: 0.9rem; }}
-    .controls {{
+    .page-head {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    .page-head h1 {{
+      margin: 0;
+      font-size: 1.5rem;
+      letter-spacing: -0.01em;
+    }}
+    .meta {{ color: var(--muted); margin: 0; font-size: 0.88rem; }}
+    .panel.toolbar {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      box-shadow: var(--shadow-panel);
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 12px;
       align-items: center;
-      margin-bottom: 12px;
+      justify-content: space-between;
     }}
     .search-form {{
       display: flex;
       gap: 6px;
       align-items: center;
+      flex-wrap: wrap;
     }}
     .search-form input[type="text"] {{
-      padding: 5px 10px;
-      border: 1px solid #d9ccb4;
-      border-radius: 6px;
+      padding: 8px 12px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
       font: inherit;
-            min-width: 280px;
-            width: min(42vw, 30rem);
+      min-width: 280px;
+      width: min(42vw, 30rem);
+      background: #fff;
+    }}
+    .toolbar-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
     }}
     button, .btn {{
-      padding: 5px 14px;
+      padding: 8px 16px;
       border: 0;
-      border-radius: 6px;
-      background: #0f766e;
+      border-radius: var(--radius-sm);
+      background: var(--accent);
       color: #fff;
       font: inherit;
+      font-weight: 600;
       cursor: pointer;
       text-decoration: none;
     }}
-    button:hover, .btn:hover {{ background: #0d6560; }}
+    button:hover, .btn:hover {{ background: var(--accent-strong); }}
     select.per-page {{
-      padding: 4px 8px;
-      border: 1px solid #d9ccb4;
-      border-radius: 6px;
+      padding: 7px 10px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
       font: inherit;
+      background: #fff;
     }}
-        .csv-link, .aux-link {{
-      padding: 5px 12px;
-      border: 1px solid #0f766e;
-      border-radius: 6px;
-      color: #0f766e;
+    .csv-link, .aux-link {{
+      padding: 7px 14px;
+      border: 1px solid var(--accent);
+      border-radius: var(--radius-sm);
+      color: var(--accent-strong);
       text-decoration: none;
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       background: transparent;
+      font-weight: 600;
     }}
-        .csv-link:hover, .aux-link:hover {{
-            background: rgba(15, 118, 110, 0.08);
-        }}
-        .aux-link {{ border-color: #d9ccb4; color: #1f2430; }}
+    .csv-link:hover, .aux-link:hover {{
+      background: var(--accent-soft);
+    }}
+    .aux-link {{ border-color: var(--border-strong); color: var(--ink); }}
+    .panel.table-panel {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-panel);
+      padding: 0;
+      overflow: hidden;
+    }}
+    .table-shell {{ overflow-x: auto; }}
     table {{
       border-collapse: collapse;
       width: 100%;
-            table-layout: fixed;
-      background: #fffaf2;
-      border: 1px solid #d9ccb4;
-      border-radius: 8px;
-      overflow: hidden;
+      table-layout: fixed;
+      background: var(--panel);
     }}
     th, td {{
-      padding: 8px 12px;
-      border-bottom: 1px solid #e8dfc8;
-            vertical-align: middle;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
     }}
-    th {{ background: #f0e9d8; font-weight: 700; }}
-        th.align-left, td.align-left {{ text-align: left; }}
-        th.align-center, td.align-center {{ text-align: center; }}
-        th.align-right, td.align-right {{ text-align: right; }}
+    th {{
+      background: var(--panel-alt);
+      font-weight: 700;
+      font-size: 0.85rem;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      box-shadow: inset 0 -1px 0 var(--border-strong);
+    }}
+    th.align-left, td.align-left {{ text-align: left; }}
+    th.align-center, td.align-center {{ text-align: center; }}
+    th.align-right, td.align-right {{ text-align: right; }}
+    td.align-right {{ font-variant-numeric: tabular-nums; }}
     th a.sort-link {{
-      color: #1f2430;
+      color: var(--ink);
       text-decoration: none;
       white-space: nowrap;
     }}
     th a.sort-link:hover {{ text-decoration: underline; }}
     tr:last-child td {{ border-bottom: none; }}
-    tr.not-scraped td {{ background: #fff8e6; }}
-    a {{ color: #0f766e; }}
-        .col-article-id {{ width: 9ch; }}
-        .col-article-type {{ width: 6ch; }}
-        .col-title {{ width: 21%; }}
-        .col-canonical-url {{ width: 13%; }}
-        .col-created-at, .col-last-scraped {{ width: 17ch; }}
-        .col-saved-count, .col-observed-max-res {{ width: 11ch; }}
-        td.col-title {{
-            font-weight: 600;
-            white-space: normal;
-            overflow-wrap: anywhere;
-            word-break: break-word;
-        }}
-        th.col-title {{ white-space: nowrap; }}
-        th.col-canonical-url,
-        td.col-canonical-url {{
-            white-space: nowrap;
-            overflow: hidden;
-        }}
-        .ext-link.truncated-url {{
-            display: block;
-            width: 100%;
-            max-width: 100%;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            word-break: normal;
-        }}
+    tbody tr:hover td {{ background: var(--panel-alt); }}
+    tr.not-scraped td {{ background: #fbeecb; }}
+    tr.not-scraped:hover td {{ background: #f7e5b4; }}
+    a {{ color: var(--accent-strong); }}
+    .col-article-id {{ width: 9ch; }}
+    .col-article-type {{ width: 6ch; }}
+    .col-title {{ width: 21%; }}
+    .col-canonical-url {{ width: 13%; }}
+    .col-created-at, .col-last-scraped {{ width: 17ch; }}
+    .col-saved-count, .col-observed-max-res {{ width: 11ch; }}
+    td.col-title {{
+      font-weight: 600;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }}
+    th.col-title {{ white-space: nowrap; }}
+    th.col-canonical-url,
+    td.col-canonical-url {{
+      white-space: nowrap;
+      overflow: hidden;
+    }}
+    .ext-link.truncated-url {{
+      display: block;
+      width: 100%;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      word-break: normal;
+    }}
     .pagination {{
       display: flex;
       flex-wrap: wrap;
@@ -1631,66 +1905,88 @@ def _render_registered_list_page(query_params: dict) -> bytes:
       align-items: center;
       margin-top: 16px;
     }}
-        .pagination.top {{ margin: 0 0 12px; }}
-        .pagination.bottom {{ margin-top: 16px; }}
+    .pagination.top {{ margin: 0; }}
+    .pagination.bottom {{ margin-top: 4px; }}
     .page-btn {{
-      padding: 4px 10px;
-      border: 1px solid #d9ccb4;
-      border-radius: 6px;
-      color: #0f766e;
+      padding: 5px 12px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      color: var(--accent-strong);
       text-decoration: none;
-      font-size: 0.9rem;
+      font-size: 0.88rem;
+      background: var(--panel);
     }}
+    .page-btn:hover {{ background: var(--accent-soft); }}
     .page-btn.disabled {{
       color: #aaa;
-      border-color: #e0d8c8;
+      border-color: var(--border);
       pointer-events: none;
+      background: transparent;
     }}
-    .page-info {{ font-size: 0.9rem; color: #6b7280; }}
+    .page-info {{ font-size: 0.88rem; color: var(--muted); }}
+    @media (max-width: 720px) {{
+      .registered-main {{ padding: 18px 12px 36px; }}
+      .panel.toolbar {{ flex-direction: column; align-items: stretch; }}
+      .search-form input[type="text"] {{ min-width: 0; width: 100%; }}
+      .toolbar-actions {{ justify-content: flex-start; }}
+    }}
   </style>
 </head>
 <body>
-  <h1>Registered Articles</h1>
-  <p class="meta">
-    {showing} &mdash;
-    <a href="/" target="_self">&larr; Top</a>
-  </p>
-  <div class="controls">
-    <form method="get" action="/registered" class="search-form">
-      <input type="hidden" name="sort_by" value="{sort_by_esc}">
-      <input type="hidden" name="sort_order" value="{sort_ord_esc}">
-      <input type="hidden" name="per_page" value="{per_page_str}">
-            <input
-                type="text"
-                name="q"
-                value="{search_esc}"
-                class="registered-search-input"
-                placeholder="Search title or article ID"
-            >
-            <button type="submit">Search</button>
-    </form>
-    <form method="get" action="/registered">
-      <input type="hidden" name="q" value="{search_esc}">
-      <input type="hidden" name="sort_by" value="{sort_by_esc}">
-      <input type="hidden" name="sort_order" value="{sort_ord_esc}">
-      <input type="hidden" name="page" value="1">
-      <select name="per_page" class="per-page"
-              onchange="this.form.submit()">{per_page_opts}</select>
-    </form>
-    <a href="{csv_url}" class="csv-link">&#8595; CSV (this page)</a>
-        <a href="{refresh_url}" class="aux-link">Refresh</a>
-        <a href="{reset_url}" class="aux-link">Reset</a>
-  </div>
-    {top_pagination.replace('class="pagination"', 'class="pagination top"')}
-  <table>
-    <thead>
-      <tr>{header_cells}</tr>
-    </thead>
-    <tbody>
+  <div class="app-shell">
+    {_site_header_html("registered")}
+    <main class="registered-main">
+      <div class="page-head">
+        <h1>Registered Articles</h1>
+        <p class="meta">{showing}</p>
+      </div>
+      <section class="panel toolbar">
+        <form method="get" action="/registered" class="search-form">
+          <input type="hidden" name="sort_by" value="{sort_by_esc}">
+          <input type="hidden" name="sort_order" value="{sort_ord_esc}">
+          <input type="hidden" name="per_page" value="{per_page_str}">
+          <input
+              type="text"
+              name="q"
+              value="{search_esc}"
+              class="registered-search-input"
+              placeholder="Search title or article ID"
+          >
+          <button type="submit">Search</button>
+        </form>
+        <div class="toolbar-actions">
+          <form method="get" action="/registered">
+            <input type="hidden" name="q" value="{search_esc}">
+            <input type="hidden" name="sort_by" value="{sort_by_esc}">
+            <input type="hidden" name="sort_order" value="{sort_ord_esc}">
+            <input type="hidden" name="page" value="1">
+            <select name="per_page" class="per-page"
+                    onchange="this.form.submit()">{per_page_opts}</select>
+          </form>
+          <a href="{csv_url}" class="csv-link">&#8595; CSV (this page)</a>
+          <a href="{refresh_url}" class="aux-link">Refresh</a>
+          <a href="{reset_url}" class="aux-link">Reset</a>
+        </div>
+      </section>
+      {top_pagination.replace('class="pagination"', 'class="pagination top"')}
+      <section class="panel table-panel">
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>{header_cells}</tr>
+            </thead>
+            <tbody>
 {rows_html}
-    </tbody>
-  </table>
-    {bottom_pagination.replace('class="pagination"', 'class="pagination bottom"')}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {bottom_pagination.replace('class="pagination"', 'class="pagination bottom"')}
+    </main>
+    <footer class="site-footer">
+      <p>NicoArc Archive Console &mdash; local archive utility.</p>
+    </footer>
+  </div>
 </body>
 </html>
 """
