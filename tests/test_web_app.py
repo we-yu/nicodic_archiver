@@ -1045,6 +1045,44 @@ def test_top_page_includes_registered_list_link():
     assert "登録済み記事一覧" in response["body"]
 
 
+def test_top_page_renders_shared_site_header_chrome():
+    response = _run_wsgi_request("GET")
+
+    assert response["status"] == "200 OK"
+    assert 'class="site-header"' in response["body"]
+    assert "NicoArc" in response["body"]
+    assert "Archive Console" in response["body"]
+    assert 'href="/" class="site-nav-link is-current"' in response["body"]
+
+
+def test_top_page_main_content_has_visible_registered_articles_action():
+    response = _run_wsgi_request("GET")
+
+    assert response["status"] == "200 OK"
+    soup = BeautifulSoup(response["body"], "lxml")
+    main = soup.find("main")
+    assert main is not None
+
+    link = main.find("a", class_="secondary-action")
+    assert link is not None
+    assert link.get("href") == "/registered"
+    assert link.get("target") == "_blank"
+    assert link.get_text(strip=True) == "登録済み記事一覧"
+
+
+def test_registered_page_renders_shared_site_header_and_table_shell():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert response["status"] == "200 OK"
+    assert 'class="site-header"' in response["body"]
+    assert "NicoArc" in response["body"]
+    assert 'class="table-shell"' in response["body"]
+
+
 def _mock_query_result(rows, *, total=None, per_page=100):
     """Build a query_registered_articles return value for mocking."""
     return {
