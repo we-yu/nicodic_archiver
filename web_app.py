@@ -716,13 +716,19 @@ def _submit_archive_check(
 
 
 def _render_result_detail(label: str, value: str) -> str:
-    return f"<p><strong>{escape(label)}:</strong> {escape(value)}</p>"
+    return (
+        '<div class="result-detail">'
+        f'<span class="detail-label">{escape(label)}</span>'
+        f'<span class="detail-value">{escape(value)}</span>'
+        "</div>"
+    )
 
 
 def _render_format_selector(selected_format: str) -> str:
     lines = [
         '<fieldset class="format-selector">',
-        '<legend>Download format</legend>',
+        '<legend class="section-label">Download format</legend>',
+        '<div class="format-option-row">',
     ]
     for download_format in DOWNLOAD_FORMATS:
         checked = " checked" if download_format == selected_format else ""
@@ -731,10 +737,13 @@ def _render_format_selector(selected_format: str) -> str:
                 '<label class="format-option">'
                 f'<input type="radio" name="requested_format" '
                 f'value="{escape(download_format)}"{checked}>'
+                '<span class="format-option-text">'
                 f'{escape(_display_format_name(download_format))}'
+                "</span>"
                 '</label>'
             )
         )
+    lines.append("</div>")
     lines.append("</fieldset>")
     return "".join(lines)
 
@@ -746,14 +755,21 @@ def _render_message_area(
     if result is None:
         return (
             '<section class="message-area empty">'
+            '<div class="section-heading">'
             f"<h2>{escape(UI_TEXTS['result_heading'])}</h2>"
+            "</div>"
+            '<div class="message-body">'
             f"<p>{escape(UI_TEXTS['empty_message'])}</p>"
+            "</div>"
             "</section>"
         )
 
     lines = [
         f'<section class="message-area {escape(result["status"])}">',
+        '<div class="section-heading">',
         f"<h2>{escape(UI_TEXTS['result_heading'])}</h2>",
+        "</div>",
+        '<div class="message-body">',
         f'<p class="status-line">{escape(result["message"])}</p>',
     ]
 
@@ -830,6 +846,7 @@ def _render_message_area(
         if issue_context:
             lines.append(_render_issue_context_block(issue_context))
 
+    lines.append("</div>")
     lines.append("</section>")
     return "".join(lines)
 
@@ -839,13 +856,15 @@ def _render_issue_context_block(issue_context_text: str) -> str:
     safe_text = escape(issue_context_text)
     return (
         '<div class="issue-context-block">'
+        '<div class="issue-context-header">'
         '<p class="issue-context-heading">Issue report context:</p>'
+        f'<button type="button" class="copy-context-btn button-secondary" '
+        f'data-copy-target="{context_id}">Copy</button>'
+        "</div>"
         f'<textarea id="{context_id}" class="issue-context-text" '
         'readonly rows="8">'
         f"{safe_text}"
         "</textarea>"
-        f'<button type="button" class="copy-context-btn" '
-        f'data-copy-target="{context_id}">Copy</button>'
         "</div>"
     )
 
@@ -870,13 +889,13 @@ def _render_issue_report_section(
     configured = issue_report_enabled()
     if configured:
         availability_note = (
-            '<p class="issue-report-note">'
+            '<p class="issue-report-note utility-note">'
             "Send a short problem report to the site operator."
             "</p>"
         )
     else:
         availability_note = (
-            '<p class="issue-report-note">'
+            '<p class="issue-report-note utility-note">'
             "Issue reporting is not configured on this server."
             "</p>"
         )
@@ -888,12 +907,12 @@ def _render_issue_report_section(
         )
     return (
         f'<details class="issue-report"{open_attr}>'
-        "<summary>Report a problem</summary>"
+        '<summary class="section-heading-inline">Report a problem</summary>'
         '<div class="issue-report-body">'
         f"{availability_note}"
         f"{status_html}"
-        '<form method="post" action="/issue-report">'
-        '<label for="report_body">Describe the problem</label>'
+        '<form method="post" action="/issue-report" class="issue-report-form">'
+        '<label for="report_body" class="section-label">Describe the problem</label>'
         '<textarea id="report_body" name="report_body" rows="5" '
         'maxlength="1000"></textarea>'
         f"{context_hidden}"
@@ -901,7 +920,9 @@ def _render_issue_report_section(
         'Website<input type="text" name="website" tabindex="-1" '
         'autocomplete="off">'
         "</label>"
-        '<button type="submit">Send report</button>'
+        '<div class="form-actions">'
+        '<button type="submit" class="button-primary">Send report</button>'
+        "</div>"
         "</form>"
         "</div>"
         "</details>"
@@ -939,130 +960,318 @@ def _render_page(
   <style>
     :root {{
       color-scheme: light;
-      --bg: #f4efe5;
-      --panel: #fffaf2;
-      --ink: #1f2430;
+            --bg: #f3ece0;
+            --bg-accent: #ebe0d0;
+            --panel: #fffaf2;
+            --panel-strong: #fffdf8;
+            --ink: #1f2430;
+            --ink-soft: #3f4a58;
       --accent: #0f766e;
+            --accent-deep: #0d5f59;
+            --accent-soft: #d8ece7;
       --accent-disabled: #6b8f8b;
-      --border: #d9ccb4;
+            --border: #d7ccb8;
+            --border-strong: #c7b69c;
       --muted: #6b7280;
       --saved: #14532d;
       --registered: #92400e;
       --error: #991b1b;
+            --shadow: 0 16px 34px rgba(43, 35, 24, 0.08);
+            --shadow-soft: 0 8px 18px rgba(43, 35, 24, 0.05);
+            --radius-lg: 20px;
+            --radius-md: 14px;
+            --radius-sm: 10px;
+            --focus-ring: 0 0 0 3px rgba(15, 118, 110, 0.18);
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
-      font-family: Georgia, \"Times New Roman\", serif;
+            font-family: Georgia, \"Times New Roman\", serif;
       color: var(--ink);
-      background:
-        radial-gradient(circle at top, rgba(15, 118, 110, 0.12), transparent 35%),
-        linear-gradient(180deg, #efe6d7 0%, var(--bg) 100%);
+            background: linear-gradient(180deg, var(--bg-accent) 0%, var(--bg) 100%);
     }}
+        a {{ color: var(--accent-deep); }}
+        a:hover {{ color: var(--accent); }}
+        a:focus-visible,
+        button:focus-visible,
+        input:focus-visible,
+        textarea:focus-visible,
+        select:focus-visible,
+        summary:focus-visible {{
+            outline: none;
+            box-shadow: var(--focus-ring);
+        }}
+        @media (prefers-reduced-motion: no-preference) {{
+            a, button, input, textarea, select, summary, tr, .panel {{
+                transition:
+                    background-color 120ms ease,
+                    border-color 120ms ease,
+                    box-shadow 120ms ease,
+                    color 120ms ease;
+            }}
+        }}
     main {{
-      max-width: 760px;
+            max-width: 860px;
       margin: 0 auto;
-      padding: 48px 20px 64px;
+            padding: 32px 20px 64px;
     }}
-    .panel {{
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 24px;
-      box-shadow: 0 20px 40px rgba(31, 36, 48, 0.08);
+        .page-shell {{
+            display: grid;
+            gap: 18px;
+        }}
+        .page-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: end;
+            gap: 16px;
+            padding: 0 4px;
+        }}
+        .page-header-copy {{
+            min-width: 0;
+        }}
+        .eyebrow {{
+            margin: 0 0 6px;
+            color: var(--accent-deep);
+            font-size: 0.82rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }}
+        .page-header-actions {{
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 10px;
+        }}
+        .panel {{
+            background: linear-gradient(
+                180deg,
+                var(--panel-strong) 0%,
+                var(--panel) 100%
+            );
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 24px;
+            box-shadow: var(--shadow);
     }}
     h1 {{
-      margin: 0 0 12px;
-      font-size: clamp(2rem, 4vw, 3rem);
-      line-height: 1.05;
+            margin: 0;
+            font-size: clamp(2rem, 4vw, 2.8rem);
+            line-height: 1.04;
+            letter-spacing: -0.02em;
     }}
-    p {{ line-height: 1.5; }}
-    .lede {{ color: var(--muted); margin: 0 0 24px; }}
-    form {{ display: grid; gap: 12px; }}
-    label {{ font-weight: 700; }}
+        h2 {{
+            margin: 0;
+            font-size: 1.15rem;
+            line-height: 1.2;
+        }}
+        p {{ line-height: 1.58; }}
+        .lede {{
+            max-width: 62ch;
+            color: var(--ink-soft);
+            margin: 12px 0 0;
+        }}
+        form {{ display: grid; gap: 12px; }}
+        label {{ font-weight: 700; }}
+        .section-label {{
+            color: var(--ink);
+            font-size: 0.96rem;
+        }}
     input[type=\"text\"] {{
       width: 100%;
-      padding: 14px 16px;
-      border-radius: 12px;
-      border: 1px solid var(--border);
+            min-height: 48px;
+            padding: 13px 15px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border-strong);
       background: #fff;
       font: inherit;
+            color: var(--ink);
     }}
-    button {{
+        input[type=\"text\"]::placeholder,
+        textarea::placeholder {{
+            color: #808895;
+        }}
+        button {{
       width: fit-content;
-      padding: 12px 18px;
-      border: 0;
-      border-radius: 999px;
+            min-height: 44px;
+            padding: 10px 18px;
+            border: 1px solid transparent;
+            border-radius: 999px;
       background: var(--accent);
       color: #fff;
-      font: inherit;
+            font: inherit;
+            font-weight: 700;
       cursor: pointer;
+            box-shadow: var(--shadow-soft);
     }}
+        button:hover {{ background: var(--accent-deep); }}
     button[disabled] {{
       background: var(--accent-disabled);
+            box-shadow: none;
       cursor: progress;
     }}
+        .button-primary {{
+            background: var(--accent);
+            color: #fff;
+        }}
+        .button-secondary,
+        .nav-link-button,
+        .list-btn {{
+            border-color: var(--border-strong);
+            background: transparent;
+            color: var(--ink);
+            box-shadow: none;
+        }}
+        .button-secondary:hover,
+        .nav-link-button:hover,
+        .list-btn:hover {{
+            background: rgba(15, 118, 110, 0.08);
+            color: var(--ink);
+        }}
+        .button-quiet {{
+            border-color: var(--border);
+            background: #fff;
+            color: var(--ink-soft);
+            box-shadow: none;
+        }}
     .busy-message {{
       margin: 0;
       color: var(--muted);
       font-size: 0.95rem;
     }}
-        .format-selector {{
-            margin: 16px 0;
-            padding: 12px 14px;
-            border: 1px solid var(--border);
-            border-radius: 12px;
+        .utility-card {{
+            display: grid;
+            gap: 18px;
+        }}
+        .action-form {{
+            display: grid;
+            gap: 16px;
+            padding: 18px;
+            border: 1px solid rgba(199, 182, 156, 0.72);
+            border-radius: var(--radius-md);
+            background: rgba(255, 255, 255, 0.58);
+        }}
+        .action-row {{
             display: flex;
-            gap: 14px;
             flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+        }}
+        .format-selector {{
+            margin: 0;
+            padding: 14px 16px 12px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            background: rgba(255, 255, 255, 0.72);
         }}
         .format-selector legend {{
             padding: 0 6px;
-            font-weight: 700;
+        }}
+        .format-option-row {{
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
         }}
         .format-option {{
             display: inline-flex;
-            gap: 6px;
+            gap: 8px;
             align-items: center;
+            padding: 8px 12px;
+            border: 1px solid transparent;
+            border-radius: 999px;
+            background: rgba(15, 118, 110, 0.05);
             font-weight: 400;
+            cursor: pointer;
         }}
+        .format-option:hover {{
+            border-color: rgba(15, 118, 110, 0.22);
+            background: rgba(15, 118, 110, 0.09);
+        }}
+        .format-option input {{ margin: 0; }}
+        .format-option-text {{ line-height: 1.2; }}
     .message-area {{
-      margin-top: 24px;
-      padding: 18px;
-      border-radius: 14px;
+            margin-top: 0;
+            padding: 18px;
+            border-radius: var(--radius-md);
       border: 1px solid var(--border);
-      background: rgba(255, 255, 255, 0.72);
+            background: rgba(255, 255, 255, 0.84);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
     }}
         .message-area p {{
             overflow-wrap: anywhere;
             word-break: break-word;
         }}
-    .message-area h2 {{ margin-top: 0; font-size: 1.2rem; }}
+        .section-heading {{
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 12px;
+            margin-bottom: 12px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(199, 182, 156, 0.52);
+        }}
+        .section-heading-inline {{
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .message-body {{
+            display: grid;
+            gap: 10px;
+        }}
+        .message-area h2 {{ font-size: 1.08rem; }}
     .message-area.empty {{ color: var(--muted); }}
-    .message-area.saved .status-line {{ color: var(--saved); }}
-    .message-area.registered .status-line {{ color: var(--registered); }}
-    .message-area.error .status-line {{ color: var(--error); }}
-    .followup-note {{ color: var(--muted); }}
-    .download-frame {{ display: none; width: 0; height: 0; border: 0; }}
-    .list-link-line {{ margin: 0 0 16px; }}
-    .list-btn {{
-      display: inline-block;
-      padding: 7px 18px;
-      border: 1px solid var(--accent);
-      border-radius: 8px;
-      color: var(--accent);
-      text-decoration: none;
-      font-size: 0.9rem;
-      background: transparent;
-    }}
-    .list-btn:hover {{ background: rgba(15, 118, 110, 0.08); }}
+        .message-area.saved {{ border-left: 5px solid rgba(20, 83, 45, 0.62); }}
+        .message-area.registered {{
+            border-left: 5px solid rgba(146, 64, 14, 0.58);
+        }}
+        .message-area.error {{ border-left: 5px solid rgba(153, 27, 27, 0.58); }}
+        .message-area.saved .status-line {{ color: var(--saved); }}
+        .message-area.registered .status-line {{ color: var(--registered); }}
+        .message-area.error .status-line {{ color: var(--error); }}
+        .status-line {{
+            margin: 0;
+            font-weight: 700;
+        }}
+        .result-detail {{
+            display: grid;
+            grid-template-columns: minmax(10rem, 12rem) minmax(0, 1fr);
+            gap: 8px 12px;
+            align-items: start;
+            padding: 9px 0;
+            border-top: 1px solid rgba(199, 182, 156, 0.34);
+        }}
+        .detail-label {{
+            color: var(--ink-soft);
+            font-weight: 700;
+        }}
+        .detail-value {{
+            min-width: 0;
+            color: var(--ink);
+        }}
+        .followup-note,
+        .utility-note {{
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.94rem;
+        }}
+        .download-frame {{ display: none; width: 0; height: 0; border: 0; }}
     .issue-context-block {{
-      margin-top: 14px;
-      padding-top: 12px;
-      border-top: 1px dashed var(--border);
+            margin-top: 8px;
+            padding: 14px;
+            border: 1px dashed var(--border-strong);
+            border-radius: var(--radius-sm);
+            background: rgba(255, 255, 255, 0.76);
     }}
+        .issue-context-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }}
     .issue-context-heading {{
-      margin: 0 0 8px;
+            margin: 0;
       font-weight: 700;
     }}
     .issue-context-text {{
@@ -1070,47 +1279,48 @@ def _render_page(
       font-family: ui-monospace, monospace;
       font-size: 0.85rem;
       padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border-strong);
       background: #fff;
       resize: vertical;
     }}
-    .copy-context-btn {{
-      margin-top: 8px;
-      font-size: 0.9rem;
-    }}
     .issue-report {{
-      margin-top: 24px;
-      padding-top: 8px;
-      border-top: 1px solid var(--border);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            background: rgba(255, 255, 255, 0.66);
+            padding: 14px 16px;
     }}
     .issue-report summary {{
       cursor: pointer;
       font-weight: 700;
-      color: var(--accent);
+            color: var(--ink);
+            list-style: none;
     }}
+        .issue-report summary::-webkit-details-marker {{ display: none; }}
     .issue-report-body {{
       margin-top: 12px;
       display: grid;
-      gap: 10px;
-    }}
-    .issue-report-note {{
-      margin: 0;
-      color: var(--muted);
-      font-size: 0.95rem;
+            gap: 12px;
     }}
     .issue-report-status.ok {{ color: var(--saved); }}
     .issue-report-status.error {{ color: var(--error); }}
-    .issue-report textarea {{
+        .issue-report-form {{ display: grid; gap: 12px; }}
+        .issue-report textarea {{
       width: 100%;
       min-height: 120px;
       padding: 12px 14px;
-      border-radius: 12px;
-      border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border-strong);
       background: #fff;
       font: inherit;
       resize: vertical;
     }}
+        .form-actions {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }}
     .hp-field {{
       position: absolute;
       left: -10000px;
@@ -1118,44 +1328,105 @@ def _render_page(
       height: 1px;
       overflow: hidden;
     }}
+        .nav-link-button,
+        .list-btn {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 40px;
+            padding: 8px 14px;
+            border-radius: 999px;
+            text-decoration: none;
+            font-size: 0.94rem;
+            font-weight: 700;
+        }}
+        @media (max-width: 720px) {{
+            .page-header {{
+                align-items: start;
+                flex-direction: column;
+            }}
+            .page-header-actions {{ justify-content: start; }}
+            .result-detail {{
+                grid-template-columns: 1fr;
+                gap: 4px;
+            }}
+            .issue-context-header {{
+                align-items: stretch;
+                flex-direction: column;
+            }}
+        }}
     @media (max-width: 640px) {{
       main {{ padding: 24px 14px 36px; }}
-      .panel {{ padding: 18px; }}
-      button {{ width: 100%; }}
+            .panel {{ padding: 18px; }}
+            .action-row,
+            .form-actions,
+            .page-header-actions,
+            .format-option-row {{
+                align-items: stretch;
+                flex-direction: column;
+            }}
+            button,
+            .nav-link-button,
+            .list-btn {{ width: 100%; }}
     }}
   </style>
 </head>
 <body>
   <main>
-    <section class=\"panel\">
-      <h1>{escape(UI_TEXTS['heading'])}</h1>
-      <p class=\"lede\">{escape(UI_TEXTS['lede'])}</p>
-      <p class=\"list-link-line\">
-        <a href=\"/registered\" target=\"_blank\" class=\"list-btn\">
-          登録済み記事一覧
-        </a>
-      </p>
-      <form method=\"post\" action=\"/\" data-archive-check-form>
-        <label for=\"article_input\">{escape(UI_TEXTS['input_label'])}</label>
-        <input
-          id=\"article_input\"
-          name=\"article_input\"
-          type=\"text\"
-          value=\"{safe_input}\"
-          placeholder=\"{escape(UI_TEXTS['input_placeholder'])}\"
-          autocomplete=\"off\"
-        >
-                {_render_format_selector(selected_format)}
-        <button type=\"submit\" data-submit-button>
-          {escape(UI_TEXTS['submit_label'])}
-        </button>
-        <p class=\"busy-message\" data-busy-message hidden aria-live=\"polite\">
-          {escape(UI_TEXTS['busy_message'].format(format_name=format_name))}
-        </p>
-      </form>
-      {message_area}
-      {issue_report_section}
-    </section>
+        <div class=\"page-shell\">
+            <header class=\"page-header\">
+                <div class=\"page-header-copy\">
+                    <p class=\"eyebrow\">Heritage Utility Refresh</p>
+                    <h1>{escape(UI_TEXTS['heading'])}</h1>
+                    <p class=\"lede\">{escape(UI_TEXTS['lede'])}</p>
+                </div>
+                <div class=\"page-header-actions\">
+                    <a href=\"/registered\" target=\"_blank\" class=\"list-btn\">
+                        登録済み記事一覧
+                    </a>
+                </div>
+            </header>
+            <section class=\"panel utility-card\">
+                <form
+                    method=\"post\"
+                    action=\"/\"
+                    class=\"action-form\"
+                    data-archive-check-form
+                >
+                    <label for=\"article_input\" class=\"section-label\">
+                        {escape(UI_TEXTS['input_label'])}
+                    </label>
+                    <input
+                        id=\"article_input\"
+                        name=\"article_input\"
+                        type=\"text\"
+                        value=\"{safe_input}\"
+                        placeholder=\"{escape(UI_TEXTS['input_placeholder'])}\"
+                        autocomplete=\"off\"
+                    >
+                    {_render_format_selector(selected_format)}
+                    <div class="action-row">
+                        <button
+                            type="submit"
+                            class="button-primary"
+                            data-submit-button
+                        >
+                            {escape(UI_TEXTS['submit_label'])}
+                        </button>
+                        <p
+                            class="busy-message"
+                            data-busy-message
+                            hidden
+                            aria-live="polite"
+                        >
+                            {escape(UI_TEXTS['busy_message'].format(format_name=format_name))}
+                        </p>
+                    </div>
+                </form>
+                {message_area}
+                {issue_report_section}
+            </section>
+        </div>
   </main>
   <script>
     const form = document.querySelector("[data-archive-check-form]");
@@ -1511,92 +1782,237 @@ def _render_registered_list_page(query_params: dict) -> bytes:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Registered Articles</title>
   <style>
+        :root {{
+            color-scheme: light;
+            --bg: #f3ece0;
+            --bg-accent: #ebe0d0;
+            --panel: #fffaf2;
+            --panel-strong: #fffdf8;
+            --ink: #1f2430;
+            --ink-soft: #445062;
+            --accent: #0f766e;
+            --accent-deep: #0d5f59;
+            --border: #d7ccb8;
+            --border-strong: #c7b69c;
+            --muted: #6b7280;
+            --shadow: 0 16px 34px rgba(43, 35, 24, 0.08);
+            --shadow-soft: 0 8px 18px rgba(43, 35, 24, 0.05);
+            --radius-lg: 20px;
+            --radius-md: 14px;
+            --radius-sm: 10px;
+            --focus-ring: 0 0 0 3px rgba(15, 118, 110, 0.18);
+        }}
+        * {{ box-sizing: border-box; }}
     body {{
       font-family: Georgia, serif;
       margin: 0;
-      padding: 24px 20px;
-      background: #f4efe5;
-      color: #1f2430;
+            padding: 32px 20px 48px;
+            background: linear-gradient(180deg, var(--bg-accent) 0%, var(--bg) 100%);
+            color: var(--ink);
     }}
-    h1 {{ margin: 0 0 8px; font-size: 1.8rem; }}
-    .meta {{ color: #6b7280; margin: 0 0 12px; font-size: 0.9rem; }}
+        a {{ color: var(--accent-deep); }}
+        a:hover {{ color: var(--accent); }}
+        a:focus-visible,
+        button:focus-visible,
+        input:focus-visible,
+        select:focus-visible {{
+            outline: none;
+            box-shadow: var(--focus-ring);
+        }}
+        @media (prefers-reduced-motion: no-preference) {{
+            a, button, input, select, tr, .panel {{
+                transition:
+                    background-color 120ms ease,
+                    border-color 120ms ease,
+                    box-shadow 120ms ease,
+                    color 120ms ease;
+            }}
+        }}
+        .page-shell {{
+            max-width: 1360px;
+            margin: 0 auto;
+            display: grid;
+            gap: 18px;
+        }}
+        .page-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: end;
+            gap: 16px;
+            padding: 0 4px;
+        }}
+        .page-header-copy {{ min-width: 0; }}
+        .eyebrow {{
+            margin: 0 0 6px;
+            color: var(--accent-deep);
+            font-size: 0.82rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }}
+        h1 {{
+            margin: 0;
+            font-size: clamp(1.9rem, 4vw, 2.6rem);
+            line-height: 1.05;
+            letter-spacing: -0.02em;
+        }}
+        .meta {{
+            color: var(--muted);
+            margin: 12px 0 0;
+            font-size: 0.95rem;
+        }}
+        .page-header-actions {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: flex-end;
+        }}
+        .nav-link-button {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 40px;
+            padding: 8px 14px;
+            border: 1px solid var(--border-strong);
+            border-radius: 999px;
+            background: transparent;
+            color: var(--ink);
+            text-decoration: none;
+            font-size: 0.94rem;
+            font-weight: 700;
+        }}
+        .nav-link-button:hover {{
+            background: rgba(15, 118, 110, 0.08);
+            color: var(--ink);
+        }}
+        .panel {{
+            background: linear-gradient(
+                180deg,
+                var(--panel-strong) 0%,
+                var(--panel) 100%
+            );
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 20px;
+            box-shadow: var(--shadow);
+        }}
     .controls {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      margin-bottom: 12px;
+            display: grid;
+            gap: 14px;
     }}
+        .toolbar-row {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            justify-content: space-between;
+        }}
+        .toolbar-group {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }}
     .search-form {{
       display: flex;
-      gap: 6px;
+            flex-wrap: wrap;
+            gap: 8px;
       align-items: center;
     }}
     .search-form input[type="text"] {{
-      padding: 5px 10px;
-      border: 1px solid #d9ccb4;
-      border-radius: 6px;
+            min-height: 42px;
+            padding: 8px 12px;
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
       font: inherit;
             min-width: 280px;
             width: min(42vw, 30rem);
+            background: #fff;
+            color: var(--ink);
     }}
     button, .btn {{
-      padding: 5px 14px;
-      border: 0;
-      border-radius: 6px;
-      background: #0f766e;
+            min-height: 40px;
+            padding: 8px 14px;
+            border: 1px solid transparent;
+            border-radius: 999px;
+            background: var(--accent);
       color: #fff;
       font: inherit;
+            font-weight: 700;
       cursor: pointer;
       text-decoration: none;
+            box-shadow: var(--shadow-soft);
     }}
-    button:hover, .btn:hover {{ background: #0d6560; }}
+        button:hover, .btn:hover {{ background: var(--accent-deep); }}
     select.per-page {{
-      padding: 4px 8px;
-      border: 1px solid #d9ccb4;
-      border-radius: 6px;
+            min-height: 40px;
+            padding: 6px 12px;
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
+            background: #fff;
       font: inherit;
     }}
         .csv-link, .aux-link {{
-      padding: 5px 12px;
-      border: 1px solid #0f766e;
-      border-radius: 6px;
-      color: #0f766e;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 40px;
+            padding: 8px 12px;
+            border: 1px solid var(--border-strong);
+            border-radius: 999px;
+            color: var(--ink);
       text-decoration: none;
-      font-size: 0.9rem;
+            font-size: 0.92rem;
+            font-weight: 700;
       background: transparent;
     }}
         .csv-link:hover, .aux-link:hover {{
             background: rgba(15, 118, 110, 0.08);
+            color: var(--ink);
         }}
-        .aux-link {{ border-color: #d9ccb4; color: #1f2430; }}
-    table {{
+        .table-panel {{
+            padding: 0;
+            overflow: hidden;
+        }}
+        .table-scroll {{
+            width: 100%;
+            overflow-x: auto;
+            overflow-y: hidden;
+            border-radius: var(--radius-lg);
+        }}
+        table {{
       border-collapse: collapse;
       width: 100%;
+            min-width: 1080px;
             table-layout: fixed;
-      background: #fffaf2;
-      border: 1px solid #d9ccb4;
-      border-radius: 8px;
-      overflow: hidden;
+            background: rgba(255, 255, 255, 0.92);
     }}
     th, td {{
       padding: 8px 12px;
-      border-bottom: 1px solid #e8dfc8;
+            border-bottom: 1px solid #e8dfc8;
             vertical-align: middle;
     }}
-    th {{ background: #f0e9d8; font-weight: 700; }}
+        thead th {{
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #f3ead9;
+            font-weight: 700;
+            color: var(--ink);
+            box-shadow: inset 0 -1px 0 rgba(199, 182, 156, 0.8);
+        }}
         th.align-left, td.align-left {{ text-align: left; }}
         th.align-center, td.align-center {{ text-align: center; }}
         th.align-right, td.align-right {{ text-align: right; }}
     th a.sort-link {{
-      color: #1f2430;
+            color: var(--ink);
       text-decoration: none;
       white-space: nowrap;
     }}
     th a.sort-link:hover {{ text-decoration: underline; }}
     tr:last-child td {{ border-bottom: none; }}
-    tr.not-scraped td {{ background: #fff8e6; }}
-    a {{ color: #0f766e; }}
+        tbody tr:hover td {{ background: rgba(15, 118, 110, 0.045); }}
+        tr.not-scraped td {{ background: #fff8e6; }}
         .col-article-id {{ width: 9ch; }}
         .col-article-type {{ width: 6ch; }}
         .col-title {{ width: 21%; }}
@@ -1629,68 +2045,119 @@ def _render_registered_list_page(query_params: dict) -> bytes:
       flex-wrap: wrap;
       gap: 8px;
       align-items: center;
-      margin-top: 16px;
+            margin-top: 0;
     }}
-        .pagination.top {{ margin: 0 0 12px; }}
-        .pagination.bottom {{ margin-top: 16px; }}
+        .pagination.top {{ margin: 0; }}
+        .pagination.bottom {{ margin: 0; }}
     .page-btn {{
-      padding: 4px 10px;
-      border: 1px solid #d9ccb4;
-      border-radius: 6px;
-      color: #0f766e;
+            padding: 7px 12px;
+            border: 1px solid var(--border-strong);
+            border-radius: 999px;
+            color: var(--ink);
+            background: #fff;
       text-decoration: none;
       font-size: 0.9rem;
+            font-weight: 700;
     }}
     .page-btn.disabled {{
-      color: #aaa;
-      border-color: #e0d8c8;
+            color: #aaa;
+            border-color: #e0d8c8;
+            background: #f5f1e8;
       pointer-events: none;
     }}
     .page-info {{ font-size: 0.9rem; color: #6b7280; }}
+        @media (max-width: 960px) {{
+            .toolbar-row {{
+                align-items: stretch;
+                flex-direction: column;
+            }}
+            .toolbar-group {{ width: 100%; }}
+        }}
+        @media (max-width: 720px) {{
+            body {{ padding: 24px 14px 36px; }}
+            .page-header {{
+                align-items: start;
+                flex-direction: column;
+            }}
+            .page-header-actions {{ justify-content: start; }}
+            .search-form,
+            .toolbar-group {{
+                width: 100%;
+            }}
+            .search-form input[type="text"] {{
+                width: 100%;
+                min-width: 0;
+            }}
+        }}
   </style>
 </head>
 <body>
-  <h1>Registered Articles</h1>
-  <p class="meta">
-    {showing} &mdash;
-    <a href="/" target="_self">&larr; Top</a>
-  </p>
-  <div class="controls">
-    <form method="get" action="/registered" class="search-form">
-      <input type="hidden" name="sort_by" value="{sort_by_esc}">
-      <input type="hidden" name="sort_order" value="{sort_ord_esc}">
-      <input type="hidden" name="per_page" value="{per_page_str}">
-            <input
-                type="text"
-                name="q"
-                value="{search_esc}"
-                class="registered-search-input"
-                placeholder="Search title or article ID"
-            >
-            <button type="submit">Search</button>
-    </form>
-    <form method="get" action="/registered">
-      <input type="hidden" name="q" value="{search_esc}">
-      <input type="hidden" name="sort_by" value="{sort_by_esc}">
-      <input type="hidden" name="sort_order" value="{sort_ord_esc}">
-      <input type="hidden" name="page" value="1">
-      <select name="per_page" class="per-page"
-              onchange="this.form.submit()">{per_page_opts}</select>
-    </form>
-    <a href="{csv_url}" class="csv-link">&#8595; CSV (this page)</a>
-        <a href="{refresh_url}" class="aux-link">Refresh</a>
-        <a href="{reset_url}" class="aux-link">Reset</a>
-  </div>
-    {top_pagination.replace('class="pagination"', 'class="pagination top"')}
-  <table>
-    <thead>
-      <tr>{header_cells}</tr>
-    </thead>
-    <tbody>
+    <div class="page-shell">
+        <header class="page-header">
+            <div class="page-header-copy">
+                <p class="eyebrow">Heritage Utility Refresh</p>
+                <h1>Registered Articles</h1>
+                <p class="meta">
+                    {showing} &mdash;
+                    <a href="/" target="_self">&larr; Top</a>
+                </p>
+            </div>
+            <div class="page-header-actions">
+                <a href="/" target="_self" class="nav-link-button">Top</a>
+            </div>
+        </header>
+        <section class="panel controls">
+            <div class="toolbar-row">
+                <form method="get" action="/registered" class="search-form">
+                    <input type="hidden" name="sort_by" value="{sort_by_esc}">
+                    <input type="hidden" name="sort_order" value="{sort_ord_esc}">
+                    <input type="hidden" name="per_page" value="{per_page_str}">
+                    <input
+                        type="text"
+                        name="q"
+                        value="{search_esc}"
+                        class="registered-search-input"
+                        placeholder="Search title or article ID"
+                    >
+                    <button type="submit">Search</button>
+                </form>
+                <div class="toolbar-group">
+                    <form method="get" action="/registered">
+                        <input type="hidden" name="q" value="{search_esc}">
+                        <input type="hidden" name="sort_by" value="{sort_by_esc}">
+                        <input type="hidden" name="sort_order" value="{sort_ord_esc}">
+                        <input type="hidden" name="page" value="1">
+                        <select name="per_page" class="per-page"
+                                        onchange="this.form.submit()">{per_page_opts}</select>
+                    </form>
+                    <a href="{csv_url}" class="csv-link">&#8595; CSV (this page)</a>
+                    <a href="{refresh_url}" class="aux-link">Refresh</a>
+                    <a href="{reset_url}" class="aux-link">Reset</a>
+                </div>
+            </div>
+            {top_pagination.replace('class="pagination"', 'class="pagination top"')}
+        </section>
+        <section class="panel table-panel">
+            <div class="table-scroll">
+                <table>
+                    <thead>
+                        <tr>{header_cells}</tr>
+                    </thead>
+                    <tbody>
 {rows_html}
-    </tbody>
-  </table>
-    {bottom_pagination.replace('class="pagination"', 'class="pagination bottom"')}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        <section class="panel controls">
+            {
+                bottom_pagination.replace(
+                    'class="pagination"',
+                    'class="pagination bottom"',
+                )
+            }
+        </section>
+    </div>
 </body>
 </html>
 """

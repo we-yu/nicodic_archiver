@@ -468,6 +468,16 @@ def test_application_get_renders_externalized_title_and_waiting_state():
     assert "overflow-wrap: anywhere;" in response["body"]
 
 
+def test_top_page_uses_shared_page_shell_classes():
+    response = _run_wsgi_request("GET")
+
+    assert response["status"] == "200 OK"
+    assert 'class="page-shell"' in response["body"]
+    assert 'class="page-header"' in response["body"]
+    assert "Heritage Utility Refresh" in response["body"]
+    assert 'class="action-form"' in response["body"]
+
+
 def test_application_post_saved_result_autodownloads_without_buttons():
     result = {
         "status": "saved",
@@ -488,9 +498,12 @@ def test_application_post_saved_result_autodownloads_without_buttons():
     assert "Saved article found. TXT download will start automatically." in (
         response["body"]
     )
-    assert "Article title:</strong> Foo" in response["body"]
-    assert "Article ID:</strong> 12345" in response["body"]
-    assert "Saved response count:</strong> 42" in response["body"]
+    assert "Article title" in response["body"]
+    assert "Foo" in response["body"]
+    assert "Article ID" in response["body"]
+    assert "12345" in response["body"]
+    assert "Saved response count" in response["body"]
+    assert "42" in response["body"]
     assert "data-auto-download-form" in response["body"]
     assert "Download TXT" not in response["body"]
     assert "Add To Target Registry" not in response["body"]
@@ -716,7 +729,8 @@ def test_application_post_registers_plain_exact_title_via_resolver(
 
     assert captured["status"] == "200 OK"
     assert "Article registered for archive checking." in captured["body"]
-    assert f"Article title:</strong> {ttl}" in captured["body"]
+    assert "Article title" in captured["body"]
+    assert ttl in captured["body"]
 
     conn = init_db(str(tgt_db))
     try:
@@ -756,7 +770,7 @@ def test_application_post_registration_write_failure_returns_bounded_error():
 
     assert response["status"] == "200 OK"
     assert "An unexpected internal error occurred." in response["body"]
-    assert "Reference ID:</strong>" in response["body"]
+    assert "Reference ID" in response["body"]
 
 
 def test_application_post_registers_unsaved_article_and_logs_action(tmp_path):
@@ -789,7 +803,8 @@ def test_application_post_registers_unsaved_article_and_logs_action(tmp_path):
 
     assert response["status"] == "200 OK"
     assert "Article registered for archive checking." in response["body"]
-    assert "Article title:</strong> ニコニコ大百科" in response["body"]
+    assert "Article title" in response["body"]
+    assert "ニコニコ大百科" in response["body"]
     assert "Saved response count" not in response["body"]
 
     log_text = log_path.read_text(encoding="utf-8")
@@ -889,7 +904,8 @@ def test_application_post_unsaved_result_stays_200_when_log_write_fails():
 
     assert response["status"] == "200 OK"
     assert "Article registered for archive checking." in response["body"]
-    assert "Article title:</strong> ニコニコ大百科" in response["body"]
+    assert "Article title" in response["body"]
+    assert "ニコニコ大百科" in response["body"]
 
 
 def test_application_post_error_result_stays_200_when_log_write_fails():
@@ -914,7 +930,7 @@ def test_application_post_error_result_stays_200_when_log_write_fails():
     assert "Enter an article name or a valid Nicopedia article URL." in (
         response["body"]
     )
-    assert "Reference ID:</strong>" in response["body"]
+    assert "Reference ID" in response["body"]
 
 
 def test_download_endpoint_returns_txt_and_logs_download(tmp_path):
@@ -1018,7 +1034,7 @@ def test_application_post_error_result_is_short_and_logged(tmp_path):
     assert "Enter an article name or a valid Nicopedia article URL." in (
         response["body"]
     )
-    assert "Reference ID:</strong>" in response["body"]
+    assert "Reference ID" in response["body"]
     assert "Matched by" not in response["body"]
     assert "Resolution status" not in response["body"]
 
@@ -1096,6 +1112,19 @@ def test_registered_page_renders_html_table_with_expected_columns():
     assert ">50<" in response["body"]
     assert "2026-01-01 09:00 JST" in response["body"]
     assert "12345" in response["body"]
+
+
+def test_registered_page_uses_shared_shell_and_table_scroll_wrapper():
+    with patch(
+        "web_app.query_registered_articles",
+        return_value=_mock_query_result([_make_reg_row()]),
+    ):
+        response = _run_wsgi_request("GET", path="/registered")
+
+    assert 'class="page-shell"' in response["body"]
+    assert 'class="page-header"' in response["body"]
+    assert 'class="table-scroll"' in response["body"]
+    assert "min-width: 1080px;" in response["body"]
 
 
 def test_registered_page_shows_article_id_column():
